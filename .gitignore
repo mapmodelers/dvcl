@@ -1,0 +1,6 @@
+# local per-repo data if the tool is ever run inside this repo
+.dvcl/
+*.log
+Thumbs.db
+desktop.ini
+tests/last-report.txt
