@@ -1,10 +1,10 @@
 # tests/integration.ps1 - end-to-end test of dvcl (CLI + engine) against a SCRATCH Diversion repo.
-# Never touches your real repos: everything happens in -Repo (default C:/dvcl-test),
+# Never touches your real repos: everything happens in -Repo (default %USERPROFILE%\dvcl-test),
 # created on first run with `dv init` (one extra repo on your Diversion account; delete it when done).
 # Each run works in its own folder run_<time>. Report: tests\last-report.txt (+ clipboard).
 #   powershell -NoProfile -ExecutionPolicy Bypass -File tests\integration.ps1
 
-param([string]$Repo = 'C:/dvcl-test')
+param([string]$Repo = (Join-Path $env:USERPROFILE 'dvcl-test'))
 
 $ErrorActionPreference = 'Continue'
 $Tool   = Split-Path -Parent $PSScriptRoot

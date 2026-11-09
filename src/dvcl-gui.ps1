@@ -1,7 +1,7 @@
 # dvcl-gui.ps1 - "Pending changelists" window for Diversion.
 # Launch with dvcl-gui.cmd (needs -STA). Optional arg: a folder inside a Diversion workspace.
 
-param([string]$StartDir = '')
+param([string]$StartDir = '', [switch]$SelfCheck)
 
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms
@@ -26,6 +26,13 @@ function Save-Settings {
 }
 $settings = Load-Settings
 
+# ---------------------------------------------------------------- tool info (update, bug report)
+$script:ToolDir = Split-Path -Parent $PSScriptRoot
+$script:GhRepo  = 'mapmodelers/dvcl'
+function Get-LocalVersion {
+    try { return (Get-Content -LiteralPath (Join-Path $script:ToolDir 'VERSION') -Raw).Trim() } catch { return '0.0.0' }
+}
+
 # ---------------------------------------------------------------- look
 $fontUi   = New-Object System.Drawing.Font('Segoe UI', 9)
 $fontBold = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
@@ -47,6 +54,8 @@ $form.StartPosition = 'CenterScreen'
 $form.Width = [int]$settings.w; $form.Height = [int]$settings.h
 $form.MinimumSize = New-Object System.Drawing.Size(640, 400)
 $form.KeyPreview = $true
+$ico = Join-Path $script:ToolDir 'dvcl.ico'
+if (Test-Path -LiteralPath $ico) { $form.Icon = New-Object System.Drawing.Icon($ico) }
 
 $tool = New-Object System.Windows.Forms.ToolStrip
 $tool.GripStyle = 'Hidden'
@@ -65,7 +74,22 @@ $tv = New-Object System.Windows.Forms.TreeView
 $tv.Dock = 'Fill'; $tv.CheckBoxes = $true; $tv.HideSelection = $false; $tv.FullRowSelect = $true
 $tv.ShowLines = $true; $tv.AllowDrop = $true; $tv.ItemHeight = 20
 $tv.Font = $fontBold   # changelist rows bold; file rows set back to regular (avoids clipped bold text)
-$split.Panel1.Controls.Add($tv)
+# Tabs: Pending (changelists) / Local (workspace folder) / Depot (repository at the workspace revision)
+$tabs = New-Object System.Windows.Forms.TabControl
+$tabs.Dock = 'Fill'
+$tabPending = New-Object System.Windows.Forms.TabPage('Pending')
+$tabLocal   = New-Object System.Windows.Forms.TabPage('Local')
+$tabDepot   = New-Object System.Windows.Forms.TabPage('Depot')
+$tabs.TabPages.AddRange(@($tabPending, $tabLocal, $tabDepot))
+$tabPending.Controls.Add($tv)
+function New-BrowseTree {
+    $t = New-Object System.Windows.Forms.TreeView
+    $t.Dock = 'Fill'; $t.HideSelection = $false; $t.FullRowSelect = $true; $t.ItemHeight = 20; $t.Font = $fontUi
+    return $t
+}
+$tvLocal = New-BrowseTree; $tabLocal.Controls.Add($tvLocal)
+$tvDepot = New-BrowseTree; $tabDepot.Controls.Add($tvDepot)
+$split.Panel1.Controls.Add($tabs)
 
 $logBox = New-Object System.Windows.Forms.TextBox
 $logBox.Dock = 'Fill'; $logBox.Multiline = $true; $logBox.ReadOnly = $true; $logBox.ScrollBars = 'Vertical'
@@ -207,8 +231,12 @@ function Refresh-All {
         Load-Db
         $st = Get-Pending
         $script:Pending = $st.Files
+        $script:PendingByPath = @{}
+        foreach ($p in $st.Files) { $script:PendingByPath[$p.Path] = $p }
         if ((Prune $st.Files) -gt 0) { Save-Db }
         Build-Tree
+        $script:LocalBuilt = $false; $script:DepotPaths = $null
+        Show-Tab
         $statusLbl.Text = $script:Root + '    branch ' + $st.Branch + '    ' + $st.Commit + '    ' + $st.Files.Count + ' pending path(s)'
         $form.Text = 'dvcl - ' + (Split-Path -Leaf $script:Root) + ' - Pending changelists'
     }
@@ -361,6 +389,132 @@ function Do-ShowInExplorer {
     else { Start-Process explorer.exe ('"' + (Split-Path -Parent $full) + '"') }
 }
 
+# ---------------------------------------------------------------- Local / Depot trees
+$script:PendingByPath = @{}
+$script:LocalBuilt = $false
+$script:DepotPaths = $null
+
+# A node that still has to load its children carries one placeholder child with no Tag.
+function Add-Placeholder($node) { [void]$node.Nodes.Add('...') }
+function Is-Unloaded($node) { return ($node.Nodes.Count -eq 1 -and $null -eq $node.Nodes[0].Tag) }
+
+function Mark-Pending($node, [string]$rel) {
+    $p = $script:PendingByPath[$rel]
+    if ($p) { $k = Kind-Letter $p.Kind; $node.Text = $k + '   ' + $node.Text; $node.ForeColor = $colKind[$k] }
+}
+
+function Add-LocalChildren($nodes, [string]$dir) {
+    try {
+        $dirs  = @([System.IO.Directory]::GetDirectories($dir) | Sort-Object)
+        $files = @([System.IO.Directory]::GetFiles($dir) | Sort-Object)
+    } catch { return }
+    foreach ($d in $dirs) {
+        $name = [System.IO.Path]::GetFileName($d)
+        if ($name -eq '.diversion' -or $name -eq '.dvcl') { continue }
+        $n = New-Object System.Windows.Forms.TreeNode($name)
+        $n.Tag = [pscustomobject]@{ Type = 'dir'; Path = $d }
+        Add-Placeholder $n
+        [void]$nodes.Add($n)
+    }
+    foreach ($f in $files) {
+        $n = New-Object System.Windows.Forms.TreeNode([System.IO.Path]::GetFileName($f))
+        $n.Tag = [pscustomobject]@{ Type = 'lfile'; Path = $f }
+        Mark-Pending $n (Norm $f)
+        [void]$nodes.Add($n)
+    }
+}
+
+function Add-DepotChildren($nodes, [string]$dir) {
+    $c = Get-DepotChildren $script:DepotPaths $dir
+    foreach ($d in $c.Dirs) {
+        $rel = $d; if ($dir) { $rel = $dir + '/' + $d }
+        $n = New-Object System.Windows.Forms.TreeNode($d)
+        $n.Tag = [pscustomobject]@{ Type = 'ddir'; Path = $rel }
+        Add-Placeholder $n
+        [void]$nodes.Add($n)
+    }
+    foreach ($f in $c.Files) {
+        $rel = $f; if ($dir) { $rel = $dir + '/' + $f }
+        $n = New-Object System.Windows.Forms.TreeNode($f)
+        $n.Tag = [pscustomobject]@{ Type = 'dfile'; Path = $rel }
+        Mark-Pending $n $rel
+        [void]$nodes.Add($n)
+    }
+}
+
+# Fill the visible tab once per refresh (Depot runs dv ls: only when that tab is opened)
+function Show-Tab {
+    if (-not $script:Root) { return }
+    if ($tabs.SelectedTab -eq $tabLocal -and -not $script:LocalBuilt) {
+        $tvLocal.BeginUpdate(); $tvLocal.Nodes.Clear()
+        Add-LocalChildren $tvLocal.Nodes $script:Root
+        $tvLocal.EndUpdate(); $script:LocalBuilt = $true
+    }
+    elseif ($tabs.SelectedTab -eq $tabDepot -and $null -eq $script:DepotPaths) {
+        $script:DepotPaths = [string[]]@()
+        $form.UseWaitCursor = $true; [System.Windows.Forms.Application]::DoEvents()
+        try {
+            $script:DepotPaths = Get-DepotPaths
+            $tvDepot.BeginUpdate(); $tvDepot.Nodes.Clear()
+            Add-DepotChildren $tvDepot.Nodes ''
+            $tvDepot.EndUpdate()
+            & $script:OnSay ('Depot: ' + $script:DepotPaths.Length + ' path(s)') 'Gray'
+        } catch { & $script:OnSay ('ERROR: ' + $_.Exception.Message) 'Red' }
+        finally { $form.UseWaitCursor = $false }
+    }
+}
+$tabs.Add_SelectedIndexChanged({ Show-Tab })
+
+$tvLocal.Add_BeforeExpand({ param($s, $e) if (Is-Unloaded $e.Node) { $e.Node.Nodes.Clear(); Add-LocalChildren $e.Node.Nodes $e.Node.Tag.Path } })
+$tvDepot.Add_BeforeExpand({ param($s, $e) if (Is-Unloaded $e.Node) { $e.Node.Nodes.Clear(); Add-DepotChildren $e.Node.Nodes $e.Node.Tag.Path } })
+
+function Open-InExplorer([string]$full) {
+    if (Test-Path -LiteralPath $full -PathType Leaf) { Start-Process explorer.exe ('/select,"' + $full + '"') }
+    elseif (Test-Path -LiteralPath $full) { Start-Process explorer.exe ('"' + $full + '"') }
+}
+$tvLocal.Add_NodeMouseDoubleClick({ param($s, $e) if ($e.Node.Tag -and $e.Node.Tag.Type -eq 'lfile') { Open-InExplorer $e.Node.Tag.Path } })
+$tvDepot.Add_NodeMouseDoubleClick({ param($s, $e) if ($e.Node.Tag -and $e.Node.Tag.Type -eq 'dfile') { Open-InExplorer (Join-Path $script:Root ($e.Node.Tag.Path -replace '/', '\')) } })
+
+# ---------------------------------------------------------------- update / bug report (GitHub)
+function Do-Update {
+    $script:Restart = $false
+    Run-Busy {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        $wc = New-Object System.Net.WebClient
+        $wc.Headers['User-Agent'] = 'dvcl'
+        $remote = $wc.DownloadString('https://raw.githubusercontent.com/' + $script:GhRepo + '/main/VERSION').Trim()
+        $local = Get-LocalVersion
+        if ([version]$remote -le [version]$local) { [void][System.Windows.Forms.MessageBox]::Show($form, ('dvcl ' + $local + ' is up to date.'), 'Update'); return }
+        if (-not (Ask-YesNo ('Update dvcl ' + $local + ' to ' + $remote + '?') 'Update')) { return }
+        $git = Get-Command git -ErrorAction SilentlyContinue
+        if ($git -and (Test-Path -LiteralPath (Join-Path $script:ToolDir '.git'))) {
+            $o = @(& git -C $script:ToolDir pull --ff-only 2>&1 | ForEach-Object { "$_" })
+            if ($LASTEXITCODE -ne 0) { Fail ('git pull failed: ' + ($o -join ' ')) }
+        } else {
+            $zip = Join-Path $env:TEMP 'dvcl-update.zip'
+            $x = Join-Path $env:TEMP ('dvcl-update-' + [guid]::NewGuid().ToString('N'))
+            $wc.DownloadFile('https://github.com/' + $script:GhRepo + '/archive/refs/heads/main.zip', $zip)
+            Expand-Archive -LiteralPath $zip -DestinationPath $x -Force
+            $top = Get-ChildItem -LiteralPath $x -Directory | Select-Object -First 1
+            Copy-Item -Path (Join-Path $top.FullName '*') -Destination $script:ToolDir -Recurse -Force
+            Remove-Item -LiteralPath $zip, $x -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        & $script:OnSay ('Updated to ' + $remote) 'Green'
+        $script:Restart = Ask-YesNo ('dvcl updated to ' + $remote + '. Restart now?') 'Update'
+    }
+    if ($script:Restart) {
+        Start-Process powershell -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-STA', '-WindowStyle', 'Hidden', '-File', ('"' + (Join-Path $script:ToolDir 'src\dvcl-gui.ps1') + '"'), ('"' + $script:Root + '"'))
+        $form.Close()
+    }
+}
+
+# Opens a new GitHub issue with versions only (no paths, no log: add what you want to share)
+function Get-BugUrl {
+    $body = "What happened:`n`n`nSteps to reproduce:`n1. `n`n---`ndvcl " + (Get-LocalVersion) + ' / Windows ' + [Environment]::OSVersion.Version + ' / PowerShell ' + $PSVersionTable.PSVersion
+    return ('https://github.com/' + $script:GhRepo + '/issues/new?body=' + [Uri]::EscapeDataString($body))
+}
+function Do-ReportBug { Start-Process (Get-BugUrl) }
+
 # ---------------------------------------------------------------- toolbar
 [void](Add-Btn 'Refresh' 'Reload pending changes (F5)' { Refresh-All })
 [void]$tool.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
@@ -371,6 +525,8 @@ function Do-ShowInExplorer {
 [void]$tool.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
 [void](Add-Btn 'Shelves' 'List, unshelve or delete shelves' { Do-Shelves })
 [void](Add-Btn 'Repo...' 'Pick another Diversion workspace' { Do-ChangeRepo })
+$bBug = Add-Btn 'Report bug' 'Open a new issue on GitHub' { Do-ReportBug }; $bBug.Alignment = 'Right'
+$bUpd = Add-Btn 'Update' 'Check GitHub for a new version and update' { Do-Update }; $bUpd.Alignment = 'Right'
 
 # Checked files only (used by "New changelist": nothing checked = empty changelist)
 function Target-Items-IfChecked {
@@ -412,6 +568,30 @@ $tv.Add_DragDrop({
     $to = $n.Tag.Name; if ($n.Tag.Type -eq 'file') { $to = $n.Tag.Cl }
     Do-Move $to $script:DragItems
     $script:DragItems = $null
+})
+
+# Multi-select: Ctrl+click toggles a file, Shift+click checks a range, Ctrl+A checks all, Esc clears
+function File-Nodes { $l = New-Object System.Collections.ArrayList; foreach ($cn in $tv.Nodes) { foreach ($fn in $cn.Nodes) { [void]$l.Add($fn) } }; return ,$l }
+$script:Anchor = $null
+$tv.Add_NodeMouseClick({
+    param($s, $e)
+    if ($e.Button -ne [System.Windows.Forms.MouseButtons]::Left -or $e.Node.Tag.Type -ne 'file') { return }
+    if ($tv.HitTest($e.Location).Location -eq [System.Windows.Forms.TreeViewHitTestLocations]::StateImage) { $script:Anchor = $e.Node; return }
+    Select-Click $e.Node ([System.Windows.Forms.Control]::ModifierKeys)
+})
+function Select-Click($node, $mods) {
+    if (($mods -band [System.Windows.Forms.Keys]::Shift) -and $script:Anchor -and $script:Anchor.TreeView) {
+        $all = File-Nodes; $a = $all.IndexOf($script:Anchor); $b = $all.IndexOf($node)
+        if ($a -ge 0 -and $b -ge 0) { for ($i = [Math]::Min($a, $b); $i -le [Math]::Max($a, $b); $i++) { $all[$i].Checked = $true } }
+    } elseif ($mods -band [System.Windows.Forms.Keys]::Control) {
+        $node.Checked = -not $node.Checked; $script:Anchor = $node
+    } else { $script:Anchor = $node }
+}
+function Check-AllFiles([bool]$on) { foreach ($n in (File-Nodes)) { $n.Checked = $on }; if (-not $on) { foreach ($cn in $tv.Nodes) { $cn.Checked = $false } } }
+$tv.Add_KeyDown({
+    param($s, $e)
+    if ($e.Control -and $e.KeyCode -eq 'A') { Check-AllFiles $true; $e.Handled = $true; $e.SuppressKeyPress = $true }
+    elseif ($e.KeyCode -eq 'Escape') { Check-AllFiles $false; $e.Handled = $true }
 })
 
 # Right-click menus
@@ -471,7 +651,62 @@ $form.Add_Shown({
     if ($StartDir) { $root = Find-DvRoot $StartDir }
     if (-not $root -and $settings.lastRepo) { $root = Find-DvRoot $settings.lastRepo }
     if ($root) { Set-DvRoot $root; Save-Settings; Refresh-All } else { Do-ChangeRepo }
+    if ($SelfCheck) { Run-GuiSelfCheck; $form.Close() }
 })
+
+# ---------------------------------------------------------------- self-check (dvcl-gui -SelfCheck): drives the real window, writes a report, closes.
+# Report: <tool>\tests\gui-selfcheck.txt (gitignored). Changes nothing: no submit, shelve, revert, update or browser.
+function Run-GuiSelfCheck {
+    $r = New-Object System.Collections.ArrayList; $ok = 0; $ko = 0
+    function C([string]$n, [bool]$c, [string]$d = '') { if ($c) { $script:scOk++ ; [void]$r.Add('PASS  ' + $n) } else { $script:scKo++; [void]$r.Add('FAIL  ' + $n + '   ' + $d) } }
+    $script:scOk = 0; $script:scKo = 0
+    try {
+        C 'repo opened' ([bool]$script:Root)
+        C 'icon loaded' ($null -ne $form.Icon)
+        C 'version file' ((Get-LocalVersion) -ne '0.0.0') (Get-LocalVersion)
+        C 'pending tree: default + changelists' ($tv.Nodes.Count -eq (1 + $script:CLs.Count)) ([string]$tv.Nodes.Count)
+        $files = File-Nodes
+        C 'pending tree: all pending files shown' ($files.Count -eq $script:Pending.Count) ("" + $files.Count + ' / ' + $script:Pending.Count)
+        if ($files.Count -ge 3) {
+            Check-AllFiles $false
+            Select-Click $files[0] ([System.Windows.Forms.Keys]::None)
+            Select-Click $files[2] ([System.Windows.Forms.Keys]::Shift)
+            C 'shift-click range checks 3 files' ((@($files | Where-Object { $_.Checked })).Count -eq 3)
+            Select-Click $files[1] ([System.Windows.Forms.Keys]::Control)
+            C 'ctrl-click toggles one off' ((@($files | Where-Object { $_.Checked })).Count -eq 2)
+            C 'targets = checked files' ((Target-Items).Count -eq 2)
+            Check-AllFiles $true; C 'select all' ((@($files | Where-Object { $_.Checked })).Count -eq $files.Count)
+            Check-AllFiles $false; C 'clear' ((@($files | Where-Object { $_.Checked })).Count -eq 0)
+        } else { [void]$r.Add('SKIP  multi-select (needs 3+ pending files)') }
+        $tabs.SelectedTab = $tabLocal; [System.Windows.Forms.Application]::DoEvents()
+        C 'local tree filled' ($tvLocal.Nodes.Count -gt 0) ([string]$tvLocal.Nodes.Count)
+        C 'local: .diversion hidden' (-not (@($tvLocal.Nodes | Where-Object { $_.Text -eq '.diversion' })).Count)
+        $ld = @($tvLocal.Nodes | Where-Object { $_.Tag.Type -eq 'dir' }) | Select-Object -First 1
+        if ($ld) { $ld.Expand(); C 'local: folder expands' (-not (Is-Unloaded $ld)) }
+        $tabs.SelectedTab = $tabDepot; [System.Windows.Forms.Application]::DoEvents()
+        C 'depot: dv ls parsed' ($script:DepotPaths.Length -gt 0) ([string]$script:DepotPaths.Length)
+        C 'depot tree filled' ($tvDepot.Nodes.Count -gt 0)
+        C 'depot: no raw dv lines' (-not (@($tvDepot.Nodes | Where-Object { $_.Text -match '^\((F|D)\)' })).Count)
+        $dd = @($tvDepot.Nodes | Where-Object { $_.Tag.Type -eq 'ddir' }) | Select-Object -First 1
+        if ($dd) { $dd.Expand(); C 'depot: folder expands' (-not (Is-Unloaded $dd) -and $dd.Nodes.Count -gt 0) }
+        $marked = 0
+        foreach ($p in $script:Pending) { if (@($script:DepotPaths | Where-Object { $_ -eq $p.Path }).Count) { $marked++ } }
+        [void]$r.Add('INFO  pending files found in depot: ' + $marked + ' / ' + $script:Pending.Count + ' (new files are not in the depot)')
+        $tabs.SelectedTab = $tabPending
+        $u = Get-BugUrl
+        C 'bug report: GitHub issue URL' ($u.StartsWith('https://github.com/' + $script:GhRepo + '/issues/new'))
+        C 'bug report: no local path in it' (-not ([Uri]::UnescapeDataString($u)).ToLower().Contains(([string]$script:Root).ToLower()))
+        try {
+            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+            $wc = New-Object System.Net.WebClient; $wc.Headers['User-Agent'] = 'dvcl'
+            $remote = $wc.DownloadString('https://raw.githubusercontent.com/' + $script:GhRepo + '/main/VERSION').Trim()
+            [void]$r.Add('INFO  update: GitHub has ' + $remote + ', local ' + (Get-LocalVersion))
+        } catch { [void]$r.Add('INFO  update: GitHub VERSION not reachable yet (' + $_.Exception.Message + ')') }
+    } catch { $script:scKo++; [void]$r.Add('FAIL  exception: ' + $_.Exception.Message + ' @ ' + $_.InvocationInfo.ScriptLineNumber) }
+    [void]$r.Insert(0, ('GUI SELFCHECK ' + (Get-Date -Format s) + ': ' + $script:scOk + ' passed, ' + $script:scKo + ' failed'))
+    $out = Join-Path $script:ToolDir 'tests\gui-selfcheck.txt'
+    Set-Content -LiteralPath $out -Value $r -Encoding UTF8
+}
 $form.Add_FormClosing({ Save-Settings })
 
 [void]$form.ShowDialog()

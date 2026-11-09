@@ -83,6 +83,57 @@ function Invoke-Dv([string[]]$a) {
     return [pscustomobject]@{ Code = $code; Lines = $clean }
 }
 
+# ---------------------------------------------------------------- depot listing (dv ls)
+# All paths of the workspace revision, sorted (ordinal) for prefix lookups.
+# Quiet on purpose: thousands of lines go neither to the log nor to the UI.
+function Get-DepotPaths {
+    if (-not $script:Root) { Fail "no Diversion repo selected" }
+    Write-Log "RUN dv ls"
+    $prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+    Push-Location -LiteralPath $script:Root
+    try { $out = @(& dv ls 2>&1 | ForEach-Object { "$_" }); $code = $LASTEXITCODE }
+    catch { $out = @("dv could not be started: " + $_.Exception.Message); $code = 9009 }
+    finally { Pop-Location; $ErrorActionPreference = $prev }
+    Write-Log ("  exit=" + $code + "  lines=" + $out.Count)
+    foreach ($l in ($out | Select-Object -First 5)) { Write-Log ("  sample | " + $l) }
+    if ($code -ne 0) { Fail ("dv ls failed: " + (($out | Select-Object -Last 3) -join ' | ')) }
+    return ,(Parse-DepotLines $out)
+}
+
+# dv ls lines: "(F) <path> <size> <mode>" and "(D) <path> <mode>"; other lines are ignored.
+# Folders get a trailing '/'. Returns the paths sorted (ordinal).
+function Parse-DepotLines([string[]]$lines) {
+    $list = New-Object System.Collections.Generic.List[string]
+    foreach ($l in $lines) {
+        $t = $l.Trim()
+        if ($t -match '^\(F\)\s+(.+?)\s+\d[\d.,]*\s*[KkMGT]?i?B\s+\S+$') { $list.Add(($Matches[1] -replace '\\', '/')) }
+        elseif ($t -match '^\(D\)\s+(.+?)\s+[-dlrwxsStT]{10}$') { $list.Add((($Matches[1] -replace '\\', '/').TrimEnd('/') + '/')) }
+    }
+    $arr = $list.ToArray()
+    [Array]::Sort($arr, [StringComparer]::Ordinal)
+    return ,$arr
+}
+
+# Immediate children of a folder ('' = root) in a sorted path list: @{ Dirs; Files }
+function Get-DepotChildren([string[]]$paths, [string]$dir) {
+    $prefix = ''
+    if ($dir) { $prefix = $dir.TrimEnd('/') + '/' }
+    $dirs  = New-Object 'System.Collections.Generic.SortedSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    $files = New-Object 'System.Collections.Generic.SortedSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    $i = 0
+    if ($prefix) { $i = [Array]::BinarySearch($paths, $prefix, [StringComparer]::Ordinal); if ($i -lt 0) { $i = -bnot $i } }
+    for (; $i -lt $paths.Length; $i++) {
+        $p = $paths[$i]
+        if (-not $p.StartsWith($prefix, [StringComparison]::Ordinal)) { break }
+        $rest = $p.Substring($prefix.Length)
+        if (-not $rest) { continue }
+        $k = $rest.IndexOf('/')
+        if ($k -ge 0) { [void]$dirs.Add($rest.Substring(0, $k)) } else { [void]$files.Add($rest) }
+    }
+    foreach ($d in $dirs) { [void]$files.Remove($d) }
+    return [pscustomobject]@{ Dirs = @($dirs); Files = @($files) }
+}
+
 # ---------------------------------------------------------------- dv status
 # Section headers look like "New:" / "Modified:"; entries are indented lines below them.
 # "old -> new" (renames) keeps both paths.

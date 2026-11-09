@@ -84,6 +84,19 @@ function Run-SelfTest {
         T "match: range 4-6" ((Select-Pending $p @('4-6')).Count -eq 3)
         T "match: absolute Windows path" ((Select-Pending $p @('C:\FakeRepo\MyGame\Content\Old\Gone.uasset')).Count -eq 1)
         T "match: no partial-name folder match" ((Select-Pending $p @('Content/Props/cra')).Count -eq 0)
+        $dp = [string[]]@('MyGame/Content/Maps/Town.umap', 'MyGame/Content/Props/', 'MyGame/Content/Props/Crate.uasset', 'MyGame/MyGame.uproject', 'README.md')
+        [Array]::Sort($dp, [StringComparer]::Ordinal)
+        $c0 = Get-DepotChildren $dp ''
+        T "depot: root has 1 folder + 1 file" ($c0.Dirs.Count -eq 1 -and $c0.Files.Count -eq 1)
+        $c1 = Get-DepotChildren $dp 'MyGame/Content'
+        T "depot: Content has Maps + Props" ($c1.Dirs.Count -eq 2 -and $c1.Files.Count -eq 0)
+        $c2 = Get-DepotChildren $dp 'MyGame/Content/Props'
+        T "depot: Props has 1 file" ($c2.Files.Count -eq 1 -and $c2.Files[0] -eq 'Crate.uasset')
+        $dl = Parse-DepotLines @('Will list contents for current workspace revision', '(F) .dvignore 867B -rw-r--r--', '(D) MyGame drwxrwxrwx', '(D) MyGame/My Maps drwxrwxrwx', '(F) MyGame/My Maps/Town 01.umap 2.0MB -rw-r--r--', '(F) MyGame/MyGame.uproject 1.1kB -rw-r--r--')
+        T "dv ls: 5 entries, header skipped" ($dl.Count -eq 5)
+        T "dv ls: path with spaces" ($dl -contains 'MyGame/My Maps/Town 01.umap')
+        $c3 = Get-DepotChildren $dl 'MyGame'
+        T "dv ls: MyGame = 1 folder + 1 file" ($c3.Dirs.Count -eq 1 -and $c3.Files.Count -eq 1 -and $c3.Dirs[0] -eq 'My Maps')
         T "commit list: rename gives 2 paths" ((Files-For-Commit @($p[7])).Count -eq 2)
         Load-Db
         [void](New-CL 'one' 'single file')
