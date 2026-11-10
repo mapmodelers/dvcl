@@ -34,13 +34,25 @@ function Set-DvRoot([string]$root) {
     if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir | Out-Null }
     $script:Db  = Join-Path $dir 'changelists.json'
     $script:Log = Join-Path $dir 'dvcl.log'
+    # keep the log small: above 2 MB it becomes dvcl.old.log (previous one replaced)
+    try { if ((Test-Path -LiteralPath $script:Log) -and (Get-Item -LiteralPath $script:Log).Length -gt 2MB) { Move-Item -LiteralPath $script:Log -Destination (Join-Path $dir 'dvcl.old.log') -Force } } catch {}
     Load-Db
 }
 
 function Write-Log([string]$t) {
     if (-not $script:Log) { return }
-    Add-Content -LiteralPath $script:Log -Value ("[{0}] {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $t) -Encoding UTF8
+    try { Add-Content -LiteralPath $script:Log -Value ("[{0}] {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $t) -Encoding UTF8 } catch {}
 }
+
+# Several lines in one write (dv output: one file open instead of one per line)
+function Write-LogLines([string[]]$lines) {
+    if (-not $script:Log -or -not $lines -or $lines.Count -eq 0) { return }
+    $ts = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+    try { Add-Content -LiteralPath $script:Log -Value @($lines | ForEach-Object { '[' + $ts + '] ' + $_ }) -Encoding UTF8 } catch {}
+}
+
+# Telemetry for diagnosis: "TIMING <what> <ms>" lines in the log
+function Write-Timing([string]$what, [double]$ms) { Write-Log ("TIMING " + $what + " " + [int]$ms + "ms") }
 
 function Say([string]$t, [string]$c = 'Gray') {
     Write-Log ("> " + $t)
@@ -59,9 +71,11 @@ function Norm([string]$p) {
     return $p.TrimEnd('/')
 }
 
-function Invoke-Dv([string[]]$a) {
+# Runs dv in the repo. $quiet: output goes to the log file only, not to the window.
+function Invoke-Dv([string[]]$a, [bool]$quiet = $false) {
     if (-not $script:Root) { Fail "no Diversion repo selected" }
     Write-Log ("RUN dv " + ($a -join ' '))
+    $t0 = [Diagnostics.Stopwatch]::StartNew()
     $prev = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     Push-Location -LiteralPath $script:Root
@@ -74,13 +88,20 @@ function Invoke-Dv([string[]]$a) {
         Pop-Location
         $ErrorActionPreference = $prev
     }
+    return (Finish-Dv $a $out $code $quiet $true $t0.Elapsed.TotalMilliseconds)
+}
+
+# Shared by Invoke-Dv and the window's background runner: filters progress noise, logs, reports.
+# SyncBusy = dv printed sync-progress lines (Diversion still uploading / downloading).
+function Finish-Dv([string[]]$a, [string[]]$out, [int]$code, [bool]$quiet, [bool]$logLines, [double]$ms) {
+    $out = @($out | Where-Object { $null -ne $_ })
+    $busy = (@($out | Where-Object { $_ -match $script:DvNoise })).Count -gt 0
     $clean = @($out | Where-Object { $_ -notmatch $script:DvNoise })
-    foreach ($l in $clean) {
-        Write-Log ("  | " + $l)
-        if ($script:OnDv -and $l.Trim()) { & $script:OnDv $l }
-    }
-    Write-Log ("  exit=" + $code)
-    return [pscustomobject]@{ Code = $code; Lines = $clean }
+    if ($logLines) { Write-LogLines @($clean | ForEach-Object { '  | ' + $_ }) }
+    else { Write-LogLines @(@('  (' + $clean.Count + ' lines, first 5:)') + @($clean | Select-Object -First 5 | ForEach-Object { '  sample | ' + $_ })) }
+    if (-not $quiet -and $script:OnDv) { foreach ($l in $clean) { if ($l.Trim()) { & $script:OnDv $l } } }
+    Write-Log ("  exit=" + $code + "  " + [int]$ms + "ms  dv " + ($a -join ' '))
+    return [pscustomobject]@{ Code = $code; Lines = $clean; SyncBusy = $busy }
 }
 
 # ---------------------------------------------------------------- depot listing (dv ls)
@@ -89,15 +110,18 @@ function Invoke-Dv([string[]]$a) {
 function Get-DepotPaths {
     if (-not $script:Root) { Fail "no Diversion repo selected" }
     Write-Log "RUN dv ls"
+    $t0 = [Diagnostics.Stopwatch]::StartNew()
     $prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
     Push-Location -LiteralPath $script:Root
     try { $out = @(& dv ls 2>&1 | ForEach-Object { "$_" }); $code = $LASTEXITCODE }
     catch { $out = @("dv could not be started: " + $_.Exception.Message); $code = 9009 }
     finally { Pop-Location; $ErrorActionPreference = $prev }
-    Write-Log ("  exit=" + $code + "  lines=" + $out.Count)
-    foreach ($l in ($out | Select-Object -First 5)) { Write-Log ("  sample | " + $l) }
-    if ($code -ne 0) { Fail ("dv ls failed: " + (($out | Select-Object -Last 3) -join ' | ')) }
-    return ,(Parse-DepotLines $out)
+    return (Read-DepotResult (Finish-Dv @('ls') $out $code $true $false $t0.Elapsed.TotalMilliseconds))
+}
+
+function Read-DepotResult($r) {
+    if ($r.Code -ne 0) { Fail ("dv ls failed: " + (($r.Lines | Select-Object -Last 3) -join ' | ')) }
+    return ,(Parse-DepotLines $r.Lines)
 }
 
 # dv ls lines: "(F) <path> <size> <mode>" and "(D) <path> <mode>"; other lines are ignored.
@@ -156,8 +180,16 @@ function Parse-Status([string[]]$lines) {
     return ,$res.ToArray()
 }
 
-function Get-Pending {
-    $r = Invoke-Dv @('status', '--no-limit')
+# $wait: let dv wait until Diversion has synced everything (needed before submit / revert / shelve;
+# can take a minute). Without it dv answers at once with what the agent knows so far.
+function Status-Args([bool]$wait) { if ($wait) { return @('status', '--no-limit') } else { return @('status', '--no-limit', '--nowait') } }
+
+function Get-Pending([bool]$wait = $true) {
+    if ($wait -and $script:OnSay) { Say "Waiting for Diversion to finish syncing..." 'Gray' }
+    return (Read-Status (Invoke-Dv (Status-Args $wait) $true))
+}
+
+function Read-Status($r) {
     if ($r.Code -ne 0) { Fail ("dv status failed (exit " + $r.Code + "). Is Diversion Desktop running? " + ($r.Lines -join ' ')) }
     $branch = ''; $commit = ''; $paused = $false
     foreach ($l in $r.Lines) {
@@ -166,15 +198,67 @@ function Get-Pending {
         # header lines only (file entries are indented): "... paused ..." = sync off
         if ($l -notmatch '^\s' -and $l -match 'paus') { $paused = $true }
     }
-    return [pscustomobject]@{ Files = (Parse-Status $r.Lines); Branch = $branch; Commit = $commit; Paused = $paused }
+    return [pscustomobject]@{ Files = (Parse-Status $r.Lines); Branch = $branch; Commit = $commit; Paused = $paused; Syncing = [bool]$r.SyncBusy }
+}
+
+# First commit id in `dv show <branch>` output = the branch head ('' if not found)
+function Read-HeadCommit([string[]]$lines) {
+    foreach ($l in $lines) { if ($l -match '(dv\.commit\.\d+)') { return $Matches[1] } }
+    return ''
+}
+
+# ---------------------------------------------------------------- locks / folder sync
+function Lock-Paths([string[]]$paths, [bool]$on) {
+    $bad = 0
+    foreach ($p in $paths) {
+        if ($on) { $r = Invoke-Dv @('lock', $p) } else { $r = Invoke-Dv @('lock', '-d', $p) }
+        if ($r.Code -ne 0) { $bad++; Say ("   FAILED: " + $p + "  -> " + ($r.Lines -join ' ')) 'Red' }
+    }
+    $verb = 'Unlocked'; if ($on) { $verb = 'Locked' }
+    if ($bad -gt 0) { Fail ($bad.ToString() + " of " + @($paths).Count + " path(s) failed") }
+    Say ($verb + " " + @($paths).Count + " path(s).") 'Green'
+}
+
+function Get-Locks {
+    $r = Invoke-Dv @('lock') $true
+    if ($r.Code -ne 0) { Fail ("dv lock failed: " + ($r.Lines -join ' ')) }
+    return ,@($r.Lines | Where-Object { $_.Trim() })
+}
+
+# Selective sync: whether this PC downloads a folder (Diversion refuses while files are pending)
+function Set-FolderSync([string]$folder, [bool]$on) {
+    $f = Norm $folder
+    $op = '-remove'; if ($on) { $op = '-add' }
+    $r = Invoke-Dv @('preferences', $op, $f)
+    if ($r.Code -ne 0) { Fail ("dv preferences " + $op + " failed: " + ($r.Lines -join ' ')) }
+    if ($on) { Say ("This PC now downloads " + $f) 'Green' } else { Say ("This PC stopped downloading " + $f + " (it stays in Diversion)") 'Green' }
 }
 
 # ---------------------------------------------------------------- sync / get latest
+# Going offline = pause sync. Before pausing, dvcl records a baseline of the folder (sizes + dates)
+# and the current pending list, so it can find offline edits by itself (dv reports nothing while paused).
 function Set-Sync([bool]$on) {
+    if (-not $on) {
+        $st = Get-Pending $true
+        if ($st.Paused) {
+            # already paused (Diversion app): keep an existing baseline, else start one from the last online list
+            if (-not (Test-Path -LiteralPath (Dvcl-File 'baseline.tsv'))) { Write-Baseline (Read-LastStatus) $st.Commit }
+            Set-OfflineFlag $true
+            Say "Sync was already paused: dvcl is in offline mode." 'Yellow'
+            return
+        }
+        Write-Baseline $st.Files $st.Commit
+    }
     $sub = 'pause'; if ($on) { $sub = 'resume' }
     $r = Invoke-Dv @('workspace', $sub)
-    if ($r.Code -ne 0) { Fail ("dv workspace " + $sub + " failed: " + ($r.Lines -join ' ')) }
-    if ($on) { Say "Sync resumed." 'Green' } else { Say "Sync paused. Changelists are kept; resume sync before submitting." 'Yellow' }
+    if ($r.Code -ne 0) {
+        # already in that state (e.g. toggled in the Diversion app): fine
+        if (($r.Lines -join ' ') -match 'already') { Say ("(Diversion: " + ($r.Lines -join ' ') + ")") 'Gray' }
+        else { Fail ("dv workspace " + $sub + " failed: " + ($r.Lines -join ' ')) }
+    }
+    Set-OfflineFlag (-not $on)
+    if ($on) { Say "Online: sync resumed. Diversion now uploads your offline changes to your private workspace (nothing is submitted)." 'Green' }
+    else { Say "Offline: sync paused. dvcl tracks your changes by scanning the folder. Changelists and local shelves keep working." 'Yellow' }
 }
 
 function Get-Latest {
@@ -472,4 +556,233 @@ function Delete-Shelf([string]$shelf) {
     $r = Invoke-Dv @('shelf', 'delete', $shelf, '-f')
     if ($r.Code -ne 0) { Fail ("dv shelf delete failed: " + ($r.Lines -join ' ')) }
     Say ("Deleted shelf '" + $shelf + "'.") 'Green'
+}
+
+# ---------------------------------------------------------------- offline mode
+# Files in <repo>\.dvcl:  offline.flag (set by dvcl when it pauses sync), baseline.tsv (folder snapshot
+# taken when going offline), last-status.tsv (last pending list read online), shelves\ (local shelves).
+function Dvcl-File([string]$name) { return [System.IO.Path]::Combine($script:Root, '.dvcl', $name) }
+function Full-Path([string]$rel) { if (-not $rel) { return $script:Root }; return [System.IO.Path]::Combine([string[]](@($script:Root) + @($rel.Split('/')))) }
+$script:Utf8 = New-Object System.Text.UTF8Encoding($false)
+
+function Test-OfflineFlag { return (Test-Path -LiteralPath (Dvcl-File 'offline.flag')) }
+function Set-OfflineFlag([bool]$on) {
+    $f = Dvcl-File 'offline.flag'
+    if ($on) { [System.IO.File]::WriteAllText($f, (Get-Date -Format s), $script:Utf8) }
+    elseif (Test-Path -LiteralPath $f) { Remove-Item -LiteralPath $f -Force }
+}
+
+# Ignore files, read like Diversion's default matcher: .dvignore and .gitignore in any folder,
+# rules relative to that folder. "/x" = only at that folder; anything else matches at any depth
+# below it (so "Saved/*" also hides MyGame/Saved/...). Trailing / = folders only, ** = *.
+# Negation (!) is not supported (logged once).
+$script:IgnoreLogged = @{}
+function Read-IgnoreFiles([string]$dirRel) {
+    $rules = New-Object System.Collections.ArrayList
+    foreach ($fn in @('.gitignore', '.dvignore')) {
+        $f = Full-Path $(if ($dirRel) { $dirRel + '/' + $fn } else { $fn })
+        if (-not [System.IO.File]::Exists($f)) { continue }
+        foreach ($l in [System.IO.File]::ReadAllLines($f)) {
+            $t = $l.Trim()
+            if (-not $t -or $t.StartsWith('#')) { continue }
+            if ($t.StartsWith('!')) { continue }
+            $dirOnly = $t.EndsWith('/')
+            $t = ($t -replace '\\', '/').TrimEnd('/')
+            $anch = $t.StartsWith('/')
+            $t = $t.TrimStart('/') -replace '\*\*', '*'
+            if ($t) { [void]$rules.Add([pscustomobject]@{ P = $t; DirOnly = $dirOnly; Anchored = $anch; Base = $dirRel }) }
+        }
+        if (-not $script:IgnoreLogged.ContainsKey($f)) {
+            $script:IgnoreLogged[$f] = 1
+            Write-Log ("ignore file " + $(if ($dirRel) { $dirRel + '/' } else { '' }) + $fn + ": " + (@($rules | Where-Object { $_.Base -eq $dirRel } | ForEach-Object { $(if ($_.Anchored) { '/' } else { '' }) + $_.P + $(if ($_.DirOnly) { '/' } else { '' }) }) -join '  '))
+        }
+    }
+    return ,$rules.ToArray()
+}
+
+# Root rules + always-ignored dvcl / Diversion folders (kept for callers and tests)
+function Read-Ignore {
+    $fixed = @([pscustomobject]@{ P = '.diversion'; DirOnly = $false; Anchored = $true; Base = '' }, [pscustomobject]@{ P = '.dvcl'; DirOnly = $false; Anchored = $true; Base = '' })
+    $fromFiles = Read-IgnoreFiles ''
+    return ,(@($fixed) + @($fromFiles))
+}
+
+# Called for each entry while walking; ignored folders are not entered, so ancestors need no check.
+function Test-Ignored([string]$rel, [string]$name, [bool]$isDir, $rules) {
+    foreach ($r in $rules) {
+        if ($r.DirOnly -and -not $isDir) { continue }
+        $sub = $rel
+        if ($r.Base) { if ($rel.Length -le $r.Base.Length) { continue }; $sub = $rel.Substring($r.Base.Length + 1) }
+        if ($sub -like $r.P) { return $true }
+        if (-not $r.Anchored -and $sub -like ('*/' + $r.P)) { return $true }
+    }
+    return $false
+}
+
+# Snapshot of the workspace: rel path -> "size|ticks" for files, "D" for folders (ignored ones skipped)
+function Scan-Workspace {
+    $res = New-Object 'System.Collections.Generic.Dictionary[string,string]' ([StringComparer]::OrdinalIgnoreCase)
+    $stack = New-Object System.Collections.Stack
+    $stack.Push(@('', (Read-Ignore)))
+    while ($stack.Count -gt 0) {
+        $top = $stack.Pop(); $rel = $top[0]; $rules = $top[1]
+        if ($rel) { $more = Read-IgnoreFiles $rel; if ($more.Count -gt 0) { $rules = @($rules) + @($more) } }
+        try {
+            foreach ($i in ([System.IO.DirectoryInfo](Full-Path $rel)).EnumerateFileSystemInfos()) {
+                $r = $i.Name; if ($rel) { $r = $rel + '/' + $i.Name }
+                $isDir = ($i.Attributes -band [System.IO.FileAttributes]::Directory) -ne 0
+                if ($i.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { continue }
+                if (Test-Ignored $r $i.Name $isDir $rules) { continue }
+                if ($isDir) { $res[$r] = 'D'; $stack.Push(@($r, $rules)) }
+                else { $res[$r] = ([string]$i.Length + '|' + [string]$i.LastWriteTimeUtc.Ticks) }
+            }
+        } catch { Write-Log ("scan: cannot read " + $rel + " (" + $_.Exception.Message + ")") }
+    }
+    return ,$res
+}
+
+function Save-LastStatus($files) {
+    $lines = @($files | ForEach-Object { $_.Kind + "`t" + $_.Path })
+    [System.IO.File]::WriteAllLines((Dvcl-File 'last-status.tsv'), [string[]]$lines, $script:Utf8)
+}
+
+function Read-LastStatus {
+    $f = Dvcl-File 'last-status.tsv'
+    $res = New-Object System.Collections.ArrayList
+    if (Test-Path -LiteralPath $f) {
+        foreach ($l in [System.IO.File]::ReadAllLines($f)) {
+            $x = $l.Split("`t")
+            if ($x.Count -ge 2 -and $x[1]) { [void]$res.Add([pscustomobject]@{ Index = 0; Kind = $x[0]; Path = $x[1]; Old = $null }) }
+        }
+    }
+    return ,$res.ToArray()
+}
+
+function Write-Baseline($pendingFiles, [string]$commit) {
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    $scan = Scan-Workspace
+    $lines = New-Object System.Collections.Generic.List[string]
+    $lines.Add("#dvcl-baseline2`t" + $commit + "`t" + (Get-Date -Format s))
+    foreach ($k in $scan.Keys) { $lines.Add($k + "`t" + $scan[$k]) }
+    [System.IO.File]::WriteAllLines((Dvcl-File 'baseline.tsv'), $lines, $script:Utf8)
+    Save-LastStatus $pendingFiles
+    Write-Timing ('baseline (' + $scan.Count + ' entries)') $sw.Elapsed.TotalMilliseconds
+}
+
+function Read-Baseline {
+    $f = Dvcl-File 'baseline.tsv'
+    if (-not (Test-Path -LiteralPath $f)) { return $null }
+    $res = New-Object 'System.Collections.Generic.Dictionary[string,string]' ([StringComparer]::OrdinalIgnoreCase)
+    $all = [System.IO.File]::ReadAllLines($f)
+    # older format (0.4.0 dev: ignore rules applied differently) -> not trusted, a new one is taken
+    if ($all.Count -eq 0 -or -not $all[0].StartsWith("#dvcl-baseline2`t")) { Write-Log "baseline: old format, retaken"; return $null }
+    foreach ($l in $all) {
+        if ($l.StartsWith('#')) { continue }
+        $i = $l.LastIndexOf("`t"); if ($i -gt 0) { $res[$l.Substring(0, $i)] = $l.Substring($i + 1) }
+    }
+    return ,$res
+}
+
+# Pending files while offline: last pending list read online + what changed since the baseline.
+# No baseline (sync paused outside dvcl): one is taken now; earlier offline edits are then unknown
+# ($script:BaselineFresh = $true so the window can say so).
+function Get-OfflinePending {
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    $script:BaselineFresh = $false
+    $known = Read-LastStatus
+    $base = Read-Baseline
+    if ($null -eq $base) { Write-Baseline $known ''; $base = Read-Baseline; $script:BaselineFresh = $true }
+    $now = Scan-Workspace
+    $out = New-Object 'System.Collections.Generic.Dictionary[string,string]' ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($p in $known) {
+        $exists = $now.ContainsKey($p.Path)
+        if ((Kind-Letter $p.Kind) -eq 'D') { if (-not $exists) { $out[$p.Path] = 'Deleted' } }
+        elseif ($exists) { if ((Kind-Letter $p.Kind) -eq 'A') { $out[$p.Path] = 'New' } else { $out[$p.Path] = 'Modified' } }
+    }
+    foreach ($k in $now.Keys) {
+        if ($out.ContainsKey($k)) { continue }
+        if (-not $base.ContainsKey($k)) { $out[$k] = 'New' }
+        elseif ($now[$k] -ne 'D' -and $now[$k] -ne $base[$k]) { $out[$k] = 'Modified' }
+    }
+    $gone = @($base.Keys | Where-Object { -not $now.ContainsKey($_) -and -not $out.ContainsKey($_) })
+    # more than half of the baseline "deleted" = the snapshot no longer matches the ignore rules,
+    # not a real mass delete: take a new baseline instead of listing thousands of false deletions
+    if ($gone.Count -gt 1000 -and $gone.Count -gt ($base.Count / 2)) {
+        Write-Log ("baseline: " + $gone.Count + " of " + $base.Count + " entries missing, snapshot does not match the ignore rules: retaken")
+        Write-Baseline $known ''; $script:BaselineFresh = $true; $gone = @()
+    }
+    foreach ($k in $gone) { $out[$k] = 'Deleted' }
+    $res = New-Object System.Collections.ArrayList
+    foreach ($kind in @('New', 'Modified', 'Deleted')) {
+        foreach ($k in (@($out.Keys | Where-Object { $out[$_] -eq $kind }) | Sort-Object)) {
+            [void]$res.Add([pscustomobject]@{ Index = $res.Count + 1; Kind = $kind; Path = $k; Old = $null })
+        }
+    }
+    Write-Timing ('offline scan (' + $now.Count + ' entries, ' + $res.Count + ' pending)') $sw.Elapsed.TotalMilliseconds
+    return ,$res.ToArray()
+}
+
+# ---------------------------------------------------------------- local shelves (offline)
+# A copy of the files in <repo>\.dvcl\shelves\<id>\files + manifest.json. Nothing is uploaded.
+function Shelve-Local([string]$name, $items) {
+    if (@($items).Count -eq 0) { Fail "nothing to shelve" }
+    $id = (Slug-Base $name) + '_' + (Get-Date -Format 'yyyyMMdd-HHmmss')
+    $dir = [System.IO.Path]::Combine((Dvcl-File 'shelves'), $id)
+    $list = New-Object System.Collections.ArrayList
+    $n = 0
+    foreach ($p in $items) {
+        $src = Full-Path $p.Path
+        $copied = $false
+        if (Test-Path -LiteralPath $src -PathType Leaf) {
+            $dst = [System.IO.Path]::Combine([string[]](@($dir, 'files') + @($p.Path.Split('/'))))
+            [void][System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($dst))
+            [System.IO.File]::Copy($src, $dst, $true); $copied = $true; $n++
+        }
+        [void]$list.Add([pscustomobject]@{ path = $p.Path; kind = $p.Kind; copied = $copied })
+    }
+    [void][System.IO.Directory]::CreateDirectory($dir)
+    $m = [pscustomobject]@{ name = $name; created = (Get-Date -Format 'yyyy-MM-dd HH:mm'); items = $list.ToArray() }
+    [System.IO.File]::WriteAllText([System.IO.Path]::Combine($dir, 'manifest.json'), ($m | ConvertTo-Json -Depth 5), $script:Utf8)
+    Write-Log ("local shelf " + $id + " : " + $n + " file(s)")
+    Say ("Shelved " + $n + " file(s) locally as '" + $id + "' (copy in .dvcl\shelves, nothing uploaded).") 'Green'
+    return $id
+}
+
+function Get-LocalShelves {
+    $root = Dvcl-File 'shelves'
+    $res = New-Object System.Collections.ArrayList
+    if (Test-Path -LiteralPath $root) {
+        foreach ($d in [System.IO.Directory]::GetDirectories($root)) {
+            $mf = [System.IO.Path]::Combine($d, 'manifest.json')
+            if (-not (Test-Path -LiteralPath $mf)) { continue }
+            try { $m = [System.IO.File]::ReadAllText($mf) | ConvertFrom-Json } catch { continue }
+            $id = [System.IO.Path]::GetFileName($d)
+            [void]$res.Add([pscustomobject]@{ Name = [string]$m.name; Id = $id; Created = [string]$m.created; Local = $true; Count = @($m.items | Where-Object { $_.copied }).Count })
+        }
+    }
+    return ,@($res.ToArray() | Sort-Object Id -Descending)
+}
+
+# Copies the shelved files back over the workspace (the shelf is kept)
+function Apply-LocalShelf([string]$id) {
+    $dir = [System.IO.Path]::Combine((Dvcl-File 'shelves'), $id)
+    $mf = [System.IO.Path]::Combine($dir, 'manifest.json')
+    if (-not (Test-Path -LiteralPath $mf)) { Fail ("no local shelf '" + $id + "'") }
+    $m = [System.IO.File]::ReadAllText($mf) | ConvertFrom-Json
+    $n = 0
+    foreach ($it in @($m.items)) {
+        if (-not $it.copied) { continue }
+        $src = [System.IO.Path]::Combine([string[]](@($dir, 'files') + @(([string]$it.path).Split('/'))))
+        $dst = Full-Path ([string]$it.path)
+        [void][System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($dst))
+        [System.IO.File]::Copy($src, $dst, $true); $n++
+    }
+    Say ("Restored " + $n + " file(s) from local shelf '" + $id + "' (shelf kept).") 'Green'
+}
+
+function Delete-LocalShelf([string]$id) {
+    $dir = [System.IO.Path]::Combine((Dvcl-File 'shelves'), $id)
+    if (-not (Test-Path -LiteralPath ([System.IO.Path]::Combine($dir, 'manifest.json')))) { Fail ("no local shelf '" + $id + "'") }
+    Remove-Item -LiteralPath $dir -Recurse -Force
+    Say ("Deleted local shelf '" + $id + "'.") 'Green'
 }

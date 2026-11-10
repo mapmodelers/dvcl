@@ -2,6 +2,15 @@
 
 Versions follow [semver](https://semver.org). Tags: `vX.Y.Z`.
 
+## 0.4.0 - 2026-11-10
+
+- Faster start: the window opens at once; Diversion status and the depot list load in the background. The status no longer waits for Diversion to finish syncing (it updates by itself until sync is done). Submit, shelve and revert still wait, so they work on the complete list.
+- Get latest shows when the branch has new commits.
+- Locks: lock / unlock from any tree, Locks list. Command line: `lock`, `unlock`, `locks`.
+- Per-folder download (Diversion selective sync) from the Local / Depot trees; folders not on this PC show greyed. Command line: `folder on|off`.
+- Log panel shows actions and errors only. Long changelists list their first 1500 files.
+- Offline mode: Sync > Go offline pauses Diversion sync; dvcl records the folder and finds your edits by scanning it (honours .dvignore). Changelists keep working; shelve makes a local copy (.dvcl\shelves, unshelve from Shelves). Submit, revert, get latest and locks go online for that action only (dvcl waits for the upload), then back offline. Also used when Diversion does not answer.
+
 ## 0.3.0 - 2026-11-10
 
 - One window: Local and Depot trees next to the pending changelists.

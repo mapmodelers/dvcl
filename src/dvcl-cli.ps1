@@ -41,10 +41,14 @@ Run inside a Diversion workspace (any subfolder).
   dvcl shelve <cl>              cloud shelf of <cl>'s files, workspace untouched (= p4 shelve)
   dvcl shelves                  list shelves          dvcl unshelve <shelf>   apply one (kept)
   dvcl get                      get latest: pull the branch's new commits into the workspace
-  dvcl sync on|off              resume / pause Diversion sync (keep it on to see and submit changes)
+  dvcl sync on|off              go online (resume sync) / offline (pause sync). Offline, dvcl finds
+                                your changes by scanning the folder; shelve makes a local copy
   dvcl clean [cl]               remove entries that are no longer pending (all changelists or one)
   dvcl recover                  restore changelist entries dropped by dvcl 0.2.x (from the log)
   dvcl history <file>           last 50 commits touching <file>
+  dvcl lock <file...>           lock files (others cannot submit them)   dvcl unlock <file...>
+  dvcl locks                    list locks
+  dvcl folder on|off <folder>   download / stop downloading a folder on this PC (no pending files allowed)
   dvcl report                   copy the last 200 log lines to the clipboard
   dvcl selftest                 offline test of parser / matcher / store (no dv calls)
 
@@ -106,6 +110,13 @@ function Run-SelfTest {
         $c3 = Get-DepotChildren $dl 'MyGame'
         T "dv ls: MyGame = 1 folder + 1 file" ($c3.Dirs.Count -eq 1 -and $c3.Files.Count -eq 1 -and $c3.Dirs[0] -eq 'My Maps')
         T "commit list: rename gives 2 paths" ((Files-For-Commit @($p[7])).Count -eq 2)
+        $fr = Finish-Dv @('status') (@('Sync in progress {{spinner}}') + $sample) 0 $true $false 5
+        T "dv output: sync progress detected and filtered" ($fr.SyncBusy -and $fr.Lines.Count -eq $sample.Count)
+        $st = Read-Status $fr
+        T "status: branch, commit, 8 files, not paused" ($st.Branch -eq 'main' -and $st.Commit -eq 'dv.commit.43' -and $st.Files.Count -eq 8 -and -not $st.Paused -and $st.Syncing)
+        T "status: 'paused' header detected" ((Read-Status (Finish-Dv @('status') @('Workspace sync is paused') 0 $true $false 1)).Paused)
+        T "status: no wait = --nowait" (((Status-Args $false) -join ' ') -eq 'status --no-limit --nowait' -and ((Status-Args $true) -join ' ') -eq 'status --no-limit')
+        T "branch head from dv show" ((Read-HeadCommit @('Branch main dv.branch.1', 'commit dv.commit.57', 'Author: x', 'parent dv.commit.56')) -eq 'dv.commit.57')
         Load-Db
         [void](New-CL 'one' 'single file')
         Move-ToCL 'one' @($p[7])
@@ -140,6 +151,55 @@ function Run-SelfTest {
         T "slug: 'ply file' -> ply_file" ((Slug-Base 'ply file') -eq 'ply_file')
         T "new: spaces become a slug" ((New-CL 'ply file' 'Ply import').name -eq 'ply_file')
         T "new: duplicate slug gets _2" ((New-CL 'ply file' '').name -eq 'ply_file_2')
+        # ---- offline mode (real temp folder)
+        $tmp = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), 'dvcl_off_' + [guid]::NewGuid().ToString('N'))
+        $saveRoot = $script:Root
+        try {
+            $script:Root = $tmp
+            function MkF([string]$rel, [string]$txt) { $f = Full-Path $rel; [void][System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($f)); [System.IO.File]::WriteAllText($f, $txt) }
+            [void][System.IO.Directory]::CreateDirectory((Full-Path '.dvcl'))
+            [void][System.IO.Directory]::CreateDirectory((Full-Path '.diversion'))
+            MkF '.dvignore' "# ue`nSaved/*`nIntermediate/*`n*.tmp`n/artsource`n"
+            MkF 'Game/.gitignore' "Cache/`n"; MkF 'Game/Cache/c.bin' 'x'; MkF 'Game/Sub/artsource/keep.txt' 'x'
+            MkF 'Game/Content/A.uasset' 'a1'; MkF 'Game/Content/B.uasset' 'b1'; MkF 'Game/Content/C.uasset' 'c1'
+            MkF 'Game/Saved/log.txt' 'x'; MkF 'Game/Intermediate/x.obj' 'x'; MkF 'Game/Content/t.tmp' 'x'; MkF 'artsource/big.blend' 'x'
+            $sc = Scan-Workspace
+            T "scan: Saved/* and Intermediate/* hidden at any depth" (-not $sc.ContainsKey('Game/Saved/log.txt') -and -not $sc.ContainsKey('Game/Intermediate/x.obj'))
+            T "scan: wildcard, /anchored, nested .gitignore, .diversion" (-not $sc.ContainsKey('Game/Content/t.tmp') -and -not $sc.ContainsKey('artsource') -and $sc.ContainsKey('Game/Sub/artsource/keep.txt') -and -not $sc.ContainsKey('Game/Cache') -and -not $sc.ContainsKey('.diversion'))
+            T "scan: normal files and folders kept" ($sc.ContainsKey('Game/Content/A.uasset') -and $sc['Game/Content'] -eq 'D')
+            $known = @([pscustomobject]@{ Index = 1; Kind = 'Modified'; Path = 'Game/Content/C.uasset'; Old = $null })
+            Write-Baseline $known 'dv.commit.1'
+            T "offline: no change = only the known pending file" ((@(Get-OfflinePending)).Count -eq 1)
+            Start-Sleep -Milliseconds 50
+            MkF 'Game/Content/A.uasset' 'a2-longer'; Remove-Item -LiteralPath (Full-Path 'Game/Content/B.uasset'); MkF 'Game/Content/New/D.uasset' 'd'
+            MkF 'Game/Saved/other.txt' 'ignored'
+            $off = Get-OfflinePending
+            $k = @{}; foreach ($x in $off) { $k[$x.Path] = $x.Kind }
+            T "offline: modified, deleted, new file + new folder, known pending kept" ($k['Game/Content/A.uasset'] -eq 'Modified' -and $k['Game/Content/B.uasset'] -eq 'Deleted' -and $k['Game/Content/New/D.uasset'] -eq 'New' -and $k['Game/Content/New'] -eq 'New' -and $k['Game/Content/C.uasset'] -eq 'Modified' -and $off.Count -eq 5)
+            T "offline: ignored files never pending" (-not $k.ContainsKey('Game/Saved/other.txt'))
+            T "offline: indexes 1..n" ($off[0].Index -eq 1 -and $off[$off.Count - 1].Index -eq $off.Count)
+            Remove-Item -LiteralPath (Dvcl-File 'baseline.tsv')
+            [void](Get-OfflinePending)
+            # a baseline listing many paths the scan no longer sees (ignore rules changed) is retaken, not 1000s of deletes
+            $bl = Dvcl-File 'baseline.tsv'; $extra = @(); for ($q = 0; $q -lt 1500; $q++) { $extra += ('Game/Saved/old' + $q + "`t1|1") }
+            [System.IO.File]::AppendAllLines($bl, [string[]]$extra)
+            $off2 = Get-OfflinePending
+            T "offline: mismatched baseline retaken, no mass false deletions" ($script:BaselineFresh -and @($off2 | Where-Object { $_.Kind -eq 'Deleted' }).Count -le 1)
+            T "offline: no baseline -> one is taken, flagged as fresh" ($script:BaselineFresh -and (Test-Path -LiteralPath (Dvcl-File 'baseline.tsv')))
+            Set-OfflineFlag $true; $f1 = Test-OfflineFlag; Set-OfflineFlag $false
+            T "offline flag set / cleared" ($f1 -and -not (Test-OfflineFlag))
+            $id = Shelve-Local 'my work' @($off | Where-Object { $_.Path -like '*.uasset' })
+            MkF 'Game/Content/A.uasset' 'changed-after-shelve'
+            $ls = Get-LocalShelves
+            T "local shelf listed with its copied files" ($ls.Count -eq 1 -and $ls[0].Id -eq $id -and $ls[0].Count -eq 3)
+            Apply-LocalShelf $id
+            T "local unshelve restores the shelved content" ([System.IO.File]::ReadAllText((Full-Path 'Game/Content/A.uasset')) -eq 'a2-longer')
+            Delete-LocalShelf $id
+            T "local shelf deleted" ((Get-LocalShelves).Count -eq 0)
+        } finally {
+            $script:Root = $saveRoot
+            if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Recurse -Force }
+        }
     } finally {
         if (Test-Path $script:Db) { Remove-Item $script:Db -Force }
     }
@@ -172,8 +232,14 @@ try {
         }
 
         { $_ -in 'status', 'st', 'list', 'ls' } {
-            $st = Get-Pending
-            $sync = 'sync on'; if ($st.Paused) { $sync = 'SYNC PAUSED (dvcl sync on)' }
+            $st = Get-Pending $false
+            $sync = 'sync on'
+            if ($st.Syncing) { $sync = 'sync on, still syncing (list may be incomplete)' }
+            if ($st.Paused -or (Test-OfflineFlag)) {
+                $st.Files = Get-OfflinePending
+                $sync = 'OFFLINE: pending files from dvcl''s folder scan (dvcl sync on = go online)'
+                if ($script:BaselineFresh) { $sync += '; tracking started now, earlier offline edits may be missing' }
+            } elseif (-not $st.Syncing) { Save-LastStatus $st.Files }
             Say ("Repo " + $script:Root + "  |  branch " + $st.Branch + "  |  " + $st.Commit + "  |  " + $sync) 'DarkGray'
             Show-List $st.Files
         }
@@ -206,6 +272,7 @@ try {
         'submit' {
             $name = $argv[0]; if (-not $name) { Fail "usage: dvcl submit <cl>  |  dvcl submit default ""message""" }
             $st = Get-Pending
+            if ($st.Paused -or (Test-OfflineFlag)) { Fail "offline: submit needs Diversion online. Run: dvcl sync on" }
             if ($name -ieq 'default') {
                 $desc = (@($argv | Select-Object -Skip 1) -join ' ').Trim()
                 if (-not $desc) { Fail "default needs a message: dvcl submit default ""your message""" }
@@ -226,6 +293,7 @@ try {
             $name = $argv[0]; if (-not $name) { Fail "usage: dvcl revert <cl>" }
             if ($name -ine 'default' -and -not (Find-CL $name)) { Fail ("no changelist '" + $name + "'") }
             $st = Get-Pending
+            if ($st.Paused -or (Test-OfflineFlag)) { Fail "offline: revert needs Diversion online. Run: dvcl sync on" }
             $items = Get-CLItems $st.Files $name
             if ($items.Count -eq 0) { Fail "no pending files in this changelist" }
             Say ("Revert '" + $name + "' : local changes will be DISCARDED (backup shelf first)") 'Cyan'
@@ -236,15 +304,20 @@ try {
 
         'shelve' {
             $name = $argv[0]; if (-not $name) { Fail "usage: dvcl shelve <cl>" }
-            $st = Get-Pending
-            $items = Get-CLItems $st.Files $name
-            [void](Shelve-Items ($name + "_" + (Get-Date -Format 'yyyyMMdd-HHmm')) $items)
+            if (Test-OfflineFlag) {
+                [void](Shelve-Local $name (Get-CLItems (Get-OfflinePending) $name))
+            } else {
+                $st = Get-Pending
+                if ($st.Paused) { [void](Shelve-Local $name (Get-CLItems (Get-OfflinePending) $name)) }
+                else { [void](Shelve-Items ($name + "_" + (Get-Date -Format 'yyyyMMdd-HHmm')) (Get-CLItems $st.Files $name)) }
+            }
         }
 
         'shelves' {
-            $sh = Get-Shelves
+            $sh = @(Get-LocalShelves)
+            if (-not (Test-OfflineFlag)) { $sh += @(Get-Shelves) }
             if ($sh.Count -eq 0) { Say "No shelves." }
-            foreach ($s in $sh) { Say ("  " + $s.Name + "   (" + $s.Created + ")") }
+            foreach ($s in $sh) { $w = 'diversion'; if ($s.Local) { $w = 'local    '; Say ("  " + $w + "  " + $s.Id + "   (" + $s.Created + ")") } else { Say ("  " + $w + "  " + $s.Name + "   (" + $s.Created + ")") } }
         }
 
         'get' { Get-Latest }
@@ -254,7 +327,11 @@ try {
             if ($a -in 'on', 'resume') { Set-Sync $true } elseif ($a -in 'off', 'pause') { Set-Sync $false } else { Fail "usage: dvcl sync on|off" }
         }
 
-        'clean' { $st = Get-Pending; [void](Clean-Stale $st.Files ([string]$argv[0]) $st.Paused) }
+        'clean' {
+            $st = Get-Pending $false
+            if ($st.Paused -or (Test-OfflineFlag)) { [void](Clean-Stale (Get-OfflinePending) ([string]$argv[0]) $false) }
+            else { [void](Clean-Stale (Get-Pending $true).Files ([string]$argv[0]) $false) }
+        }
 
         'recover' {
             $st = Get-Pending
@@ -268,7 +345,23 @@ try {
             foreach ($l in (Get-History (Norm $argv[0]))) { Say $l }
         }
 
-        'unshelve' { if (-not $argv[0]) { Fail "usage: dvcl unshelve <shelf name or id>" }; Apply-Shelf $argv[0] }
+        { $_ -in 'lock', 'unlock' } {
+            if ($argv.Count -eq 0) { Fail ("usage: dvcl " + $cmd + " <file...>") }
+            Lock-Paths @($argv | ForEach-Object { Norm $_ }) ($cmd -eq 'lock')
+        }
+
+        'locks' { $l = Get-Locks; if ($l.Count -eq 0) { Say "No locks." } else { foreach ($x in $l) { Say $x } } }
+
+        'folder' {
+            $a = ([string]$argv[0]).ToLowerInvariant()
+            if (-not $argv[1] -or $a -notin 'on', 'off') { Fail "usage: dvcl folder on|off <folder>" }
+            Set-FolderSync $argv[1] ($a -eq 'on')
+        }
+
+        'unshelve' {
+            if (-not $argv[0]) { Fail "usage: dvcl unshelve <shelf name or id>" }
+            if (@(Get-LocalShelves | Where-Object { $_.Id -ieq $argv[0] }).Count) { Apply-LocalShelf $argv[0] } else { Apply-Shelf $argv[0] }
+        }
 
         default { Write-Host ("Unknown command '" + $cmd + "'.") -ForegroundColor Red; Show-Help; exit 1 }
     }
