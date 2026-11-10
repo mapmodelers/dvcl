@@ -159,12 +159,35 @@ function Parse-Status([string[]]$lines) {
 function Get-Pending {
     $r = Invoke-Dv @('status', '--no-limit')
     if ($r.Code -ne 0) { Fail ("dv status failed (exit " + $r.Code + "). Is Diversion Desktop running? " + ($r.Lines -join ' ')) }
-    $branch = ''; $commit = ''
+    $branch = ''; $commit = ''; $paused = $false
     foreach ($l in $r.Lines) {
         if ($l -match '^On branch (\S+)') { $branch = $Matches[1] }
         if ($l -match 'over commit (\S+)') { $commit = $Matches[1] }
+        # header lines only (file entries are indented): "... paused ..." = sync off
+        if ($l -notmatch '^\s' -and $l -match 'paus') { $paused = $true }
     }
-    return [pscustomobject]@{ Files = (Parse-Status $r.Lines); Branch = $branch; Commit = $commit }
+    return [pscustomobject]@{ Files = (Parse-Status $r.Lines); Branch = $branch; Commit = $commit; Paused = $paused }
+}
+
+# ---------------------------------------------------------------- sync / get latest
+function Set-Sync([bool]$on) {
+    $sub = 'pause'; if ($on) { $sub = 'resume' }
+    $r = Invoke-Dv @('workspace', $sub)
+    if ($r.Code -ne 0) { Fail ("dv workspace " + $sub + " failed: " + ($r.Lines -join ' ')) }
+    if ($on) { Say "Sync resumed." 'Green' } else { Say "Sync paused. Changelists are kept; resume sync before submitting." 'Yellow' }
+}
+
+function Get-Latest {
+    $r = Invoke-Dv @('update')
+    if ($r.Code -ne 0) { Fail ("dv update failed: " + ($r.Lines -join ' ')) }
+    Say "Got latest from the branch." 'Green'
+}
+
+# dv log for one path: plain lines for display
+function Get-History([string]$path) {
+    $r = Invoke-Dv @('log', $path, '-n', '50')
+    if ($r.Code -ne 0) { Fail ("dv log failed: " + ($r.Lines -join ' ')) }
+    return ,@($r.Lines)
 }
 
 function Kind-Letter([string]$k) {
@@ -226,15 +249,62 @@ function Detach([string]$path) {
     }
 }
 
-# Drops entries that are no longer pending (committed / reverted elsewhere). Returns how many.
-function Prune($pending) {
+# Changelist entries are never dropped automatically: dv status can be empty or partial
+# (sync paused, agent busy). Entries that are not pending are shown as "not pending";
+# Clean-Stale removes them on request. Submit / revert detach their own files.
+function Pending-Set($pending) {
     $set = @{}; foreach ($p in $pending) { $set[$p.Path.ToLowerInvariant()] = 1 }
+    return $set
+}
+
+# Entries of changelist $c that are not in the pending list
+function Stale-Of($pending, $c, $set = $null) {
+    if ($null -eq $set) { $set = Pending-Set $pending }
+    return ,@($c.files | Where-Object { -not $set.ContainsKey(([string]$_).ToLowerInvariant()) })
+}
+
+# Removes not-pending entries ($name = one changelist, '' = all). Returns how many.
+function Clean-Stale($pending, [string]$name, [bool]$paused) {
+    if ($paused) { Fail "sync is paused: every entry looks not pending. Resume sync first." }
+    $set = Pending-Set $pending
     $n = 0
     foreach ($c in $script:CLs) {
+        if ($name -and $c.name -ine $name) { continue }
         for ($i = $c.files.Count - 1; $i -ge 0; $i--) {
-            if (-not $set.ContainsKey($c.files[$i].ToLowerInvariant())) { Write-Log ("prune " + $c.name + " : " + $c.files[$i]); $c.files.RemoveAt($i); $n++ }
+            if (-not $set.ContainsKey($c.files[$i].ToLowerInvariant())) { Write-Log ("clean " + $c.name + " : " + $c.files[$i]); $c.files.RemoveAt($i); $n++ }
         }
     }
+    Save-Db
+    Say ("Removed " + $n + " not-pending entr" + $(if ($n -eq 1) { 'y' } else { 'ies' }) + ".") 'Green'
+    return $n
+}
+
+# Restores entries dropped by the old automatic prune (dvcl 0.2.x logged "prune <cl> : <path>").
+# Only paths that are pending now and in no changelist; the latest prune of a path wins.
+# $lines: log lines (default: this repo's log). Returns how many entries were restored.
+function Recover-Pruned($pending, [string[]]$lines = $null) {
+    if ($null -eq $lines) {
+        if (-not $script:Log -or -not (Test-Path -LiteralPath $script:Log)) { Say "No log: nothing to recover." 'Yellow'; return 0 }
+        $lines = @(Get-Content -LiteralPath $script:Log -Encoding UTF8)
+    }
+    $last = [ordered]@{}
+    foreach ($l in $lines) {
+        if ($l -match '^\[[^\]]+\] prune (\S+) : (.+)$') { $last[$Matches[2].Trim().ToLowerInvariant()] = @($Matches[1], $Matches[2].Trim()) }
+    }
+    $byPath = @{}; foreach ($p in $pending) { $byPath[$p.Path.ToLowerInvariant()] = $p }
+    $n = 0
+    foreach ($k in $last.Keys) {
+        $p = $byPath[$k]
+        if (-not $p -or (Owner-Of $p.Path)) { continue }
+        $clName = $last[$k][0]
+        if ($clName -notmatch '^[A-Za-z0-9_\-]{1,40}$' -or $clName -ieq 'default') { continue }
+        $c = Find-CL $clName
+        if (-not $c) { $c = New-CL $clName '' }
+        [void]$c.files.Add($p.Path); $n++
+        Write-Log ("recover " + $c.name + " : " + $p.Path)
+    }
+    Save-Db
+    Say ("Recovered " + $n + " changelist entr" + $(if ($n -eq 1) { 'y' } else { 'ies' }) + ".") 'Green'
     return $n
 }
 
@@ -326,7 +396,9 @@ function Move-ToCL([string]$name, $items) {
 }
 
 # Commits exactly these items. $clName: the changelist they came from ('default' or a name).
-function Submit-Items([string]$clName, $items, [string]$desc) {
+# $pending (optional): the pending list used to pick the items; the changelist is closed
+# when none of its remaining entries is pending (its not-pending entries go with it).
+function Submit-Items([string]$clName, $items, [string]$desc, $pending = $null) {
     $desc = ([string]$desc).Trim()
     if (-not $desc) { Fail "a description is required to submit" }
     if (@($items).Count -eq 0) { Fail "nothing to submit" }
@@ -335,7 +407,11 @@ function Submit-Items([string]$clName, $items, [string]$desc) {
     if ($r.Code -ne 0) { Fail ("dv commit failed (exit " + $r.Code + "): " + ($r.Lines -join ' ')) }
     foreach ($p in $items) { Detach $p.Path }
     $c = Find-CL $clName
-    if ($c -and $c.files.Count -eq 0) { [void]$script:CLs.Remove($c) }
+    if ($c) {
+        $left = $c.files.Count
+        if ($null -ne $pending) { $left = $c.files.Count - (Stale-Of $pending $c).Count }
+        if ($left -eq 0) { [void]$script:CLs.Remove($c) }
+    }
     Save-Db
     Say ("Submitted " + @($items).Count + " path(s) from '" + $clName + "': " + $desc) 'Green'
 }

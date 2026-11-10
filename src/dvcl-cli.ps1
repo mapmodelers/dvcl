@@ -6,12 +6,15 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'DvclCore.ps1')
 
 function Show-List($pending) {
+    $set = Pending-Set $pending
     foreach ($name in (@('default') + @($script:CLs | ForEach-Object { $_.name }))) {
         $items = Get-CLItems $pending $name
-        $d = ''
-        if ($name -ne 'default') { $c = Find-CL $name; if ($c.desc) { $d = '  "' + $c.desc + '"' } }
-        Say ("== " + $name + $d + "  (" + $items.Count + ")") 'Cyan'
+        $d = ''; $stale = @()
+        if ($name -ne 'default') { $c = Find-CL $name; if ($c.desc) { $d = '  "' + $c.desc + '"' }; $stale = Stale-Of $pending $c $set }
+        $s = ''; if ($stale.Count -gt 0) { $s = '  +' + $stale.Count + ' not pending' }
+        Say ("== " + $name + $d + "  (" + $items.Count + ")" + $s) 'Cyan'
         foreach ($p in $items) { Say ("   #{0,-4} {1}  {2}" -f $p.Index, (Kind-Letter $p.Kind), $p.Path) }
+        foreach ($f in $stale) { Say ("   -     .  " + $f + "   (not pending)") 'DarkGray' }
     }
 }
 
@@ -37,6 +40,11 @@ Run inside a Diversion workspace (any subfolder).
   dvcl revert <cl> [-y]         discard <cl>'s local changes (backup shelf made first)
   dvcl shelve <cl>              cloud shelf of <cl>'s files, workspace untouched (= p4 shelve)
   dvcl shelves                  list shelves          dvcl unshelve <shelf>   apply one (kept)
+  dvcl get                      get latest: pull the branch's new commits into the workspace
+  dvcl sync on|off              resume / pause Diversion sync (keep it on to see and submit changes)
+  dvcl clean [cl]               remove entries that are no longer pending (all changelists or one)
+  dvcl recover                  restore changelist entries dropped by dvcl 0.2.x (from the log)
+  dvcl history <file>           last 50 commits touching <file>
   dvcl report                   copy the last 200 log lines to the clipboard
   dvcl selftest                 offline test of parser / matcher / store (no dv calls)
 
@@ -112,8 +120,19 @@ function Run-SelfTest {
         Move-ToCL 'default' @($p[7])
         T "move back to default" ((Find-CL 'one').files.Count -eq 0)
         Move-ToCL 'one' @($p[7])
-        $n = Prune @($p | Where-Object { $_.Path -ne 'MyGame/Content/B.uasset' })
-        T "prune drops non-pending" ($n -eq 1 -and (Find-CL 'one').files.Count -eq 0)
+        $notB = @($p | Where-Object { $_.Path -ne 'MyGame/Content/B.uasset' })
+        T "stale: entry kept, listed as not pending" ((Find-CL 'one').files.Count -eq 1 -and (Stale-Of $notB (Find-CL 'one')).Count -eq 1)
+        T "stale: empty pending list (sync paused) drops nothing" ((Stale-Of @() (Find-CL 'one')).Count -eq 1 -and (Find-CL 'one').files.Count -eq 1)
+        $threw = $false; try { [void](Clean-Stale @() '' $true) } catch { $threw = $true }
+        T "clean refused while sync paused" ($threw -and (Find-CL 'one').files.Count -eq 1)
+        $n = Clean-Stale $notB 'one' $false
+        T "clean drops not-pending entries" ($n -eq 1 -and (Find-CL 'one').files.Count -eq 0)
+        $log = @('[2026-11-10 08:23:02] prune one : MyGame/Content/B.uasset', '[2026-11-10 08:23:02] prune gone : MyGame/Content/Never.uasset', '[2026-11-10 08:23:02] prune lost : MyGame/Content/Maps/Town/Town.umap', '[2026-11-10 08:23:03] > unrelated line')
+        $n = Recover-Pruned $p $log
+        T "recover: pending entries restored, missing skipped" ($n -eq 2 -and (Find-CL 'one').files.Count -eq 1 -and (Find-CL 'lost').files.Count -eq 1 -and $null -eq (Find-CL 'gone'))
+        T "recover: owned paths not duplicated" ((Recover-Pruned $p $log) -eq 0)
+        Remove-CL 'lost'
+        Detach 'MyGame/Content/B.uasset'
         Remove-CL 'empty'
         T "delete changelist" ($null -eq (Find-CL 'empty'))
         $threw = $false; try { Check-Name 'default' } catch { $threw = $true }
@@ -154,8 +173,8 @@ try {
 
         { $_ -in 'status', 'st', 'list', 'ls' } {
             $st = Get-Pending
-            $n = Prune $st.Files; if ($n -gt 0) { Save-Db; Say ("(" + $n + " entries no longer pending were dropped)") 'DarkYellow' }
-            Say ("Repo " + $script:Root + "  |  branch " + $st.Branch + "  |  " + $st.Commit) 'DarkGray'
+            $sync = 'sync on'; if ($st.Paused) { $sync = 'SYNC PAUSED (dvcl sync on)' }
+            Say ("Repo " + $script:Root + "  |  branch " + $st.Branch + "  |  " + $st.Commit + "  |  " + $sync) 'DarkGray'
             Show-List $st.Files
         }
 
@@ -169,7 +188,7 @@ try {
         { $_ -in 'add', 'move', 'mv' } {
             $name = $argv[0]; Check-Name $name
             $specs = @($argv | Select-Object -Skip 1); if ($specs.Count -eq 0) { Fail "nothing to add: give #numbers, files, folders or wildcards" }
-            $st = Get-Pending; [void](Prune $st.Files)
+            $st = Get-Pending
             $sel = Select-Pending $st.Files $specs
             foreach ($p in $sel) { Say ("   -> " + $name + " : " + $p.Path) }
             Move-ToCL $name $sel
@@ -177,7 +196,7 @@ try {
 
         { $_ -in 'remove', 'rm' } {
             if ($argv.Count -eq 0) { Fail "nothing to remove" }
-            $st = Get-Pending; [void](Prune $st.Files)
+            $st = Get-Pending
             $sel = Select-Pending $st.Files $argv
             Move-ToCL 'default' $sel
         }
@@ -186,7 +205,7 @@ try {
 
         'submit' {
             $name = $argv[0]; if (-not $name) { Fail "usage: dvcl submit <cl>  |  dvcl submit default ""message""" }
-            $st = Get-Pending; if ((Prune $st.Files) -gt 0) { Save-Db }
+            $st = Get-Pending
             if ($name -ieq 'default') {
                 $desc = (@($argv | Select-Object -Skip 1) -join ' ').Trim()
                 if (-not $desc) { Fail "default needs a message: dvcl submit default ""your message""" }
@@ -200,13 +219,13 @@ try {
             Say ("Submit '" + $name + "' : """ + $desc + """") 'Cyan'
             foreach ($p in $items) { Say ("   {0}  {1}" -f (Kind-Letter $p.Kind), $p.Path) }
             Confirm-Or-Exit ("Commit these " + $items.Count + " path(s)?") $yes
-            Submit-Items $name $items $desc
+            Submit-Items $name $items $desc $st.Files
         }
 
         'revert' {
             $name = $argv[0]; if (-not $name) { Fail "usage: dvcl revert <cl>" }
             if ($name -ine 'default' -and -not (Find-CL $name)) { Fail ("no changelist '" + $name + "'") }
-            $st = Get-Pending; if ((Prune $st.Files) -gt 0) { Save-Db }
+            $st = Get-Pending
             $items = Get-CLItems $st.Files $name
             if ($items.Count -eq 0) { Fail "no pending files in this changelist" }
             Say ("Revert '" + $name + "' : local changes will be DISCARDED (backup shelf first)") 'Cyan'
@@ -217,7 +236,7 @@ try {
 
         'shelve' {
             $name = $argv[0]; if (-not $name) { Fail "usage: dvcl shelve <cl>" }
-            $st = Get-Pending; if ((Prune $st.Files) -gt 0) { Save-Db }
+            $st = Get-Pending
             $items = Get-CLItems $st.Files $name
             [void](Shelve-Items ($name + "_" + (Get-Date -Format 'yyyyMMdd-HHmm')) $items)
         }
@@ -226,6 +245,27 @@ try {
             $sh = Get-Shelves
             if ($sh.Count -eq 0) { Say "No shelves." }
             foreach ($s in $sh) { Say ("  " + $s.Name + "   (" + $s.Created + ")") }
+        }
+
+        'get' { Get-Latest }
+
+        'sync' {
+            $a = ([string]$argv[0]).ToLowerInvariant()
+            if ($a -in 'on', 'resume') { Set-Sync $true } elseif ($a -in 'off', 'pause') { Set-Sync $false } else { Fail "usage: dvcl sync on|off" }
+        }
+
+        'clean' { $st = Get-Pending; [void](Clean-Stale $st.Files ([string]$argv[0]) $st.Paused) }
+
+        'recover' {
+            $st = Get-Pending
+            if ($st.Paused) { Fail "sync is paused: resume it first (dvcl sync on), then run recover" }
+            [void](Recover-Pruned $st.Files)
+            Show-List $st.Files
+        }
+
+        'history' {
+            if (-not $argv[0]) { Fail "usage: dvcl history <file>" }
+            foreach ($l in (Get-History (Norm $argv[0]))) { Say $l }
         }
 
         'unshelve' { if (-not $argv[0]) { Fail "usage: dvcl unshelve <shelf name or id>" }; Apply-Shelf $argv[0] }
