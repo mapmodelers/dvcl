@@ -51,7 +51,7 @@ $colKind = @{
 }
 
 # ---------------------------------------------------------------- main window
-# Layout: toolbar / sync banner / [Local|Depot trees  |  Pending changelists] / log / status bar
+# Layout: toolbar / state bar / [Local|Depot trees  |  Pending changelists] / log / status bar
 $form = New-Object System.Windows.Forms.Form
 $form.Text = 'dvcl'
 $form.Font = $fontUi
@@ -84,12 +84,32 @@ function Add-DropItem($drop, [string]$text, [string]$tip, [scriptblock]$onClick)
     return $mi
 }
 
-# Yellow bar shown while Diversion sync is paused (click = resume)
-$banner = New-Object System.Windows.Forms.Label
-$banner.Dock = 'Top'; $banner.Height = 26; $banner.Visible = $false; $banner.TextAlign = 'MiddleLeft'
-$banner.Padding = New-Object System.Windows.Forms.Padding(8, 0, 0, 0)
-$banner.BackColor = [System.Drawing.Color]::FromArgb(255, 236, 160); $banner.Cursor = [System.Windows.Forms.Cursors]::Hand
-$banner.Text = 'Sync is paused: Diversion reports no changes, so changelist entries show as not pending (nothing is lost). Click here to resume sync.'
+# State bar: where dvcl stands with Diversion (OFFLINE / ONLINE / busy / not answering), one button
+# to switch, and the branch state. Colors: amber offline, green online, blue busy, red not answering.
+$modeBar = New-Object System.Windows.Forms.Panel
+$modeBar.Dock = 'Top'; $modeBar.Height = 34
+$modeFlow = New-Object System.Windows.Forms.FlowLayoutPanel
+$modeFlow.Dock = 'Fill'; $modeFlow.WrapContents = $false; $modeFlow.BackColor = [System.Drawing.Color]::Transparent
+$modeLbl = New-Object System.Windows.Forms.Label
+$modeLbl.AutoSize = $true; $modeLbl.Font = New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
+$modeLbl.Margin = New-Object System.Windows.Forms.Padding(10, 7, 6, 0)
+$btnMode = New-Object System.Windows.Forms.Button
+$btnMode.AutoSize = $true; $btnMode.Height = 26; $btnMode.FlatStyle = 'System'; $btnMode.Margin = New-Object System.Windows.Forms.Padding(4, 4, 8, 0)
+$modeDesc = New-Object System.Windows.Forms.Label
+$modeDesc.AutoSize = $true; $modeDesc.Margin = New-Object System.Windows.Forms.Padding(4, 9, 4, 0)
+$branchLbl = New-Object System.Windows.Forms.Label
+$branchLbl.AutoSize = $true; $branchLbl.Margin = New-Object System.Windows.Forms.Padding(18, 9, 4, 0); $branchLbl.ForeColor = [System.Drawing.Color]::FromArgb(70, 70, 70)
+# Shown while dvcl works (loading, scanning, going online...): the rest of the window is greyed out
+$busyBar = New-Object System.Windows.Forms.ProgressBar
+$busyBar.Style = 'Marquee'; $busyBar.MarqueeAnimationSpeed = 30; $busyBar.Width = 140; $busyBar.Height = 16
+$busyBar.Margin = New-Object System.Windows.Forms.Padding(18, 9, 4, 0); $busyBar.Visible = $false
+$busyLbl = New-Object System.Windows.Forms.Label
+$busyLbl.AutoSize = $true; $busyLbl.Margin = New-Object System.Windows.Forms.Padding(4, 9, 4, 0); $busyLbl.Visible = $false
+$busyLbl.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
+$modeFlow.Controls.AddRange(@($modeLbl, $btnMode, $modeDesc, $branchLbl, $busyBar, $busyLbl))
+$modeBar.Controls.Add($modeFlow)
+$modeTip = New-Object System.Windows.Forms.ToolTip
+$modeTip.SetToolTip($branchLbl, "Auto-update (others' commits arriving by themselves) is a setting in the Diversion app: keep it off. Get latest pulls them when you choose.")
 
 $split = New-Object System.Windows.Forms.SplitContainer
 $split.Dock = 'Fill'; $split.Orientation = 'Horizontal'
@@ -98,15 +118,21 @@ $main = New-Object System.Windows.Forms.SplitContainer
 $main.Dock = 'Fill'; $main.Orientation = 'Vertical'
 $split.Panel1.Controls.Add($main)
 
-# Left: Local (workspace folder) / Depot (repository at the workspace revision), each with a path bar
-$tabs = New-Object System.Windows.Forms.TabControl
-$tabs.Dock = 'Fill'
-$tabLocal = New-Object System.Windows.Forms.TabPage('Local')
-$tabDepot = New-Object System.Windows.Forms.TabPage('Depot')
-$tabs.TabPages.AddRange(@($tabLocal, $tabDepot))
+# Left: Local (this PC) | Depot (Diversion, at your workspace commit), side by side, each with a path bar
+$trees = New-Object System.Windows.Forms.SplitContainer
+$trees.Dock = 'Fill'; $trees.Orientation = 'Vertical'
+$tabLocal = New-Object System.Windows.Forms.Panel; $tabLocal.Dock = 'Fill'
+$tabDepot = New-Object System.Windows.Forms.Panel; $tabDepot.Dock = 'Fill'
+$trees.Panel1.Controls.Add($tabLocal); $trees.Panel2.Controls.Add($tabDepot)
+function New-Head([string]$text, [string]$tip) {
+    $l = New-Object System.Windows.Forms.Label
+    $l.Dock = 'Top'; $l.Height = 22; $l.TextAlign = 'MiddleLeft'; $l.Font = $fontBold; $l.Text = $text
+    $l.Padding = New-Object System.Windows.Forms.Padding(4, 0, 0, 0)
+    return $l
+}
 function New-BrowseTree {
     $t = New-Object System.Windows.Forms.TreeView
-    $t.Dock = 'Fill'; $t.HideSelection = $false; $t.FullRowSelect = $true; $t.ItemHeight = 20; $t.Font = $fontUi
+    $t.Dock = 'Fill'; $t.HideSelection = $false; $t.FullRowSelect = $true; $t.ItemHeight = 20; $t.Font = $fontUi; $t.ShowNodeToolTips = $true
     return $t
 }
 # Path bar: editable path (Enter = go to it) + Copy + Explorer. Controls carry their tree kind in Tag.
@@ -126,18 +152,80 @@ $tvLocal = New-BrowseTree; $tvLocal.Tag = 'local'; $tvLocal.AllowDrop = $false
 $tvDepot = New-BrowseTree; $tvDepot.Tag = 'depot'; $tvDepot.AllowDrop = $false
 $barLocal = New-PathBar 'local'
 $barDepot = New-PathBar 'depot'
-$tabLocal.Controls.Add($tvLocal); $tabLocal.Controls.Add($barLocal.Panel)
-$tabDepot.Controls.Add($tvDepot); $tabDepot.Controls.Add($barDepot.Panel)
-$main.Panel1.Controls.Add($tabs)
+$headLocal = New-Head 'Local'
+$headDepot = New-Head 'Depot'
+$tabLocal.Controls.Add($tvLocal); $tabLocal.Controls.Add($barLocal.Panel); $tabLocal.Controls.Add($headLocal)
+$tabDepot.Controls.Add($tvDepot); $tabDepot.Controls.Add($barDepot.Panel); $tabDepot.Controls.Add($headDepot)
+$main.Panel1.Controls.Add($trees)
+
+# ---- state icons (drawn here, no image files): file / folder + a colored badge per state
+#   + added (green)   pencil-dot modified (blue)   x deleted (red)   > renamed (orange)   ! conflict (magenta)
+$icons = New-Object System.Windows.Forms.ImageList
+$icons.ImageSize = New-Object System.Drawing.Size(16, 16); $icons.ColorDepth = 'Depth32Bit'
+$script:BadgeColor = @{
+    'A' = [System.Drawing.Color]::FromArgb(40, 160, 60); 'M' = [System.Drawing.Color]::FromArgb(0, 110, 220)
+    'D' = [System.Drawing.Color]::FromArgb(210, 40, 40); 'R' = [System.Drawing.Color]::FromArgb(220, 130, 0)
+    '!' = [System.Drawing.Color]::FromArgb(200, 0, 160); '?' = [System.Drawing.Color]::Gray
+}
+function New-Icon([string]$base, [string]$badge) {
+    $bmp = New-Object System.Drawing.Bitmap(16, 16)
+    $g = [System.Drawing.Graphics]::FromImage($bmp)
+    $g.SmoothingMode = 'AntiAlias'
+    $grey = [System.Drawing.Color]::FromArgb(120, 120, 120)
+    switch ($base) {
+        'file'   { $g.FillRectangle([System.Drawing.Brushes]::White, 3, 1, 9, 13); $g.DrawRectangle((New-Object System.Drawing.Pen($grey)), 3, 1, 9, 13) }
+        'faded'  { $g.DrawRectangle((New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(190, 190, 190))), 3, 1, 9, 13) }
+        'folder' { $b = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(235, 190, 70)); $g.FillRectangle($b, 1, 3, 6, 3); $g.FillRectangle($b, 1, 5, 14, 9) }
+        'folderoff' { $pn = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(170, 170, 170)); $g.DrawRectangle($pn, 1, 3, 5, 2); $g.DrawRectangle($pn, 1, 5, 13, 8) }
+        'cl'     { $g.FillRectangle((New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(200, 60, 60))), 2, 2, 12, 12); foreach ($y in 5, 8, 11) { $g.DrawLine([System.Drawing.Pens]::White, 4, $y, 11, $y) } }
+        'cldef'  { $g.FillRectangle((New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(150, 150, 150))), 2, 2, 12, 12); foreach ($y in 5, 8, 11) { $g.DrawLine([System.Drawing.Pens]::White, 4, $y, 11, $y) } }
+    }
+    if ($badge) {
+        $c = $script:BadgeColor[$badge]
+        $g.FillEllipse((New-Object System.Drawing.SolidBrush($c)), 7, 7, 9, 9)
+        $w = New-Object System.Drawing.Pen([System.Drawing.Color]::White, 1.6)
+        switch ($badge) {
+            'A' { $g.DrawLine($w, 11.5, 9, 11.5, 14); $g.DrawLine($w, 9, 11.5, 14, 11.5) }
+            'M' { $g.FillEllipse([System.Drawing.Brushes]::White, 10, 10, 3, 3) }
+            'D' { $g.DrawLine($w, 9.5, 9.5, 13.5, 13.5); $g.DrawLine($w, 13.5, 9.5, 9.5, 13.5) }
+            'R' { $g.DrawLine($w, 9, 11.5, 14, 11.5); $g.DrawLine($w, 12, 9.5, 14, 11.5); $g.DrawLine($w, 12, 13.5, 14, 11.5) }
+            '!' { $g.DrawLine($w, 11.5, 8.5, 11.5, 12); $g.FillRectangle([System.Drawing.Brushes]::White, 11, 13, 1.6, 1.6) }
+        }
+    }
+    $g.Dispose()
+    return $bmp
+}
+$icons.Images.Add('none', (New-Object System.Drawing.Bitmap(16, 16)))
+foreach ($b in 'file', 'folder', 'folderoff', 'cl', 'cldef') { $icons.Images.Add($b, (New-Icon $b '')) }
+$icons.Images.Add('stale', (New-Icon 'faded' ''))
+foreach ($k in 'A', 'M', 'D', 'R', '!', '?') { $icons.Images.Add(('file-' + $k), (New-Icon 'file' $k)); $icons.Images.Add(('folder-' + $k), (New-Icon 'folder' $k)) }
+# Local / Depot trees exist before the icons: attach the list here
+$tvLocal.ImageList = $icons; $tvDepot.ImageList = $icons
+function Set-Icon($node, [string]$key) { $node.ImageKey = $key; $node.SelectedImageKey = $key }
+# Icon of a pending item: folder or file + its state
+function Pending-IconKey($p) {
+    $base = 'file'; if ([System.IO.Directory]::Exists((Full-Path $p.Path))) { $base = 'folder' }
+    return ($base + '-' + (Kind-Letter $p.Kind))
+}
 
 # Right: pending changelists
 $tv = New-Object System.Windows.Forms.TreeView
 $tv.Dock = 'Fill'; $tv.CheckBoxes = $true; $tv.HideSelection = $false; $tv.FullRowSelect = $true
-$tv.ShowLines = $true; $tv.AllowDrop = $true; $tv.ItemHeight = 20
+$tv.ShowLines = $true; $tv.AllowDrop = $true; $tv.ItemHeight = 20; $tv.ImageList = $icons
 $tv.Font = $fontBold   # changelist rows bold; file rows set back to regular (avoids clipped bold text)
-$pendHead = New-Object System.Windows.Forms.Label
-$pendHead.Dock = 'Top'; $pendHead.Height = 26; $pendHead.TextAlign = 'MiddleLeft'; $pendHead.Font = $fontBold
-$pendHead.Text = 'Pending changelists'; $pendHead.Padding = New-Object System.Windows.Forms.Padding(4, 0, 0, 0)
+# Header with the icon legend
+$pendHead = New-Object System.Windows.Forms.FlowLayoutPanel
+$pendHead.Dock = 'Top'; $pendHead.Height = 24; $pendHead.WrapContents = $false
+$ph = New-Object System.Windows.Forms.Label; $ph.AutoSize = $true; $ph.Font = $fontBold; $ph.Text = 'Changelists'
+$ph.Margin = New-Object System.Windows.Forms.Padding(4, 4, 18, 0)
+[void]$pendHead.Controls.Add($ph)
+foreach ($lg in @(@('file-A', 'added'), @('file-M', 'modified'), @('file-D', 'deleted'), @('file-R', 'renamed'), @('file-!', 'conflict'), @('stale', 'stale'))) {
+    $pb = New-Object System.Windows.Forms.PictureBox; $pb.Size = New-Object System.Drawing.Size(16, 16); $pb.Image = $icons.Images[$lg[0]]
+    $pb.Margin = New-Object System.Windows.Forms.Padding(6, 4, 2, 0)
+    $lt = New-Object System.Windows.Forms.Label; $lt.AutoSize = $true; $lt.Text = $lg[1]; $lt.ForeColor = [System.Drawing.Color]::FromArgb(80, 80, 80)
+    $lt.Margin = New-Object System.Windows.Forms.Padding(0, 5, 4, 0)
+    [void]$pendHead.Controls.Add($pb); [void]$pendHead.Controls.Add($lt)
+}
 $main.Panel2.Controls.Add($tv); $main.Panel2.Controls.Add($pendHead)
 
 $logBox = New-Object System.Windows.Forms.TextBox
@@ -150,9 +238,9 @@ $statusLbl = New-Object System.Windows.Forms.ToolStripStatusLabel
 $statusLbl.Spring = $true; $statusLbl.TextAlign = 'MiddleLeft'
 [void]$status.Items.Add($statusLbl)
 
-# Docking order: last added docks first (toolbar on top, banner under it, status bottom, split fills)
+# Docking order: last added docks first (toolbar on top, state bar under it, status bottom, split fills)
 $form.Controls.Add($split)
-$form.Controls.Add($banner)
+$form.Controls.Add($modeBar)
 $form.Controls.Add($tool)
 $form.Controls.Add($status)
 
@@ -171,18 +259,36 @@ $script:OnDv = {
 $script:Pending = @()
 $script:Busy = $false
 
-function Run-Busy([scriptblock]$sb) {
+# UI lock: while dvcl works (sync call or background job) the toolbar, trees and state-bar button
+# are disabled (greyed) and the state bar shows a moving bar + what is running. Nested: counted.
+$script:BusyDepth = 0
+function Begin-Busy([string]$what) {
+    $script:BusyDepth++
+    if (-not $what) { $what = 'Working...' }
+    $busyLbl.Text = $what; $busyBar.Visible = $true; $busyLbl.Visible = $true
+    $tool.Enabled = $false; $split.Enabled = $false; $btnMode.Enabled = $false
+    $form.UseWaitCursor = $true
+    [System.Windows.Forms.Application]::DoEvents()
+}
+function End-Busy {
+    if ($script:BusyDepth -gt 0) { $script:BusyDepth-- }
+    if ($script:BusyDepth -gt 0) { return }
+    $busyBar.Visible = $false; $busyLbl.Visible = $false
+    $tool.Enabled = $true; $split.Enabled = $true; $btnMode.Enabled = $true
+    $form.UseWaitCursor = $false
+}
+
+function Run-Busy([scriptblock]$sb, [string]$what = 'Working...') {
     if ($script:Busy) { return }
     $script:Busy = $true
-    $form.UseWaitCursor = $true; $tool.Enabled = $false
-    [System.Windows.Forms.Application]::DoEvents()
+    Begin-Busy $what
     try { & $sb }
     catch {
         $m = $_.Exception.Message
         & $script:OnSay ("ERROR: " + $m) 'Red'
         [void][System.Windows.Forms.MessageBox]::Show($form, $m, 'dvcl', 'OK', 'Error')
     }
-    finally { $form.UseWaitCursor = $false; $tool.Enabled = $true; $script:Busy = $false }
+    finally { End-Busy; $script:Busy = $false }
 }
 
 function Ask-YesNo([string]$text, [string]$title = 'dvcl') {
@@ -282,29 +388,32 @@ function Build-Tree {
             }
         }
         $count = '   (' + $items.Count + ')'
-        if ($stale.Count -gt 0) { $count = '   (' + $items.Count + ' + ' + $stale.Count + ' not pending)' }
+        if ($stale.Count -gt 0) { $count = '   (' + $items.Count + ' +' + $stale.Count + ' stale)' }
         $n = New-Object System.Windows.Forms.TreeNode(($label + $count))
         $n.Tag = [pscustomobject]@{ Type = 'cl'; Name = $name; Stale = $stale.Count }
+        Set-Icon $n $(if ($name -eq 'default') { 'cldef' } else { 'cl' })
         # a huge list freezes the TreeView (48k rows = 80 s): show the first ones, the rest stay in the changelist
         $shown = 0
         foreach ($p in $items) {
             if ($shown -ge $script:MaxRows) {
-                $more = New-Object System.Windows.Forms.TreeNode(('... and ' + ($items.Count - $shown) + ' more (not listed; actions on the changelist still include them)'))
-                $more.Tag = [pscustomobject]@{ Type = 'more'; Cl = $name }; $more.ForeColor = [System.Drawing.Color]::DarkGray; $more.NodeFont = $fontUi
+                $more = New-Object System.Windows.Forms.TreeNode(('+' + ($items.Count - $shown) + ' more'))
+                $more.Tag = [pscustomobject]@{ Type = 'more'; Cl = $name }; $more.ForeColor = [System.Drawing.Color]::DarkGray; $more.NodeFont = $fontUi; Set-Icon $more 'none'
                 [void]$n.Nodes.Add($more); break
             }
             $shown++
             $k = Kind-Letter $p.Kind
-            $f = New-Object System.Windows.Forms.TreeNode(($k + '   ' + $p.Path))
+            $f = New-Object System.Windows.Forms.TreeNode($p.Path)
             $f.Tag = [pscustomobject]@{ Type = 'file'; Item = $p; Cl = $name }
             $f.ForeColor = $colKind[$k]
+            Set-Icon $f (Pending-IconKey $p)
             $f.NodeFont = $fontUi
             [void]$n.Nodes.Add($f)
         }
         # Entries kept although dv does not report them (committed elsewhere, or sync paused)
         foreach ($sp in $stale) {
-            $f = New-Object System.Windows.Forms.TreeNode(('.   ' + $sp + '   (not pending)'))
+            $f = New-Object System.Windows.Forms.TreeNode($sp)
             $f.Tag = [pscustomobject]@{ Type = 'stale'; Path = $sp; Cl = $name }
+            Set-Icon $f 'stale'
             $f.ForeColor = [System.Drawing.Color]::DarkGray
             $f.NodeFont = $fontUi
             [void]$n.Nodes.Add($f)
@@ -333,21 +442,26 @@ $script:DvJobScript = {
     [pscustomobject]@{ Out = $o; Code = $c }
 }.ToString()
 
-function Start-DvAsync([string[]]$a, [string]$onDone, [bool]$quiet, [bool]$logLines) {
+# $busy: text shown while it runs, with the window locked ('' = quiet check, window stays usable)
+function Start-DvAsync([string[]]$a, [string]$onDone, [bool]$quiet, [bool]$logLines, [string]$busy = '') {
     Write-Log ("RUN dv " + ($a -join ' ') + "   (background)")
     $sw = [Diagnostics.Stopwatch]::StartNew()
+    if ($busy) { Begin-Busy $busy }
     if ($script:SyncMode) {
         $prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
         Push-Location -LiteralPath $script:Root
         try { $out = @(& dv @a 2>&1 | ForEach-Object { "$_" }); $code = $LASTEXITCODE }
         catch { $out = @('dv could not be started: ' + $_.Exception.Message); $code = 9009 }
         finally { Pop-Location; $ErrorActionPreference = $prev }
-        & $onDone (Finish-Dv $a $out ([int]$code) $quiet $logLines $sw.Elapsed.TotalMilliseconds)
+        try { & $onDone (Finish-Dv $a $out ([int]$code) $quiet $logLines $sw.Elapsed.TotalMilliseconds) }
+        finally { if ($busy) { End-Busy } }
         return
     }
-    $ps = [powershell]::Create()
-    [void]$ps.AddScript($script:DvJobScript).AddArgument($script:Root).AddArgument([string[]]$a)
-    $job = [pscustomobject]@{ PS = $ps; Handle = $ps.BeginInvoke(); Args = $a; Done = $onDone; Raw = $false; Quiet = $quiet; LogLines = $logLines; Sw = $sw }
+    try {
+        $ps = [powershell]::Create()
+        [void]$ps.AddScript($script:DvJobScript).AddArgument($script:Root).AddArgument([string[]]$a)
+        $job = [pscustomobject]@{ PS = $ps; Handle = $ps.BeginInvoke(); Args = $a; Done = $onDone; Raw = $false; Quiet = $quiet; LogLines = $logLines; Sw = $sw; Busy = [bool]$busy }
+    } catch { if ($busy) { End-Busy }; throw }
     [void]$script:Jobs.Add($job)
     $jobTimer.Start()
 }
@@ -355,13 +469,16 @@ function Start-DvAsync([string[]]$a, [string]$onDone, [bool]$quiet, [bool]$logLi
 # Offline folder scan in a background runspace: runs src\dvcl-scan.ps1 (same engine)
 function Start-ScanAsync {
     if ($script:SyncMode) {
+        Begin-Busy 'Scanning folder'
         try { $f = Get-OfflinePending; Apply-Scan ([pscustomobject]@{ Files = $f; Fresh = [bool]$script:BaselineFresh; Error = $null }) }
         catch { Apply-Scan ([pscustomobject]@{ Files = @(); Fresh = $false; Error = $_.Exception.Message }) }
+        finally { End-Busy }
         return
     }
     $ps = [powershell]::Create()
     [void]$ps.AddCommand((Join-Path $PSScriptRoot 'dvcl-scan.ps1')).AddParameter('Workspace', $script:Root)
-    $job = [pscustomobject]@{ PS = $ps; Handle = $ps.BeginInvoke(); Args = @('(folder scan)'); Done = 'Apply-Scan'; Raw = $true; Quiet = $true; LogLines = $false; Sw = [Diagnostics.Stopwatch]::StartNew() }
+    Begin-Busy 'Scanning folder'
+    $job = [pscustomobject]@{ PS = $ps; Handle = $ps.BeginInvoke(); Args = @('(folder scan)'); Done = 'Apply-Scan'; Raw = $true; Quiet = $true; LogLines = $false; Sw = [Diagnostics.Stopwatch]::StartNew(); Busy = $true }
     [void]$script:Jobs.Add($job)
     $jobTimer.Start()
 }
@@ -379,11 +496,13 @@ $jobTimer.Add_Tick({
         if ($j.Raw) {
             if ($null -eq $res -or $null -eq $res.PSObject.Properties['Files']) { $res = [pscustomobject]@{ Files = @(); Fresh = $false; Error = 'background scan returned nothing' } }
             try { & $j.Done $res } catch { & $script:OnSay ('ERROR: ' + $_.Exception.Message) 'Red' }
+            finally { if ($j.Busy) { End-Busy } }
             continue
         }
         if ($null -eq $res) { $res = [pscustomobject]@{ Out = @('dv returned nothing'); Code = 9009 } }
         try { & $j.Done (Finish-Dv $j.Args @($res.Out) ([int]$res.Code) $j.Quiet $j.LogLines $j.Sw.Elapsed.TotalMilliseconds) }
         catch { & $script:OnSay ('ERROR: ' + $_.Exception.Message) 'Red' }
+        finally { if ($j.Busy) { End-Busy } }
     }
     if ($script:Jobs.Count -eq 0) { $jobTimer.Stop() }
 })
@@ -392,6 +511,43 @@ $jobTimer.Add_Tick({
 $pollTimer = New-Object System.Windows.Forms.Timer
 $pollTimer.Interval = 4000
 $pollTimer.Add_Tick({ $pollTimer.Stop(); Refresh-All })
+
+# ---------------------------------------------------------------- state bar
+$script:Mode = ''
+$script:Head = ''
+$script:ModeText = @{
+    'offline' = 'Nothing syncs. Submit and Get latest go online, then back.'
+    'online'  = 'Syncing to your private workspace.'
+    'down'    = 'Diversion app closed or no network.'
+    'busy'    = ''
+    'loading' = ''
+}
+function Set-Mode([string]$state, [string]$desc) {
+    $script:Mode = $state
+    switch ($state) {
+        'offline' { $modeBar.BackColor = [System.Drawing.Color]::FromArgb(255, 236, 160); $modeLbl.Text = 'OFFLINE'; $btnMode.Text = 'Go online'; $btnMode.Tag = 'on'; $btnMode.Visible = $true }
+        'online'  { $modeBar.BackColor = [System.Drawing.Color]::FromArgb(214, 240, 214); $modeLbl.Text = 'ONLINE'; $btnMode.Text = 'Go offline'; $btnMode.Tag = 'off'; $btnMode.Visible = $true }
+        'busy'    { $modeBar.BackColor = [System.Drawing.Color]::FromArgb(210, 228, 250); $modeLbl.Text = 'BUSY'; $btnMode.Visible = $false }
+        'down'    { $modeBar.BackColor = [System.Drawing.Color]::FromArgb(250, 215, 215); $modeLbl.Text = 'NO DIVERSION'; $btnMode.Text = 'Retry'; $btnMode.Tag = 'retry'; $btnMode.Visible = $true }
+        default   { $modeBar.BackColor = [System.Drawing.SystemColors]::Control; $modeLbl.Text = '...'; $btnMode.Visible = $false }
+    }
+    if (-not $desc) { $desc = $script:ModeText[$state] }
+    $modeDesc.Text = $desc
+    [System.Windows.Forms.Application]::DoEvents()
+}
+$btnMode.Add_Click({
+    switch ([string]$btnMode.Tag) { 'on' { Do-Sync $true } 'off' { Do-Sync $false } default { Refresh-All } }
+})
+
+# "main @ dv.commit.52 - branch: up to date / NEW COMMITS / checked when online"
+function Set-BranchInfo {
+    if (-not $script:Branch) { $branchLbl.Text = ''; return }
+    $h = ''
+    if ($script:Offline) { $h = '' }
+    elseif ($script:Head -and $script:WsCommit) { if ($script:Head -eq $script:WsCommit) { $h = 'up to date' } else { $h = 'NEW COMMITS' } }
+    $branchLbl.Text = $script:Branch + ' @ ' + $script:WsCommit + $(if ($h) { '  -  ' + $h } else { '' })
+    $branchLbl.ForeColor = $(if ($h -like '*NEW COMMITS*') { [System.Drawing.Color]::FromArgb(0, 90, 190) } else { [System.Drawing.Color]::FromArgb(70, 70, 70) })
+}
 
 # ---------------------------------------------------------------- refresh
 $script:StatusRunning = $false
@@ -404,15 +560,16 @@ function Refresh-All {
     if ($script:StatusRunning) { $script:RefreshAgain = $true; return }
     Load-Db
     $script:StatusRunning = $true
-    $statusLbl.Text = 'Reading Diversion status...'
+    $statusLbl.Text = 'Reading status'
+    if (-not $script:Mode) { Set-Mode 'loading' '' }
     $script:LastStatusArgs = Status-Args $false
-    Start-DvAsync $script:LastStatusArgs 'Apply-Status' $true $true
+    Start-DvAsync $script:LastStatusArgs 'Apply-Status' $true $true 'Reading status'
 }
 
 # Reads the status now and waits until Diversion has synced everything (before submit / shelve / revert)
 function Refresh-Now {
     $script:okNow = $false
-    Run-Busy { Load-Db; Apply-Status (Invoke-Dv (Status-Args $true) $true); $script:okNow = $true }
+    Run-Busy { Load-Db; Apply-Status (Invoke-Dv (Status-Args $true) $true); $script:okNow = $true } 'Uploading'
     return $script:okNow
 }
 
@@ -460,19 +617,19 @@ function Show-Pending($st, [bool]$unreachable) {
     $sw = [Diagnostics.Stopwatch]::StartNew()
     Build-Tree
     Write-Timing ('build-pending-tree (' + $st.Files.Count + ' files)') $sw.Elapsed.TotalMilliseconds
-    $banner.Visible = $script:Offline
-    if ($script:Offline) {
-        $t = 'OFFLINE: sync is paused. Pending files come from dvcl''s scan of your folder. Changelists and shelve (local copy) work; submit, revert and get latest go online first. Click here to go online.'
-        if ($unreachable) { $t = 'OFFLINE: Diversion is not answering (app closed or no network). Pending files come from dvcl''s scan of your folder. F5 to retry.' }
-        if ($script:BaselineFresh) { $t += '  (Tracking started now: edits made earlier while paused may be missing.)' }
-        $banner.Text = $t
-    }
-    $script:LocalBuilt = $false; $script:DepotPaths = $null
+    $script:Branch = $st.Branch
+    $note = ''; if ($script:BaselineFresh) { $note = '  (tracking from now)' }
+    if ($unreachable) { Set-Mode 'down' '' }
+    elseif ($script:Offline) { Set-Mode 'offline' ($script:ModeText['offline'] + $note) }
+    elseif ($st.Syncing) { Set-Mode 'online' 'Syncing...' }
+    else { Set-Mode 'online' '' }
+    Set-BranchInfo
+    $script:LocalBuilt = $false; $script:DepotBuilt = $false
     Show-Tab
     $sync = 'sync on'
     if ($st.Syncing) { $sync = 'sync on - Diversion still syncing, list updates by itself' }
     if ($script:Offline) { $sync = 'OFFLINE' }
-    $statusLbl.Text = $script:Root + '    branch ' + $st.Branch + '    ' + $st.Commit + '    ' + $st.Files.Count + ' pending path(s)    ' + $sync + '    dvcl ' + (Get-LocalVersion)
+    $statusLbl.Text = $script:Root + '    ' + $st.Files.Count + ' pending    dvcl ' + (Get-LocalVersion)
     $form.Text = 'dvcl - ' + (Split-Path -Leaf $script:Root)
     if (-not $script:FirstShown) { $script:FirstShown = $true; Write-Timing 'script-start-to-pending-list' $script:Clock.Elapsed.TotalMilliseconds }
     if ($st.Syncing -and -not $script:Paused -and -not $script:SyncMode) { $pollTimer.Start() }
@@ -491,6 +648,7 @@ function Apply-Head($r) {
         $btnGet.Text = 'Get latest'; $btnGet.ForeColor = [System.Drawing.SystemColors]::ControlText
         $btnGet.ToolTipText = "Pull the branch's new commits into your workspace (dv update)"
     }
+    Set-BranchInfo
 }
 
 # Changelist of the selected node ('default' if nothing selected)
@@ -560,7 +718,7 @@ function Do-Shelve {
     if ($script:Offline) {
         $items = Get-CLItems $script:Pending $name
         if ($items.Count -eq 0) { [void][System.Windows.Forms.MessageBox]::Show($form, "Changelist '" + $name + "' has no pending file.", 'Shelve'); return }
-        $a = [System.Windows.Forms.MessageBox]::Show($form, "You are offline.`r`n`r`nYes = shelve locally: a copy of the " + $items.Count + " file(s) in .dvcl\shelves, nothing uploaded. Unshelve it from Shelves.`r`nNo = go online and shelve to Diversion.", 'Shelve', 'YesNoCancel', 'Question')
+        $a = [System.Windows.Forms.MessageBox]::Show($form, "Shelve " + $items.Count + " file(s)`r`n`r`nYes: local (this PC only)`r`nNo: Diversion (uploaded to the repo)", 'Shelve', 'YesNoCancel', 'Question')
         if ($a -eq 'Cancel') { return }
         if ($a -eq 'Yes') { Run-Busy { [void](Shelve-Local $name $items) }; return }
         if (-not (Ensure-Online 'Shelve')) { Back-Offline; return }
@@ -687,9 +845,10 @@ function Selected-Rel {
     return ''
 }
 
+# State bar button. Going offline waits until Diversion has synced, then records the folder.
 function Do-Sync([bool]$on) {
-    if (-not $on -and -not (Ask-YesNo "Go offline (pause Diversion sync)?`r`n`r`nNothing is uploaded or downloaded until you go online again. dvcl records your folder now and finds your edits by scanning it. Changelists and local shelves keep working; submit, revert and get latest go online first (dvcl asks).`r`n`r`nAuto-update is a separate setting in the Diversion app: keep it off." 'Go offline')) { return }
-    Run-Busy { Set-Sync $on }
+    Set-Mode 'busy' ''
+    Run-Busy { Set-Sync $on } $(if ($on) { 'Going online' } else { 'Going offline' })
     Refresh-All
 }
 
@@ -699,29 +858,32 @@ function Back-Offline {
     $script:WasBack = $false
     if (-not $script:WentOnline) { return }
     $script:WentOnline = $false
-    Run-Busy { Set-Sync $false }
+    Set-Mode 'busy' ''
+    Run-Busy { Set-Sync $false } 'Going offline'
     $script:WasBack = $true
 }
 
-# Actions that need the server: offer to go online (resume sync, wait until Diversion has uploaded
-# the offline changes to your private workspace), then the caller continues.
+# Actions that need the server go online by themselves (no question): resume sync, wait until
+# Diversion has uploaded the pending changes to your private workspace, then the caller continues
+# and Back-Offline pauses sync again. The state bar shows each step.
 function Ensure-Online([string]$what) {
     if (-not $script:Offline) { return $true }
-    if (-not (Ask-YesNo ($what + " needs Diversion online.`r`n`r`nGo online for this action only? Sync resumes; Diversion uploads your pending changes to your private workspace (not submitted, not visible to others). dvcl waits for it, does the action, then goes back offline.") 'Go online')) { return $false }
+    Set-Mode 'busy' $what
     $script:okOn = $false
-    Run-Busy { Set-Sync $true; $script:okOn = $true }
+    Run-Busy { Set-Sync $true; $script:okOn = $true } 'Going online'
     if (-not $script:okOn) { return $false }
     $script:WentOnline = $true
+    Set-Mode 'busy' $what
     if (-not (Refresh-Now)) { return $false }
-    if ($script:Offline) { [void][System.Windows.Forms.MessageBox]::Show($form, 'Diversion still reports sync as paused. Try again in a moment.', 'Go online', 'OK', 'Warning'); return $false }
+    if ($script:Offline) { [void][System.Windows.Forms.MessageBox]::Show($form, 'Diversion still reports sync as paused. Try again in a moment.', $what, 'OK', 'Warning'); return $false }
+    Set-Mode 'busy' $what
     return $true
 }
 
 function Do-GetLatest {
     if (-not (Ensure-Online 'Get latest')) { Back-Offline; return }
     try {
-        if (-not (Ask-YesNo "Get latest: pull the branch's new commits into your workspace (dv update)?`r`nYour pending changes are kept. Unreal may need to reload changed assets." 'Get latest')) { return }
-        Run-Busy { Get-Latest }
+        Run-Busy { Get-Latest; Say "Your pending changes were kept. Unreal may need to reload changed assets." 'Gray' } 'Getting latest'
     } finally { Back-Offline }
     Refresh-All
 }
@@ -786,12 +948,15 @@ $script:LocalBuilt = $false
 $script:DepotPaths = $null
 
 # A node that still has to load its children carries one placeholder child with no Tag.
-function Add-Placeholder($node) { [void]$node.Nodes.Add('...') }
+function Add-Placeholder($node) { $ph = $node.Nodes.Add('...'); $ph.ImageKey = 'none'; $ph.SelectedImageKey = 'none' }
 function Is-Unloaded($node) { return ($node.Nodes.Count -eq 1 -and $null -eq $node.Nodes[0].Tag) }
 
+# Icon + color by state; folders also get the badge when they are pending themselves (new folder)
 function Mark-Pending($node, [string]$rel) {
+    $isDir = $node.Tag.Type -in 'dir', 'ddir'
     $p = $script:PendingByPath[$rel]
-    if ($p) { $k = Kind-Letter $p.Kind; $node.Text = $k + '   ' + $node.Text; $node.ForeColor = $colKind[$k] }
+    if ($p) { $k = Kind-Letter $p.Kind; $node.ForeColor = $colKind[$k]; Set-Icon $node ($(if ($isDir) { 'folder-' } else { 'file-' }) + $k) }
+    else { Set-Icon $node $(if ($isDir) { 'folder' } else { 'file' }) }
 }
 
 # Tags: Local { Type dir|lfile; Path = full Windows path; Name }  Depot { Type ddir|dfile; Path = repo path; Name }
@@ -805,6 +970,7 @@ function Add-LocalChildren($nodes, [string]$dir) {
         if ($name -eq '.diversion' -or $name -eq '.dvcl') { continue }
         $n = New-Object System.Windows.Forms.TreeNode($name)
         $n.Tag = [pscustomobject]@{ Type = 'dir'; Path = $d; Name = $name }
+        Mark-Pending $n (Norm $d)
         Add-Placeholder $n
         [void]$nodes.Add($n)
     }
@@ -823,8 +989,9 @@ function Add-DepotChildren($nodes, [string]$dir) {
         $rel = $d; if ($dir) { $rel = $dir + '/' + $d }
         $n = New-Object System.Windows.Forms.TreeNode($d)
         $n.Tag = [pscustomobject]@{ Type = 'ddir'; Path = $rel; Name = $d }
+        Mark-Pending $n $rel
         # not downloaded on this PC (selective sync): grey
-        if (-not [System.IO.Directory]::Exists((Join-Path $script:Root ($rel -replace '/', '\')))) { $n.Text = $d + '   (not on this PC)'; $n.ForeColor = [System.Drawing.Color]::DarkGray }
+        if (-not [System.IO.Directory]::Exists((Join-Path $script:Root ($rel -replace '/', '\')))) { $n.ForeColor = [System.Drawing.Color]::DarkGray; Set-Icon $n 'folderoff'; $n.ToolTipText = 'not on this PC' }
         Add-Placeholder $n
         [void]$nodes.Add($n)
     }
@@ -856,11 +1023,12 @@ function Node-Rel($node) {
     return [string]$node.Tag.Path
 }
 
-# Fill the visible tab once per refresh (Depot runs dv ls: only when that tab is opened), then
-# go back to the path shown in its path bar.
+# Fill both trees after a refresh, then go back to the paths shown in their path bars.
+# The depot list (dv ls, can take seconds) is kept per workspace commit: reloaded only when it changes.
+$script:DepotBuilt = $false; $script:DepotLoading = $false; $script:DepotCommit = $null
 function Show-Tab {
     if (-not $script:Root) { return }
-    if ($tabs.SelectedTab -eq $tabLocal -and -not $script:LocalBuilt) {
+    if (-not $script:LocalBuilt) {
         $sw = [Diagnostics.Stopwatch]::StartNew()
         $tvLocal.BeginUpdate(); $tvLocal.Nodes.Clear()
         Add-LocalChildren $tvLocal.Nodes $script:Root
@@ -868,26 +1036,35 @@ function Show-Tab {
         if ($barLocal.Box.Text) { Navigate-Tree 'local' $barLocal.Box.Text $true }
         Write-Timing 'build-local-tree' $sw.Elapsed.TotalMilliseconds
     }
-    elseif ($tabs.SelectedTab -eq $tabDepot -and $null -eq $script:DepotPaths) {
-        # dv ls in the background; the tree shows a placeholder until it answers
-        $script:DepotPaths = [string[]]@()
-        $tvDepot.Nodes.Clear(); [void]$tvDepot.Nodes.Add('Loading depot...')
-        Start-DvAsync @('ls') 'Apply-Depot' $true $false
+    if (-not $script:DepotBuilt) {
+        if ($null -ne $script:DepotPaths -and $script:DepotPaths.Length -gt 0 -and $script:DepotCommit -eq $script:WsCommit) { Build-DepotTree }
+        elseif (-not $script:DepotLoading) {
+            $script:DepotLoading = $true
+            $tvDepot.Nodes.Clear(); $ph = $tvDepot.Nodes.Add('Loading...'); $ph.ImageKey = 'none'; $ph.SelectedImageKey = 'none'
+            Start-DvAsync @('ls') 'Apply-Depot' $true $false 'Loading depot'
+        }
     }
 }
 
-function Apply-Depot($r) {
-    try { $paths = Read-DepotResult $r }
-    catch { $tvDepot.Nodes.Clear(); & $script:OnSay ('ERROR: ' + $_.Exception.Message) 'Red'; $script:DepotPaths = $null; return }
+function Build-DepotTree {
     $sw = [Diagnostics.Stopwatch]::StartNew()
-    $script:DepotPaths = $paths
     $tvDepot.BeginUpdate(); $tvDepot.Nodes.Clear()
     Add-DepotChildren $tvDepot.Nodes ''
-    $tvDepot.EndUpdate()
+    $tvDepot.EndUpdate(); $script:DepotBuilt = $true
     if ($barDepot.Box.Text) { Navigate-Tree 'depot' $barDepot.Box.Text $true }
-    Write-Timing ('build-depot-tree (' + $paths.Length + ' paths)') $sw.Elapsed.TotalMilliseconds
+    Write-Timing ('build-depot-tree (' + $script:DepotPaths.Length + ' paths)') $sw.Elapsed.TotalMilliseconds
 }
-$tabs.Add_SelectedIndexChanged({ Show-Tab })
+
+function Apply-Depot($r) {
+    $script:DepotLoading = $false
+    try { $paths = Read-DepotResult $r }
+    catch {
+        $tvDepot.Nodes.Clear(); $ph = $tvDepot.Nodes.Add('Depot unavailable. F5.'); $ph.ImageKey = 'none'; $ph.SelectedImageKey = 'none'
+        & $script:OnSay ('ERROR: ' + $_.Exception.Message) 'Red'; $script:DepotPaths = $null; return
+    }
+    $script:DepotPaths = $paths; $script:DepotCommit = $script:WsCommit
+    Build-DepotTree
+}
 
 # Expands a tree down to a path and selects it. Accepts a full Windows path inside the workspace,
 # a repo path (MyGame/Content/...) and either slash. $quiet: no log line when not found.
@@ -895,8 +1072,6 @@ function Navigate-Tree([string]$kind, [string]$text, [bool]$quiet = $false) {
     $t = ([string]$text).Trim().Trim('"')
     if (-not $t -or -not $script:Root) { return }
     $tree = Tree-Of $kind
-    $wantTab = $tabLocal; if ($kind -eq 'depot') { $wantTab = $tabDepot }
-    if ($tabs.SelectedTab -ne $wantTab) { $tabs.SelectedTab = $wantTab; [System.Windows.Forms.Application]::DoEvents() }
     $rootFwd = ($script:Root -replace '\\', '/').TrimEnd('/')
     if (($t -replace '\\', '/').TrimEnd('/') -ieq $rootFwd) { $tree.SelectedNode = $null; return }
     $rel = Norm $t
@@ -990,7 +1165,7 @@ $treeMenu = {
         [void](Add-MenuItem $menuL 'Download this folder to this PC' { Do-FolderSync $script:MenuRel $true })
         [void](Add-MenuItem $menuL 'Stop downloading this folder...' { Do-FolderSync $script:MenuRel $false })
     }
-    [void](Add-MenuItem $menuL 'Show in Explorer' { Open-PathInExplorer 'local' $script:MenuDisplay })
+    $mx = Add-MenuItem $menuL 'Show in Explorer' { Open-PathInExplorer 'local' $script:MenuDisplay }; $mx.ShortcutKeyDisplayString = 'Ctrl+Shift+S'
     [void](Add-MenuItem $menuL 'Copy path' { [System.Windows.Forms.Clipboard]::SetText($script:MenuDisplay) })
     $menuL.Show($s, $e.Location)
 }
@@ -1040,7 +1215,7 @@ function Do-ReportBug { Start-Process (Get-BugUrl) }
 # ---------------------------------------------------------------- toolbar
 [void](Add-Btn 'Refresh' 'Reload pending changes (F5)' { Refresh-All })
 [void]$tool.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
-[void](Add-Btn 'New changelist' 'Create a changelist; checked files move into it (Ctrl+N)' { [void](Do-NewCL (Target-Items-IfChecked)) })
+[void](Add-Btn 'New' 'New changelist; checked files move into it (Ctrl+N)' { [void](Do-NewCL (Target-Items-IfChecked)) })
 [void](Add-Btn 'Submit...' 'Submit the selected changelist (Ctrl+Enter)' { Do-Submit })
 [void](Add-Btn 'Shelve...' 'Shelve the selected changelist to the cloud, workspace untouched' { Do-Shelve })
 [void](Add-Btn 'Revert...' 'Discard local changes of checked / selected files (backup shelf first)' { Do-Revert })
@@ -1048,9 +1223,6 @@ function Do-ReportBug { Start-Process (Get-BugUrl) }
 [void](Add-Btn 'Locks' 'Files locked in this repository' { Do-ShowLocks })
 [void]$tool.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
 $btnGet = Add-Btn 'Get latest' "Pull the branch's new commits into your workspace (dv update)" { Do-GetLatest }
-$ddSync = Add-DropBtn 'Sync' 'Diversion sync of this workspace with the cloud'
-[void](Add-DropItem $ddSync 'Go online (resume sync)' 'Diversion uploads your offline changes to your private workspace; submit works again' { Do-Sync $true })
-[void](Add-DropItem $ddSync 'Go offline (pause sync)...' 'Nothing uploaded or downloaded; dvcl tracks your edits by scanning the folder' { Do-Sync $false })
 $ddTools = Add-DropBtn 'Tools' 'Changelist maintenance'
 [void](Add-DropItem $ddTools 'Remove all not-pending entries' 'Drop entries Diversion no longer reports (committed elsewhere)' { Do-CleanStale '' })
 [void](Add-DropItem $ddTools 'Recover entries lost by dvcl 0.2' 'Put back files that dvcl 0.2 dropped from changelists while sync was paused' { Do-Recover })
@@ -1058,7 +1230,6 @@ $ddTools = Add-DropBtn 'Tools' 'Changelist maintenance'
 [void](Add-Btn 'Repo...' 'Pick another Diversion workspace' { Do-ChangeRepo })
 $bBug = Add-Btn 'Report bug' 'Open a new issue on GitHub' { Do-ReportBug }; $bBug.Alignment = 'Right'
 $bUpd = Add-Btn 'Update' 'Check GitHub for a new version and update' { Do-Update }; $bUpd.Alignment = 'Right'
-$banner.Add_Click({ Do-Sync $true })
 
 # Checked files only (used by "New changelist": nothing checked = empty changelist)
 function Target-Items-IfChecked {
@@ -1169,15 +1340,28 @@ $tv.Add_NodeMouseClick({
         if ($isStale) { [void](Add-MenuItem $menu 'Remove from changelist' { Do-RemoveEntry (Selected-Rel) }) }
         [void](Add-MenuItem $menu 'Show in Local tree' { Navigate-Tree 'local' (Selected-Rel) })
         [void](Add-MenuItem $menu 'History...' { Do-History (Selected-Rel) })
-        [void](Add-MenuItem $menu 'Show in Explorer' { Do-ShowInExplorer })
+        $mx = Add-MenuItem $menu 'Show in Explorer' { Do-ShowInExplorer }; $mx.ShortcutKeyDisplayString = 'Ctrl+Shift+S'
         [void](Add-MenuItem $menu 'Copy path' { [System.Windows.Forms.Clipboard]::SetText(($script:Root + '\' + ((Selected-Rel) -replace '/', '\'))) })
     }
     $menu.Show($tv, $e.Location)
 })
 
 # Keyboard
+# Ctrl+Shift+S: show the selected item in Explorer, in the tree used last (Local, Depot or changelists)
+$script:LastTree = $tv
+foreach ($t in @($tv, $tvLocal, $tvDepot)) { $t.Add_Enter({ param($s, $e) $script:LastTree = $s }) }
+function Do-OpenSelected {
+    $t = $script:LastTree
+    if ($t -eq $tv) { Do-ShowInExplorer; return }
+    $n = $t.SelectedNode
+    if (-not $n -or -not $n.Tag) { return }
+    if ($t -eq $tvLocal) { Open-InExplorer $n.Tag.Path } else { Open-PathInExplorer 'depot' $n.Tag.Path }
+}
+
 $form.Add_KeyDown({
     param($s, $e)
+    if ($script:BusyDepth -gt 0) { $e.Handled = $true; $e.SuppressKeyPress = $true; return }
+    if ($e.Control -and $e.Shift -and $e.KeyCode -eq 'S') { Do-OpenSelected; $e.Handled = $true; $e.SuppressKeyPress = $true; return }
     if ($e.KeyCode -eq 'F5') { Refresh-All; $e.Handled = $true }
     elseif ($e.Control -and $e.KeyCode -eq 'N') { [void](Do-NewCL (Target-Items-IfChecked)); $e.Handled = $true }
     elseif ($e.Control -and $e.KeyCode -eq 'Return') { Do-Submit; $e.Handled = $true }
@@ -1185,7 +1369,8 @@ $form.Add_KeyDown({
 
 $form.Add_Shown({
     $split.SplitterDistance = [int]($split.Height * 0.76)
-    $main.SplitterDistance = [int]($main.Width * 0.42)
+    $main.SplitterDistance = [int]($main.Width * 0.56)
+    $trees.SplitterDistance = [int]($trees.Width * 0.5)
     # Repo: argument / current folder, else last used, else ask
     $root = $null
     if ($StartDir) { $root = Find-DvRoot $StartDir }
@@ -1213,24 +1398,31 @@ function Run-GuiSelfCheck {
         C 'repo opened' ([bool]$script:Root)
         C 'icon loaded' ($null -ne $form.Icon)
         C 'version file' ((Get-LocalVersion) -ne '0.0.0') (Get-LocalVersion)
-        C 'layout: trees left, changelists right' ($main.Panel1.Contains($tabs) -and $main.Panel2.Contains($tv) -and $main.Panel1.Width -gt 100 -and $main.Panel2.Width -gt 100) ("" + $main.Panel1.Width + ' / ' + $main.Panel2.Width)
+        C 'layout: Local | Depot | changelists side by side' ($trees.Panel1.Contains($tvLocal) -and $trees.Panel2.Contains($tvDepot) -and $main.Panel2.Contains($tv) -and $trees.Panel1.Width -gt 80 -and $trees.Panel2.Width -gt 80 -and $main.Panel2.Width -gt 100) ("" + $trees.Panel1.Width + ' / ' + $trees.Panel2.Width + ' / ' + $main.Panel2.Width)
+        C 'icons: image list set on the three trees' ((@($tv, $tvLocal, $tvDepot) | Where-Object { $_.ImageList -and $_.ImageList.Images.ContainsKey('file-A') }).Count -eq 3 -and $icons.Images.Count -ge 18) ([string]$icons.Images.Count)
+        C 'icons: changelist rows have the changelist icon' (@($tv.Nodes | Where-Object { $_.ImageKey -notin 'cl', 'cldef' }).Count -eq 0)
         C 'layout: path bars present' ($tabLocal.Contains($barLocal.Box) -and $tabDepot.Contains($barDepot.Box))
-        C 'toolbar: Get latest + Sync + Tools + Locks' ((@($tool.Items | Where-Object { $_.Text -like 'Get latest*' -or $_.Text -in 'Sync', 'Tools', 'Locks' })).Count -eq 4)
+        C 'toolbar: Get latest + Tools + Locks' ((@($tool.Items | Where-Object { $_.Text -like 'Get latest*' -or $_.Text -in 'Tools', 'Locks' })).Count -eq 3)
+        C 'state bar: label and button match the state' ((($script:Offline -and $modeLbl.Text -eq 'OFFLINE' -and $btnMode.Text -eq 'Go online') -or (-not $script:Offline -and $modeLbl.Text -eq 'ONLINE' -and $btnMode.Text -eq 'Go offline')) -or $script:Mode -eq 'down') ($modeLbl.Text + ' / ' + $btnMode.Text)
+        [void]$r.Add('INFO  state bar: ' + $modeLbl.Text + ' | ' + $modeDesc.Text + ' | ' + $branchLbl.Text)
         C 'status read without waiting for sync (--nowait)' (@($script:LastStatusArgs) -contains '--nowait') (@($script:LastStatusArgs) -join ' ')
         C 'log panel: no dv status dump' (-not $logBox.Text.Contains('dv | In repo'))
         [void]$r.Add('INFO  workspace ' + $script:WsCommit + '   branch head ' + $script:Head + '   button: ' + $btnGet.Text)
-        C 'branch head read from dv show' ([bool]$script:Head) 'see RUN dv show in dvcl.log'
+        if ($script:Offline) { [void]$r.Add('SKIP  branch head (offline)') } else { C 'branch head read from dv show' ([bool]$script:Head) 'see RUN dv show in dvcl.log' }
         try { $lk = Get-Locks; C 'locks list readable' $true; [void]$r.Add('INFO  locks: ' + @($lk).Count) } catch { C 'locks list readable' $false $_.Exception.Message }
         # background runner (normal launches): window keeps pumping messages while dv runs
+        C 'window unlocked when idle' ($script:BusyDepth -eq 0 -and $tool.Enabled -and $split.Enabled -and -not $busyBar.Visible) ("depth " + $script:BusyDepth)
         $script:SyncMode = $false; $script:scAsync = $null; $ticks = 0
         $swA = [Diagnostics.Stopwatch]::StartNew()
-        Start-DvAsync (Status-Args $false) 'Selfcheck-AsyncDone' $true $true
+        Start-DvAsync (Status-Args $false) 'Selfcheck-AsyncDone' $true $true 'Selfcheck: reading status...'
+        C 'window locked while loading (greyed, progress shown)' (-not $tool.Enabled -and -not $split.Enabled -and $busyBar.Visible -and $busyLbl.Text -like 'Selfcheck*')
         while ($null -eq $script:scAsync -and $swA.Elapsed.TotalSeconds -lt 90) { [System.Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 30; $ticks++ }
         $script:SyncMode = $true
-        C 'background dv status (window responsive meanwhile)' ($null -ne $script:scAsync -and $script:scAsync.Code -eq 0 -and $ticks -gt 2) ("ticks " + $ticks)
+        C 'window unlocked again after loading' ($script:BusyDepth -eq 0 -and $tool.Enabled -and $split.Enabled)
+        C 'background dv status (window keeps repainting meanwhile)' ($null -ne $script:scAsync -and $script:scAsync.Code -eq 0 -and $ticks -gt 2) ("ticks " + $ticks)
         [void]$r.Add('INFO  background dv status: ' + [int]$swA.Elapsed.TotalMilliseconds + 'ms, ' + $ticks + ' UI pumps meanwhile')
         [void]$r.Add('INFO  sync paused: ' + $script:Paused + '   pending: ' + $script:Pending.Count + '   changelists: ' + $script:CLs.Count + '   entries: ' + (Total-Entries))
-        C 'banner shown only when offline' ($banner.Visible -eq [bool]$script:Offline)
+        C 'state bar shows OFFLINE only when offline' (($modeLbl.Text -eq 'OFFLINE') -eq [bool]$script:Offline -or $script:Mode -eq 'down')
         [void]$r.Add('INFO  offline: ' + [bool]$script:Offline + '   offline flag: ' + (Test-OfflineFlag) + '   baseline fresh: ' + [bool]$script:BaselineFresh)
         $clNodes = @($tv.Nodes | Where-Object { $_.Tag.Type -eq 'cl' })
         C 'pending tree: default + changelists' ($clNodes.Count -eq (1 + $script:CLs.Count)) ([string]$clNodes.Count)
@@ -1247,7 +1439,7 @@ function Run-GuiSelfCheck {
             Set-OfflineFlag $true
             try {
                 Refresh-All
-                C 'offline view: banner shown, folder scanned' ($banner.Visible -and $script:Offline)
+                C 'offline view: state bar OFFLINE, folder scanned' ($modeLbl.Text -eq 'OFFLINE' -and $script:Offline)
                 $offl = @($script:Pending | ForEach-Object { $_.Path.ToLowerInvariant() } | Sort-Object)
                 $extra = @($offl | Where-Object { $onl -notcontains $_ }); $miss = @($onl | Where-Object { $offl -notcontains $_ })
                 C 'offline view: same pending files as Diversion' ($extra.Count -eq 0 -and $miss.Count -eq 0) ("extra " + $extra.Count + ", missing " + $miss.Count)
@@ -1256,7 +1448,7 @@ function Run-GuiSelfCheck {
                 C 'offline view: changelists unchanged' ((Total-Entries) -eq $te)
             } finally { Set-OfflineFlag $false }
             Refresh-All
-            C 'back online: offline banner gone, test baseline removed' (-not $banner.Visible -and -not (Test-Path -LiteralPath (Dvcl-File 'baseline.tsv')))
+            C 'back online: state bar ONLINE, test baseline removed' ($modeLbl.Text -eq 'ONLINE' -and -not (Test-Path -LiteralPath (Dvcl-File 'baseline.tsv')))
         } else { [void]$r.Add('SKIP  offline view test (already offline)') }
         $before = Total-Entries
         Refresh-All
@@ -1274,7 +1466,6 @@ function Run-GuiSelfCheck {
             Check-AllFiles $false; C 'clear' ((@($files | Where-Object { $_.Checked })).Count -eq 0)
         } else { [void]$r.Add('SKIP  multi-select (needs 3+ pending files)') }
 
-        $tabs.SelectedTab = $tabLocal; [System.Windows.Forms.Application]::DoEvents()
         C 'local tree filled' ($tvLocal.Nodes.Count -gt 0) ([string]$tvLocal.Nodes.Count)
         C 'local: .diversion hidden' (-not (@($tvLocal.Nodes | Where-Object { $_.Text -eq '.diversion' })).Count)
         $ld = @($tvLocal.Nodes | Where-Object { $_.Tag.Type -eq 'dir' }) | Select-Object -First 1
@@ -1294,16 +1485,15 @@ function Run-GuiSelfCheck {
             $barLocal.Box.Text = ''
             Navigate-Tree 'local' $full $true
             C 'path bar: go to a pending file (local)' ($tvLocal.SelectedNode -and $tvLocal.SelectedNode.Tag.Path -ieq $full) ([string]$barLocal.Box.Text)
-            C 'local tree marks pending file' ($tvLocal.SelectedNode -and $tvLocal.SelectedNode.Text -match '^[AMDR!]   ')
+            C 'local tree: pending file has its state icon' ($tvLocal.SelectedNode -and $tvLocal.SelectedNode.ImageKey -like 'file-*') ([string]$tvLocal.SelectedNode.ImageKey)
             $script:LocalBuilt = $false; Show-Tab
             C 'local tree keeps its path after rebuild' ($tvLocal.SelectedNode -and $tvLocal.SelectedNode.Tag.Path -ieq $full)
         } else { [void]$r.Add('SKIP  path bar navigation (no pending file)') }
 
-        $tabs.SelectedTab = $tabDepot; [System.Windows.Forms.Application]::DoEvents()
         C 'depot: dv ls parsed' ($script:DepotPaths.Length -gt 0) ([string]$script:DepotPaths.Length)
         C 'depot tree filled' ($tvDepot.Nodes.Count -gt 0)
         C 'depot: no raw dv lines' (-not (@($tvDepot.Nodes | Where-Object { $_.Text -match '^\((F|D)\)' })).Count)
-        [void]$r.Add('INFO  depot top folders not on this PC: ' + (@($tvDepot.Nodes | Where-Object { $_.Text -like '*(not on this PC)' })).Count)
+        [void]$r.Add('INFO  depot top folders not on this PC: ' + (@($tvDepot.Nodes | Where-Object { $_.ImageKey -eq 'folderoff' })).Count)
         $dd = @($tvDepot.Nodes | Where-Object { $_.Tag.Type -eq 'ddir' }) | Select-Object -First 1
         if ($dd) { $dd.Expand(); C 'depot: folder expands' (-not (Is-Unloaded $dd) -and $dd.Nodes.Count -gt 0) }
         if ($pf -and (Kind-Letter $pf.Kind) -eq 'M') {
@@ -1311,7 +1501,8 @@ function Run-GuiSelfCheck {
             C 'path bar: go to a pending file (depot)' ($tvDepot.SelectedNode -and $tvDepot.SelectedNode.Tag.Path -ieq $pf.Path) ([string]$barDepot.Box.Text)
             C 'depot path bar shows the repo path' ($barDepot.Box.Text -ieq $pf.Path) $barDepot.Box.Text
         }
-        $tabs.SelectedTab = $tabLocal
+        C 'depot list kept for the same commit (no reload on refresh)' ($script:DepotCommit -eq $script:WsCommit)
+        C 'Ctrl+Shift+S target follows the last tree used' ($null -ne $script:LastTree)
 
         $u = Get-BugUrl
         C 'bug report: GitHub issue URL' ($u.StartsWith('https://github.com/' + $script:GhRepo + '/issues/new'))

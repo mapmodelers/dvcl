@@ -2,6 +2,16 @@
 
 Versions follow [semver](https://semver.org). Tags: `vX.Y.Z`.
 
+## 0.5.0 - 2026-11-10
+
+- State bar: OFFLINE / ONLINE / BUSY / NO DIVERSION, one switch button, branch state.
+- Submit, get latest, revert, locks: go online alone, then back offline.
+- Window locked with progress while loading or working.
+- Local | Depot | Changelists side by side. Depot list cached per commit.
+- State icons + legend.
+- Ctrl+Shift+S: show in Explorer.
+- Shorter texts.
+
 ## 0.4.0 - 2026-11-10
 
 - Faster start: the window opens at once; Diversion status and the depot list load in the background. The status no longer waits for Diversion to finish syncing (it updates by itself until sync is done). Submit, shelve and revert still wait, so they work on the complete list.
