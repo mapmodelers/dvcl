@@ -196,6 +196,11 @@ function Run-SelfTest {
             T "local unshelve restores the shelved content" ([System.IO.File]::ReadAllText((Full-Path 'Game/Content/A.uasset')) -eq 'a2-longer')
             Delete-LocalShelf $id
             T "local shelf deleted" ((Get-LocalShelves).Count -eq 0)
+            Save-LastHead 'main' 'dv.commit.7'; $h = Read-LastHead
+            T "launch cache: branch + commit" ($h.Branch -eq 'main' -and $h.Commit -eq 'dv.commit.7')
+            Save-DepotCache 'dv.commit.7' ([string[]]@('A/', 'A/b.uasset'))
+            $dc = Read-DepotCache 'dv.commit.7'
+            T "launch cache: depot list for the same commit only" ($dc.Length -eq 2 -and $dc[1] -eq 'A/b.uasset' -and $null -eq (Read-DepotCache 'dv.commit.8'))
         } finally {
             $script:Root = $saveRoot
             if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Recurse -Force }

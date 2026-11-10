@@ -2,6 +2,11 @@
 
 Versions follow [semver](https://semver.org). Tags: `vX.Y.Z`.
 
+## 0.5.1 - 2026-11-10
+
+- Faster launch offline: Diversion is not asked (its first answer took ~20 s); branch and commit come from the last online read.
+- Depot list saved per commit: no dv ls (15-40 s) while the commit is the same; when it changes, it loads without locking the window.
+
 ## 0.5.0 - 2026-11-10
 
 - State bar: OFFLINE / ONLINE / BUSY / NO DIVERSION, one switch button, branch state.

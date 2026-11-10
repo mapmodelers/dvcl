@@ -248,6 +248,7 @@ function Set-Sync([bool]$on) {
             return
         }
         Write-Baseline $st.Files $st.Commit
+        Save-LastHead $st.Branch $st.Commit
     }
     $sub = 'pause'; if ($on) { $sub = 'resume' }
     $r = Invoke-Dv @('workspace', $sub)
@@ -785,4 +786,34 @@ function Delete-LocalShelf([string]$id) {
     if (-not (Test-Path -LiteralPath ([System.IO.Path]::Combine($dir, 'manifest.json')))) { Fail ("no local shelf '" + $id + "'") }
     Remove-Item -LiteralPath $dir -Recurse -Force
     Say ("Deleted local shelf '" + $id + "'.") 'Green'
+}
+
+# ---------------------------------------------------------------- launch caches (fast start)
+# last-head.txt: branch + commit read online (used offline, when dv is not asked)
+# depot.tsv: dv ls result for one commit (dv ls takes 15-40 s; the list only changes with the commit)
+function Save-LastHead([string]$branch, [string]$commit) {
+    if (-not $branch -or -not $commit) { return }
+    [System.IO.File]::WriteAllText((Dvcl-File 'last-head.txt'), ($branch + "`t" + $commit), $script:Utf8)
+}
+function Read-LastHead {
+    $f = Dvcl-File 'last-head.txt'
+    if (-not (Test-Path -LiteralPath $f)) { return [pscustomobject]@{ Branch = ''; Commit = '' } }
+    $x = [System.IO.File]::ReadAllText($f).Trim().Split("`t")
+    return [pscustomobject]@{ Branch = $x[0]; Commit = $(if ($x.Count -gt 1) { $x[1] } else { '' }) }
+}
+function Save-DepotCache([string]$commit, [string[]]$paths) {
+    if (-not $commit) { return }
+    $lines = New-Object System.Collections.Generic.List[string]
+    $lines.Add('#dvcl-depot' + "`t" + $commit)
+    foreach ($p in $paths) { $lines.Add($p) }
+    [System.IO.File]::WriteAllLines((Dvcl-File 'depot.tsv'), $lines, $script:Utf8)
+}
+function Read-DepotCache([string]$commit) {
+    $f = Dvcl-File 'depot.tsv'
+    if (-not $commit -or -not (Test-Path -LiteralPath $f)) { return $null }
+    $all = [System.IO.File]::ReadAllLines($f)
+    if ($all.Count -eq 0 -or $all[0] -ne ('#dvcl-depot' + "`t" + $commit)) { return $null }
+    $arr = New-Object 'string[]' ($all.Count - 1)
+    [Array]::Copy($all, 1, $arr, 0, $all.Count - 1)
+    return ,$arr
 }

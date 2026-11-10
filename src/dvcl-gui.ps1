@@ -562,6 +562,15 @@ function Refresh-All {
     $script:StatusRunning = $true
     $statusLbl.Text = 'Reading status'
     if (-not $script:Mode) { Set-Mode 'loading' '' }
+    # Offline (dvcl paused sync): Diversion is not asked at all (its first answer takes ~20 s);
+    # branch/commit come from the last online read, files from the folder scan.
+    if (Test-OfflineFlag) {
+        $h = Read-LastHead
+        Write-Log 'offline: dv status skipped'
+        $script:LastStatusArgs = @('(offline, not asked)')
+        Apply-Status ([pscustomobject]@{ Code = 0; SyncBusy = $false; Lines = @(('On branch ' + $h.Branch), ('Cloud workspace is over commit ' + $h.Commit), 'Workspace sync is paused.') })
+        return
+    }
     $script:LastStatusArgs = Status-Args $false
     Start-DvAsync $script:LastStatusArgs 'Apply-Status' $true $true 'Reading status'
 }
@@ -593,6 +602,7 @@ function Apply-Status($r) {
         return
     } elseif (-not $st.Syncing) {
         Save-LastStatus $st.Files
+        Save-LastHead $st.Branch $st.Commit
         # online without dvcl's offline flag: a leftover baseline is stale
         $bl = Dvcl-File 'baseline.tsv'; if (Test-Path -LiteralPath $bl) { Remove-Item -LiteralPath $bl -Force }
     }
@@ -1038,10 +1048,17 @@ function Show-Tab {
     }
     if (-not $script:DepotBuilt) {
         if ($null -ne $script:DepotPaths -and $script:DepotPaths.Length -gt 0 -and $script:DepotCommit -eq $script:WsCommit) { Build-DepotTree }
+        elseif ($null -ne ($cached = Read-DepotCache $script:WsCommit)) {
+            # same commit as last time: the saved list is exact, no dv ls (15-40 s)
+            $script:DepotPaths = $cached; $script:DepotCommit = $script:WsCommit
+            Write-Log ('depot: cache for ' + $script:WsCommit + ' (' + $cached.Length + ' paths)')
+            Build-DepotTree
+        }
         elseif (-not $script:DepotLoading) {
+            # new commit: dv ls in the background WITHOUT locking the window (only the Depot tree waits)
             $script:DepotLoading = $true
-            $tvDepot.Nodes.Clear(); $ph = $tvDepot.Nodes.Add('Loading...'); $ph.ImageKey = 'none'; $ph.SelectedImageKey = 'none'
-            Start-DvAsync @('ls') 'Apply-Depot' $true $false 'Loading depot'
+            $tvDepot.Nodes.Clear(); $ph = $tvDepot.Nodes.Add('Loading depot...'); $ph.ImageKey = 'none'; $ph.SelectedImageKey = 'none'
+            Start-DvAsync @('ls') 'Apply-Depot' $true $false ''
         }
     }
 }
@@ -1063,6 +1080,7 @@ function Apply-Depot($r) {
         & $script:OnSay ('ERROR: ' + $_.Exception.Message) 'Red'; $script:DepotPaths = $null; return
     }
     $script:DepotPaths = $paths; $script:DepotCommit = $script:WsCommit
+    Save-DepotCache $script:WsCommit $paths
     Build-DepotTree
 }
 
@@ -1405,7 +1423,8 @@ function Run-GuiSelfCheck {
         C 'toolbar: Get latest + Tools + Locks' ((@($tool.Items | Where-Object { $_.Text -like 'Get latest*' -or $_.Text -in 'Tools', 'Locks' })).Count -eq 3)
         C 'state bar: label and button match the state' ((($script:Offline -and $modeLbl.Text -eq 'OFFLINE' -and $btnMode.Text -eq 'Go online') -or (-not $script:Offline -and $modeLbl.Text -eq 'ONLINE' -and $btnMode.Text -eq 'Go offline')) -or $script:Mode -eq 'down') ($modeLbl.Text + ' / ' + $btnMode.Text)
         [void]$r.Add('INFO  state bar: ' + $modeLbl.Text + ' | ' + $modeDesc.Text + ' | ' + $branchLbl.Text)
-        C 'status read without waiting for sync (--nowait)' (@($script:LastStatusArgs) -contains '--nowait') (@($script:LastStatusArgs) -join ' ')
+        if (Test-OfflineFlag) { C 'offline launch: Diversion not asked' (@($script:LastStatusArgs) -join ' ' -like '*offline*') (@($script:LastStatusArgs) -join ' ') }
+        else { C 'status read without waiting for sync (--nowait)' (@($script:LastStatusArgs) -contains '--nowait') (@($script:LastStatusArgs) -join ' ') }
         C 'log panel: no dv status dump' (-not $logBox.Text.Contains('dv | In repo'))
         [void]$r.Add('INFO  workspace ' + $script:WsCommit + '   branch head ' + $script:Head + '   button: ' + $btnGet.Text)
         if ($script:Offline) { [void]$r.Add('SKIP  branch head (offline)') } else { C 'branch head read from dv show' ([bool]$script:Head) 'see RUN dv show in dvcl.log' }
