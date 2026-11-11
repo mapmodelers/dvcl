@@ -2,6 +2,11 @@
 
 Versions follow [semver](https://semver.org). Tags: `vX.Y.Z`.
 
+## 0.6.1 - 2026-11-11
+
+- Shelf rows read "Shelved files (n)" (shelf name in the tooltip), like Perforce.
+- Shelf menu: move its files that are still pending elsewhere into its changelist.
+
 ## 0.6.0 - 2026-11-11
 
 - Shelves belong to changelists and show under them in the main view (local or Diversion). A changelist can hold pending files, shelves, or both.

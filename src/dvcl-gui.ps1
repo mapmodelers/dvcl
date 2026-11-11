@@ -213,7 +213,7 @@ function Pending-IconKey($p) {
 # Right: pending changelists
 $tv = New-Object System.Windows.Forms.TreeView
 $tv.Dock = 'Fill'; $tv.CheckBoxes = $true; $tv.HideSelection = $false; $tv.FullRowSelect = $true
-$tv.ShowLines = $true; $tv.AllowDrop = $true; $tv.ItemHeight = 20; $tv.ImageList = $icons
+$tv.ShowLines = $true; $tv.AllowDrop = $true; $tv.ItemHeight = 20; $tv.ImageList = $icons; $tv.ShowNodeToolTips = $true
 $tv.Font = $fontBold   # changelist rows bold; file rows set back to regular (avoids clipped bold text)
 # Header with the icon legend
 $pendHead = New-Object System.Windows.Forms.FlowLayoutPanel
@@ -425,8 +425,10 @@ function Build-Tree {
         }
         # Shelves of this changelist (collapsed): local ones list their files
         foreach ($sh in $shs) {
-            $label = $(if ($sh.Local) { $sh.Id } else { $sh.Name }) + '   ' + $(if ($sh.Local) { 'local' } else { 'Diversion' }) + $(if ($sh.Created) { ', ' + $sh.Created } else { '' })
+            # like Perforce: "Shelved files (n)" under the changelist; shelf name in the tooltip
+            $label = 'Shelved files' + $(if ($sh.Count -ge 0) { ' (' + $sh.Count + ')' } else { '' }) + '   ' + $(if ($sh.Local) { 'local' } else { 'Diversion' }) + $(if ($sh.Created) { ', ' + $sh.Created } else { '' })
             $sn = New-Object System.Windows.Forms.TreeNode($label)
+            $sn.ToolTipText = 'shelf ' + $(if ($sh.Local) { $sh.Id } else { $sh.Name + ' (' + $sh.Id + ')' })
             $sn.Tag = [pscustomobject]@{ Type = 'shelf'; Shelf = $sh; Cl = $name }; $sn.NodeFont = $fontUi
             $sn.ForeColor = [System.Drawing.Color]::FromArgb(120, 80, 30); Set-Icon $sn 'shelf'
             foreach ($sf in @($sh.Files)) {
@@ -1396,6 +1398,9 @@ $tv.Add_NodeMouseClick({
         $script:MenuShelf = $e.Node.Tag; if ($e.Node.Tag.Type -eq 'shelffile') { $script:MenuShelf = $e.Node.Parent.Tag }
         $script:MenuShelfPath = $(if ($e.Node.Tag.Type -eq 'shelffile') { $e.Node.Tag.Path } else { '' })
         [void](Add-MenuItem $menu ("Unshelve into '" + $script:MenuShelf.Cl + "'...") { Do-Unshelve $script:MenuShelf.Shelf $script:MenuShelf.Cl })
+        # shelved files still pending elsewhere (e.g. in default): bring them into this changelist
+        $script:MenuShelfPending = @(@($script:MenuShelf.Shelf.Files) | ForEach-Object { $script:PendingByPath[$_.Path] } | Where-Object { $_ -and -not ((Owner-Of $_.Path) -and (Owner-Of $_.Path).name -ieq $script:MenuShelf.Cl) })
+        [void](Add-MenuItem $menu ("Move its " + $script:MenuShelfPending.Count + " pending file(s) into '" + $script:MenuShelf.Cl + "'") { Do-Move $script:MenuShelf.Cl $script:MenuShelfPending } ($script:MenuShelfPending.Count -gt 0 -and $script:MenuShelf.Cl -ine 'default'))
         [void](Add-MenuItem $menu 'Delete shelf...' { Do-DeleteShelf $script:MenuShelf.Shelf })
         if ($script:MenuShelf.Shelf.Local) { [void](Add-MenuItem $menu 'Open shelf folder' { Open-InExplorer ([System.IO.Path]::Combine((Dvcl-File 'shelves'), $script:MenuShelf.Shelf.Id)) }) }
         if ($script:MenuShelfPath) {
