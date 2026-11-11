@@ -632,8 +632,122 @@ function Test-Ignored([string]$rel, [string]$name, [bool]$isDir, $rules) {
     return $false
 }
 
-# Snapshot of the workspace: rel path -> "size|ticks" for files, "D" for folders (ignored ones skipped)
+# Snapshot of the workspace: rel path -> "size|ticks" for files, "D" for folders (ignored ones skipped).
+# Compiled scanner (same rules as Scan-WorkspacePs, ~20x faster); falls back to PowerShell if it cannot load.
 function Scan-Workspace {
+    if (Ensure-Scanner) {
+        $logs = $null
+        $res = [DvclNative.Scanner]::Scan($script:Root, [ref]$logs)
+        foreach ($l in $logs) { if (-not $script:IgnoreLogged.ContainsKey($l)) { $script:IgnoreLogged[$l] = 1; Write-Log $l } }
+        return ,$res
+    }
+    return (Scan-WorkspacePs)
+}
+
+$script:ScanSource = @'
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Management.Automation;
+namespace DvclNative {
+  public static class Scanner {
+    class Rule { public WildcardPattern P; public WildcardPattern Any; public bool DirOnly; public bool Anchored; public string Base; }
+    static Rule Make(string p, bool dirOnly, bool anchored, string bas) {
+      var o = WildcardOptions.IgnoreCase;
+      return new Rule { P = new WildcardPattern(p, o), Any = new WildcardPattern("*/" + p, o), DirOnly = dirOnly, Anchored = anchored, Base = bas };
+    }
+    static string Full(string root, string rel) { return rel.Length == 0 ? root : Path.Combine(root, rel.Replace('/', Path.DirectorySeparatorChar)); }
+    // .gitignore + .dvignore of one folder, rules relative to it (same parsing as Read-IgnoreFiles)
+    static List<Rule> ReadIgnore(string root, string rel, List<string> log) {
+      var res = new List<Rule>();
+      foreach (var fn in new[] { ".gitignore", ".dvignore" }) {
+        var f = Path.Combine(Full(root, rel), fn);
+        if (!File.Exists(f)) continue;
+        var shown = new List<string>();
+        foreach (var l0 in File.ReadAllLines(f)) {
+          var t = l0.Trim();
+          if (t.Length == 0 || t.StartsWith("#") || t.StartsWith("!")) continue;
+          bool dirOnly = t.EndsWith("/");
+          t = t.Replace('\\', '/').TrimEnd('/');
+          bool anch = t.StartsWith("/");
+          t = t.TrimStart('/').Replace("**", "*");
+          if (t.Length == 0) continue;
+          res.Add(Make(t, dirOnly, anch, rel));
+          shown.Add((anch ? "/" : "") + t + (dirOnly ? "/" : ""));
+        }
+        log.Add("ignore file " + (rel.Length > 0 ? rel + "/" : "") + fn + ": " + string.Join("  ", shown));
+      }
+      return res;
+    }
+    static bool Ignored(string rel, bool isDir, List<Rule> rules) {
+      foreach (var r in rules) {
+        if (r.DirOnly && !isDir) continue;
+        var sub = rel;
+        if (r.Base.Length > 0) { if (rel.Length <= r.Base.Length) continue; sub = rel.Substring(r.Base.Length + 1); }
+        if (r.P.IsMatch(sub)) return true;
+        if (!r.Anchored && r.Any.IsMatch(sub)) return true;
+      }
+      return false;
+    }
+    public static Dictionary<string, string> Scan(string root, out string[] logOut) {
+      var log = new List<string>();
+      var res = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+      var rootRules = new List<Rule> { Make(".diversion", false, true, ""), Make(".dvcl", false, true, "") };
+      rootRules.AddRange(ReadIgnore(root, "", log));
+      var stack = new Stack<KeyValuePair<string, List<Rule>>>();
+      stack.Push(new KeyValuePair<string, List<Rule>>("", rootRules));
+      while (stack.Count > 0) {
+        var top = stack.Pop(); var rel = top.Key; var rules = top.Value;
+        if (rel.Length > 0) { var more = ReadIgnore(root, rel, log); if (more.Count > 0) { rules = new List<Rule>(rules); rules.AddRange(more); } }
+        try {
+          foreach (var i in new DirectoryInfo(Full(root, rel)).EnumerateFileSystemInfos()) {
+            if ((i.Attributes & FileAttributes.ReparsePoint) != 0) continue;
+            var r = rel.Length > 0 ? rel + "/" + i.Name : i.Name;
+            bool isDir = (i.Attributes & FileAttributes.Directory) != 0;
+            if (Ignored(r, isDir, rules)) continue;
+            if (isDir) { res[r] = "D"; stack.Push(new KeyValuePair<string, List<Rule>>(r, rules)); }
+            else { var fi = (FileInfo)i; res[r] = fi.Length.ToString() + "|" + fi.LastWriteTimeUtc.Ticks.ToString(); }
+          }
+        } catch (Exception e) { log.Add("scan: cannot read " + rel + " (" + e.Message + ")"); }
+      }
+      logOut = log.ToArray();
+      return res;
+    }
+  }
+}
+'@
+
+# Loads the scanner: compiled once per source version into %LOCALAPPDATA%\dvcl\dvclscan-<hash>.dll
+$script:ScannerOk = $null
+function Ensure-Scanner {
+    if ($null -ne $script:ScannerOk) { return $script:ScannerOk }
+    $script:ScannerOk = $false
+    if ($env:DVCL_NO_NATIVE) { return $false }
+    try {
+        if (-not ('DvclNative.Scanner' -as [type])) {
+            $sw = [Diagnostics.Stopwatch]::StartNew()
+            $sha = [System.Security.Cryptography.SHA1]::Create()
+            $hash = (-join ($sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($script:ScanSource + $PSVersionTable.PSVersion.ToString())) | Select-Object -First 6 | ForEach-Object { $_.ToString('x2') }))
+            $base = $env:LOCALAPPDATA; if (-not $base) { $base = [System.IO.Path]::GetTempPath() }
+            $dir = [System.IO.Path]::Combine($base, 'dvcl'); [void][System.IO.Directory]::CreateDirectory($dir)
+            $dll = [System.IO.Path]::Combine($dir, 'dvclscan-' + $hash + '.dll')
+            if (-not (Test-Path -LiteralPath $dll)) {
+                $tmp = $dll + '.' + [guid]::NewGuid().ToString('N') + '.tmp.dll'
+                try { Add-Type -TypeDefinition $script:ScanSource -OutputAssembly $tmp -OutputType Library }
+                catch { Add-Type -TypeDefinition $script:ScanSource -OutputAssembly $tmp -OutputType Library -ReferencedAssemblies ([psobject].Assembly.Location) }
+                try { Move-Item -LiteralPath $tmp -Destination $dll -ErrorAction Stop } catch { if (-not (Test-Path -LiteralPath $dll)) { $dll = $tmp } }
+                Write-Timing 'scanner compiled' $sw.Elapsed.TotalMilliseconds
+            }
+            Add-Type -Path $dll
+            Write-Timing 'scanner loaded' $sw.Elapsed.TotalMilliseconds
+        }
+        $script:ScannerOk = $true
+    } catch { Write-Log ("scanner: native unavailable, PowerShell scan used (" + $_.Exception.Message + ")") }
+    return $script:ScannerOk
+}
+
+# PowerShell scan (reference implementation and fallback)
+function Scan-WorkspacePs {
     $res = New-Object 'System.Collections.Generic.Dictionary[string,string]' ([StringComparer]::OrdinalIgnoreCase)
     $stack = New-Object System.Collections.Stack
     $stack.Push(@('', (Read-Ignore)))

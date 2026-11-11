@@ -2,6 +2,10 @@
 
 Versions follow [semver](https://semver.org). Tags: `vX.Y.Z`.
 
+## 0.7.1 - 2026-11-11
+
+- Offline folder scan compiled (C#, built once into %LOCALAPPDATA%\dvcl): about 10x faster; same rules, PowerShell scan kept as fallback.
+
 ## 0.7.0 - 2026-11-11
 
 - Dark theme (toolbar: Dark / Light), remembered.

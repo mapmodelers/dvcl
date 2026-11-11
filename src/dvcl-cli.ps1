@@ -166,6 +166,9 @@ function Run-SelfTest {
             MkF 'Game/Content/A.uasset' 'a1'; MkF 'Game/Content/B.uasset' 'b1'; MkF 'Game/Content/C.uasset' 'c1'
             MkF 'Game/Saved/log.txt' 'x'; MkF 'Game/Intermediate/x.obj' 'x'; MkF 'Game/Content/t.tmp' 'x'; MkF 'artsource/big.blend' 'x'
             $sc = Scan-Workspace
+            $ps = Scan-WorkspacePs
+            $same = ($sc.Count -eq $ps.Count) -and (@($ps.Keys | Where-Object { -not $sc.ContainsKey($_) -or $sc[$_] -ne $ps[$_] }).Count -eq 0)
+            T "scan: compiled scanner = PowerShell scan (same entries)" ((Ensure-Scanner) -and $same) ("native " + $sc.Count + " / ps " + $ps.Count)
             T "scan: Saved/* and Intermediate/* hidden at any depth" (-not $sc.ContainsKey('Game/Saved/log.txt') -and -not $sc.ContainsKey('Game/Intermediate/x.obj'))
             T "scan: wildcard, /anchored, nested .gitignore, .diversion" (-not $sc.ContainsKey('Game/Content/t.tmp') -and -not $sc.ContainsKey('artsource') -and $sc.ContainsKey('Game/Sub/artsource/keep.txt') -and -not $sc.ContainsKey('Game/Cache') -and -not $sc.ContainsKey('.diversion'))
             T "scan: normal files and folders kept" ($sc.ContainsKey('Game/Content/A.uasset') -and $sc['Game/Content'] -eq 'D')
