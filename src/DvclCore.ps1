@@ -717,32 +717,37 @@ namespace DvclNative {
 }
 '@
 
-# Loads the scanner: compiled once per source version into %LOCALAPPDATA%\dvcl\dvclscan-<hash>.dll
-$script:ScannerOk = $null
-function Ensure-Scanner {
-    if ($null -ne $script:ScannerOk) { return $script:ScannerOk }
-    $script:ScannerOk = $false
+# Compiled helpers (scanner, dark UI): built once per source version into %LOCALAPPDATA%\dvcl\<name>-<hash>.dll
+function Ensure-Native([string]$typeName, [string]$name, [string]$source, [string[]]$refs = @()) {
+    if ($typeName -as [type]) { return $true }
     if ($env:DVCL_NO_NATIVE) { return $false }
     try {
-        if (-not ('DvclNative.Scanner' -as [type])) {
-            $sw = [Diagnostics.Stopwatch]::StartNew()
-            $sha = [System.Security.Cryptography.SHA1]::Create()
-            $hash = (-join ($sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($script:ScanSource + $PSVersionTable.PSVersion.ToString())) | Select-Object -First 6 | ForEach-Object { $_.ToString('x2') }))
-            $base = $env:LOCALAPPDATA; if (-not $base) { $base = [System.IO.Path]::GetTempPath() }
-            $dir = [System.IO.Path]::Combine($base, 'dvcl'); [void][System.IO.Directory]::CreateDirectory($dir)
-            $dll = [System.IO.Path]::Combine($dir, 'dvclscan-' + $hash + '.dll')
-            if (-not (Test-Path -LiteralPath $dll)) {
-                $tmp = $dll + '.' + [guid]::NewGuid().ToString('N') + '.tmp.dll'
-                try { Add-Type -TypeDefinition $script:ScanSource -OutputAssembly $tmp -OutputType Library }
-                catch { Add-Type -TypeDefinition $script:ScanSource -OutputAssembly $tmp -OutputType Library -ReferencedAssemblies ([psobject].Assembly.Location) }
-                try { Move-Item -LiteralPath $tmp -Destination $dll -ErrorAction Stop } catch { if (-not (Test-Path -LiteralPath $dll)) { $dll = $tmp } }
-                Write-Timing 'scanner compiled' $sw.Elapsed.TotalMilliseconds
-            }
-            Add-Type -Path $dll
-            Write-Timing 'scanner loaded' $sw.Elapsed.TotalMilliseconds
+        $sw = [Diagnostics.Stopwatch]::StartNew()
+        $sha = [System.Security.Cryptography.SHA1]::Create()
+        $hash = (-join ($sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($source + ($refs -join ',') + $PSVersionTable.PSVersion.ToString())) | Select-Object -First 6 | ForEach-Object { $_.ToString('x2') }))
+        $base = $env:LOCALAPPDATA; if (-not $base) { $base = [System.IO.Path]::GetTempPath() }
+        $dir = [System.IO.Path]::Combine($base, 'dvcl'); [void][System.IO.Directory]::CreateDirectory($dir)
+        $dll = [System.IO.Path]::Combine($dir, $name + '-' + $hash + '.dll')
+        if (-not (Test-Path -LiteralPath $dll)) {
+            $tmp = $dll + '.' + [guid]::NewGuid().ToString('N') + '.tmp.dll'
+            $r1 = @($refs); $r2 = @($refs) + @([psobject].Assembly.Location)
+            try { if ($r1.Count) { Add-Type -TypeDefinition $source -OutputAssembly $tmp -OutputType Library -ReferencedAssemblies $r1 } else { Add-Type -TypeDefinition $source -OutputAssembly $tmp -OutputType Library } }
+            catch { Add-Type -TypeDefinition $source -OutputAssembly $tmp -OutputType Library -ReferencedAssemblies $r2 }
+            try { Move-Item -LiteralPath $tmp -Destination $dll -ErrorAction Stop } catch { if (-not (Test-Path -LiteralPath $dll)) { $dll = $tmp } }
+            Write-Timing ($name + ' compiled') $sw.Elapsed.TotalMilliseconds
         }
-        $script:ScannerOk = $true
-    } catch { Write-Log ("scanner: native unavailable, PowerShell scan used (" + $_.Exception.Message + ")") }
+        Add-Type -Path $dll
+        Write-Timing ($name + ' loaded') $sw.Elapsed.TotalMilliseconds
+        return $true
+    } catch { Write-Log ($name + ": native unavailable (" + $_.Exception.Message + ")"); return $false }
+}
+
+$script:ScannerOk = $null
+function Ensure-Scanner {
+    if ($null -eq $script:ScannerOk) {
+        $script:ScannerOk = Ensure-Native 'DvclNative.Scanner' 'dvclscan' $script:ScanSource
+        if (-not $script:ScannerOk) { Write-Log 'scanner: PowerShell scan used' }
+    }
     return $script:ScannerOk
 }
 

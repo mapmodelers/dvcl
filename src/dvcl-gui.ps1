@@ -19,14 +19,14 @@ trap { [void][System.Windows.Forms.MessageBox]::Show(($_.Exception.Message + "`r
 $script:SettingsFile = Join-Path $env:APPDATA 'dvcl\settings.json'
 function Load-Settings {
     try { if (Test-Path -LiteralPath $script:SettingsFile) { return (Get-Content -LiteralPath $script:SettingsFile -Raw | ConvertFrom-Json) } } catch {}
-    return [pscustomobject]@{ lastRepo = ''; w = 980; h = 640; theme = 'light' }
+    return [pscustomobject]@{ lastRepo = ''; w = 980; h = 640; ui = 'dark' }
 }
 function Save-Settings {
     if ($Shot) { return }   # screenshot runs never touch the user's settings
     try {
         $dir = Split-Path -Parent $script:SettingsFile
         if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir | Out-Null }
-        [pscustomobject]@{ lastRepo = [string]$script:Root; w = $form.Width; h = $form.Height; theme = $(if ($script:Dark) { 'dark' } else { 'light' }) } | ConvertTo-Json | Set-Content -LiteralPath $script:SettingsFile -Encoding UTF8
+        [pscustomobject]@{ lastRepo = [string]$script:Root; w = $form.Width; h = $form.Height; ui = $(if ($script:Dark) { 'dark' } else { 'light' }) } | ConvertTo-Json | Set-Content -LiteralPath $script:SettingsFile -Encoding UTF8
     } catch {}
 }
 $settings = Load-Settings
@@ -48,6 +48,7 @@ $script:PalLight = @{
     Back = [System.Drawing.SystemColors]::Control; Fore = [System.Drawing.SystemColors]::ControlText; Input = [System.Drawing.SystemColors]::Window
     Muted = [System.Drawing.Color]::FromArgb(110, 110, 110); Stale = [System.Drawing.Color]::DarkGray; Shelf = [System.Drawing.Color]::FromArgb(120, 80, 30)
     Log = [System.Drawing.Color]::FromArgb(250, 250, 250); Link = [System.Drawing.Color]::FromArgb(0, 90, 190)
+    Border = [System.Drawing.SystemColors]::ControlDark; Hi = [System.Drawing.SystemColors]::Highlight
     offline = [System.Drawing.Color]::FromArgb(255, 236, 160); online = [System.Drawing.Color]::FromArgb(214, 240, 214)
     busy = [System.Drawing.Color]::FromArgb(210, 228, 250); down = [System.Drawing.Color]::FromArgb(250, 215, 215); loading = [System.Drawing.SystemColors]::Control
     A = [System.Drawing.Color]::FromArgb(0, 120, 215); M = [System.Drawing.Color]::FromArgb(30, 30, 30); D = [System.Drawing.Color]::FromArgb(200, 40, 40)
@@ -57,6 +58,7 @@ $script:PalDark = @{
     Back = [System.Drawing.Color]::FromArgb(45, 45, 48); Fore = [System.Drawing.Color]::FromArgb(225, 225, 225); Input = [System.Drawing.Color]::FromArgb(30, 30, 30)
     Muted = [System.Drawing.Color]::FromArgb(150, 150, 150); Stale = [System.Drawing.Color]::FromArgb(115, 115, 115); Shelf = [System.Drawing.Color]::FromArgb(205, 165, 110)
     Log = [System.Drawing.Color]::FromArgb(24, 24, 24); Link = [System.Drawing.Color]::FromArgb(110, 175, 255)
+    Border = [System.Drawing.Color]::FromArgb(63, 63, 70); Hi = [System.Drawing.Color]::FromArgb(62, 62, 66)
     offline = [System.Drawing.Color]::FromArgb(92, 74, 20); online = [System.Drawing.Color]::FromArgb(35, 80, 45)
     busy = [System.Drawing.Color]::FromArgb(35, 60, 100); down = [System.Drawing.Color]::FromArgb(110, 40, 40); loading = [System.Drawing.Color]::FromArgb(45, 45, 48)
     A = [System.Drawing.Color]::FromArgb(95, 170, 255); M = [System.Drawing.Color]::FromArgb(225, 225, 225); D = [System.Drawing.Color]::FromArgb(240, 105, 105)
@@ -1288,6 +1290,7 @@ $treeMenu = {
     }
     $mx = Add-MenuItem $menuL 'Show in Explorer' { Open-PathInExplorer 'local' $script:MenuDisplay }; $mx.ShortcutKeyDisplayString = 'Ctrl+Shift+S'
     [void](Add-MenuItem $menuL 'Copy path' { [System.Windows.Forms.Clipboard]::SetText($script:MenuDisplay) })
+    Theme-Strip $menuL
     $menuL.Show($s, $e.Location)
 }
 $tvLocal.Add_NodeMouseClick($treeMenu)
@@ -1334,32 +1337,113 @@ function Get-BugUrl {
 function Do-ReportBug { Start-Process (Get-BugUrl) }
 
 # ---------------------------------------------------------------- theme
+# Dark toolbars / menus without white outlines, dark scrollbars, dark title bar (compiled once, cached)
+$script:UiSource = @'
+using System;
+using System.Drawing;
+using System.Runtime.InteropServices;
+using System.Windows.Forms;
+namespace DvclNative {
+  public class DarkColors : ProfessionalColorTable {
+    Color b, bd, hl;
+    public DarkColors(Color back, Color border, Color high) { b = back; bd = border; hl = high; UseSystemColors = false; }
+    public override Color ToolStripGradientBegin { get { return b; } }
+    public override Color ToolStripGradientMiddle { get { return b; } }
+    public override Color ToolStripGradientEnd { get { return b; } }
+    public override Color ToolStripBorder { get { return b; } }
+    public override Color ToolStripDropDownBackground { get { return b; } }
+    public override Color ToolStripContentPanelGradientBegin { get { return b; } }
+    public override Color ToolStripContentPanelGradientEnd { get { return b; } }
+    public override Color StatusStripGradientBegin { get { return b; } }
+    public override Color StatusStripGradientEnd { get { return b; } }
+    public override Color MenuStripGradientBegin { get { return b; } }
+    public override Color MenuStripGradientEnd { get { return b; } }
+    public override Color MenuBorder { get { return bd; } }
+    public override Color MenuItemBorder { get { return hl; } }
+    public override Color MenuItemSelected { get { return hl; } }
+    public override Color MenuItemSelectedGradientBegin { get { return hl; } }
+    public override Color MenuItemSelectedGradientEnd { get { return hl; } }
+    public override Color MenuItemPressedGradientBegin { get { return hl; } }
+    public override Color MenuItemPressedGradientMiddle { get { return hl; } }
+    public override Color MenuItemPressedGradientEnd { get { return hl; } }
+    public override Color ImageMarginGradientBegin { get { return b; } }
+    public override Color ImageMarginGradientMiddle { get { return b; } }
+    public override Color ImageMarginGradientEnd { get { return b; } }
+    public override Color ButtonSelectedHighlight { get { return hl; } }
+    public override Color ButtonSelectedBorder { get { return hl; } }
+    public override Color ButtonSelectedGradientBegin { get { return hl; } }
+    public override Color ButtonSelectedGradientMiddle { get { return hl; } }
+    public override Color ButtonSelectedGradientEnd { get { return hl; } }
+    public override Color ButtonPressedGradientBegin { get { return hl; } }
+    public override Color ButtonPressedGradientMiddle { get { return hl; } }
+    public override Color ButtonPressedGradientEnd { get { return hl; } }
+    public override Color ButtonCheckedGradientBegin { get { return hl; } }
+    public override Color ButtonCheckedGradientMiddle { get { return hl; } }
+    public override Color ButtonCheckedGradientEnd { get { return hl; } }
+    public override Color SeparatorDark { get { return bd; } }
+    public override Color SeparatorLight { get { return b; } }
+    public override Color GripDark { get { return b; } }
+    public override Color GripLight { get { return b; } }
+    public override Color OverflowButtonGradientBegin { get { return b; } }
+    public override Color OverflowButtonGradientMiddle { get { return b; } }
+    public override Color OverflowButtonGradientEnd { get { return b; } }
+  }
+  public class DarkRenderer : ToolStripProfessionalRenderer {
+    public DarkRenderer(ProfessionalColorTable t) : base(t) { RoundedEdges = false; }
+    protected override void OnRenderToolStripBorder(ToolStripRenderEventArgs e) { if (e.ToolStrip is ToolStripDropDown) base.OnRenderToolStripBorder(e); }
+    protected override void OnRenderArrow(ToolStripArrowRenderEventArgs e) { e.ArrowColor = e.Item.ForeColor; base.OnRenderArrow(e); }
+  }
+  public static class Win {
+    [DllImport("uxtheme.dll", CharSet = CharSet.Unicode)] public static extern int SetWindowTheme(IntPtr h, string app, string id);
+    [DllImport("dwmapi.dll")] public static extern int DwmSetWindowAttribute(IntPtr h, int a, ref int v, int s);
+  }
+}
+'@
+$script:UiOk = $null
+function Ensure-Ui {
+    if ($null -eq $script:UiOk) { $script:UiOk = Ensure-Native 'DvclNative.DarkRenderer' 'dvclui' $script:UiSource @('System.Windows.Forms', 'System.Drawing') }
+    return $script:UiOk
+}
+
 function Theme-Walk($root) {
-    $P = $script:Pal
+    $P = $script:Pal; $d = $script:Dark; $ui = Ensure-Ui
     foreach ($c in @($root) + @(Get-Descendants $root)) {
         if ($c -eq $modeBar -or $c -eq $modeFlow -or $c -is [System.Windows.Forms.ProgressBar] -or $c -is [System.Windows.Forms.PictureBox]) { continue }
-        if ($c -is [System.Windows.Forms.TreeView] -or $c -is [System.Windows.Forms.ListView] -or $c -is [System.Windows.Forms.CheckedListBox]) { $c.BackColor = $P.Input; $c.ForeColor = $P.Fore; if ($c -is [System.Windows.Forms.TreeView]) { $c.LineColor = $P.Muted } }
-        elseif ($c -is [System.Windows.Forms.TextBox]) { $c.BackColor = $(if ($c -eq $logBox) { $P.Log } else { $P.Input }); $c.ForeColor = $P.Fore }
+        if ($c -is [System.Windows.Forms.TreeView] -or $c -is [System.Windows.Forms.ListView] -or $c -is [System.Windows.Forms.CheckedListBox] -or ($c -is [System.Windows.Forms.TextBox])) {
+            $c.BackColor = $(if ($c -eq $logBox) { $P.Log } else { $P.Input }); $c.ForeColor = $P.Fore
+            if ($c -is [System.Windows.Forms.TreeView]) { $c.LineColor = $P.Muted }
+            # no light 3D frames in dark; dark scrollbars / expanders (Windows 10+)
+            if ($c -is [System.Windows.Forms.TreeView] -or $c -is [System.Windows.Forms.TextBox] -or $c -is [System.Windows.Forms.ListView]) { $c.BorderStyle = $(if ($d) { 'FixedSingle' } else { 'Fixed3D' }) }
+            if ($c -is [System.Windows.Forms.TextBox] -and -not $c.Multiline -and $d) { $c.BorderStyle = 'FixedSingle' }
+            if ($ui) { try { [void][DvclNative.Win]::SetWindowTheme($c.Handle, $(if ($d) { 'DarkMode_Explorer' } else { 'Explorer' }), $null) } catch {} }
+        }
         elseif ($c -is [System.Windows.Forms.Button]) {
-            if ($script:Dark) { $c.FlatStyle = 'Flat'; $c.BackColor = $P.Back; $c.ForeColor = $P.Fore; $c.FlatAppearance.BorderColor = $P.Muted }
+            if ($d) { $c.FlatStyle = 'Flat'; $c.BackColor = $P.Back; $c.ForeColor = $P.Fore; $c.FlatAppearance.BorderColor = $P.Border; $c.FlatAppearance.MouseOverBackColor = $P.Hi }
             else { $c.FlatStyle = 'System'; $c.UseVisualStyleBackColor = $true; $c.ForeColor = $P.Fore }
         }
         elseif ($c -is [System.Windows.Forms.Label]) { if ($c -ne $branchLbl) { $c.ForeColor = $P.Fore } }
-        elseif ($c -is [System.Windows.Forms.ToolStrip]) {
-            $c.RenderMode = $(if ($script:Dark) { 'System' } else { 'ManagerRenderMode' }); $c.BackColor = $P.Back; $c.ForeColor = $P.Fore
-            foreach ($it in $c.Items) { if ($it -ne $btnGet -or $btnGet.Text -eq 'Get latest') { $it.ForeColor = $P.Fore } }
-        }
+        elseif ($c -is [System.Windows.Forms.ToolStrip]) { Theme-Strip $c }
         elseif ($c -is [System.Windows.Forms.Form] -or $c -is [System.Windows.Forms.Panel] -or $c -is [System.Windows.Forms.SplitContainer] -or $c -is [System.Windows.Forms.FlowLayoutPanel]) { $c.BackColor = $P.Back; $c.ForeColor = $P.Fore }
+        if ($c -is [System.Windows.Forms.Form]) { Set-TitleDark $c $d }
+    }
+}
+# Toolbars, status bar and menus: dark renderer without outlines, or back to Windows look
+function Theme-Strip($c) {
+    $P = $script:Pal
+    if ($script:Dark -and (Ensure-Ui)) { $c.Renderer = New-Object DvclNative.DarkRenderer (New-Object DvclNative.DarkColors $P.Back, $P.Border, $P.Hi) }
+    else { $c.RenderMode = 'ManagerRenderMode' }
+    $c.BackColor = $P.Back; $c.ForeColor = $P.Fore
+    foreach ($it in $c.Items) {
+        if ($it -ne $btnGet -or $btnGet.Text -eq 'Get latest') { $it.ForeColor = $P.Fore }
+        if ($it -is [System.Windows.Forms.ToolStripDropDownItem]) { foreach ($sub in $it.DropDownItems) { $sub.ForeColor = $P.Fore }; Theme-Strip $it.DropDown }
     }
 }
 function Get-Descendants($c) { foreach ($x in $c.Controls) { $x; Get-Descendants $x } }
 
 # Windows 10/11 dark title bar (best effort)
 function Set-TitleDark($f, [bool]$on) {
-    try {
-        if (-not ('DvclNative.Dwm' -as [type])) { Add-Type -Namespace DvclNative -Name Dwm -MemberDefinition '[DllImport("dwmapi.dll")] public static extern int DwmSetWindowAttribute(IntPtr h, int a, ref int v, int s);' }
-        $v = [int]$on; [void][DvclNative.Dwm]::DwmSetWindowAttribute($f.Handle, 20, [ref]$v, 4)
-    } catch {}
+    if (-not (Ensure-Ui)) { return }
+    try { $v = [int]$on; [void][DvclNative.Win]::DwmSetWindowAttribute($f.Handle, 20, [ref]$v, 4) } catch {}
 }
 
 function Apply-Theme([bool]$dark, [bool]$rebuild = $true) {
@@ -1368,11 +1452,10 @@ function Apply-Theme([bool]$dark, [bool]$rebuild = $true) {
     foreach ($k in 'A', 'M', 'D', 'R') { $colKind[$k] = $script:Pal[$k] }
     $colKind['!'] = $script:Pal.X; $colKind['?'] = $script:Pal.Q
     Theme-Walk $form
-    foreach ($m in @($menu, $menuL)) { if ($m) { $m.RenderMode = $(if ($dark) { 'System' } else { 'ManagerRenderMode' }); $m.BackColor = $script:Pal.Back; $m.ForeColor = $script:Pal.Fore } }
+    foreach ($m in @($menu, $menuL, $trayMenu)) { if ($m) { Theme-Strip $m } }
     $btnTheme.Text = $(if ($dark) { 'Light' } else { 'Dark' })
     if ($script:Mode) { Set-Mode $script:Mode $modeDesc.Text }
     Set-BranchInfo
-    Set-TitleDark $form $dark
     if ($rebuild -and $script:Root) { Build-Tree; $script:LocalBuilt = $false; $script:DepotBuilt = $false; Show-Tab }
     Save-Settings
 }
@@ -1512,7 +1595,7 @@ $tv.Add_NodeMouseClick({
             [void]$menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
             [void](Add-MenuItem $menu 'Show in Local tree' { Navigate-Tree 'local' $script:MenuShelfPath })
         }
-        $menu.Show($tv, $e.Location); return
+        Theme-Strip $menu; $menu.Show($tv, $e.Location); return
     }
     $isCl = $e.Node.Tag.Type -eq 'cl'
     $clName = Selected-CL
@@ -1547,6 +1630,7 @@ $tv.Add_NodeMouseClick({
         $mx = Add-MenuItem $menu 'Show in Explorer' { Do-ShowInExplorer }; $mx.ShortcutKeyDisplayString = 'Ctrl+Shift+S'
         [void](Add-MenuItem $menu 'Copy path' { [System.Windows.Forms.Clipboard]::SetText(($script:Root + '\' + ((Selected-Rel) -replace '/', '\'))) })
     }
+    Theme-Strip $menu
     $menu.Show($tv, $e.Location)
 })
 
@@ -1580,7 +1664,7 @@ $form.Add_Shown({
     if ($StartDir) { $root = Find-DvRoot $StartDir }
     if (-not $root -and $settings.lastRepo) { $root = Find-DvRoot $settings.lastRepo }
     $script:SyncMode = [bool]$SelfCheck -or [bool]$Shot
-    if ($settings.theme -eq 'dark' -and -not $Shot) { Apply-Theme $true $false }
+    if ($settings.ui -ne 'light' -and -not $Shot) { Apply-Theme $true $false }   # dark unless chosen light
     if (-not $SelfCheck -and -not $Shot) { $watchTimer.Start() }
     if ($root) {
         Set-DvRoot $root; Save-Settings
@@ -1641,6 +1725,7 @@ function Run-GuiSelfCheck {
         Apply-Theme (-not $wasDark); $c1 = $tvLocal.BackColor; $m1 = $colKind['M']
         Apply-Theme $wasDark; $c2 = $tvLocal.BackColor
         C 'theme: toggle recolors trees and file states, then restores' ($c1 -ne $c2 -and $m1 -ne $colKind['M'] -and $btnTheme.Text -eq $(if ($wasDark) { 'Light' } else { 'Dark' })) ("" + $c1 + ' / ' + $c2)
+        C 'tray: icon + Open / Exit menu ready (off in self-check)' ($notify.Icon -and $trayMenu.Items.Count -eq 3 -and -not $script:TrayOn)
         C 'window unlocked when idle' ($script:BusyDepth -eq 0 -and $tool.Enabled -and $split.Enabled -and -not $busyBar.Visible) ("depth " + $script:BusyDepth)
         $script:SyncMode = $false; $script:scAsync = $null; $ticks = 0
         $swA = [Diagnostics.Stopwatch]::StartNew()
@@ -1751,10 +1836,67 @@ function Run-GuiSelfCheck {
     $out = Join-Path $script:ToolDir 'tests\gui-selfcheck.txt'
     Set-Content -LiteralPath $out -Value $r -Encoding UTF8
 }
+# ---------------------------------------------------------------- tray + single window
+# Closing the window (X) hides it to the notification area; tray icon: click = open, right-click > Exit.
+# One window per workspace: launching dvcl again brings the running one back.
+$script:TrayOn = $false; $script:ReallyExit = $false; $script:TrayTipShown = $false
+$trayMenu = New-Object System.Windows.Forms.ContextMenuStrip
+$notify = New-Object System.Windows.Forms.NotifyIcon
+$notify.Icon = $(if ($form.Icon) { $form.Icon } else { [System.Drawing.SystemIcons]::Application })
+$notify.Text = 'dvcl'
+$notify.ContextMenuStrip = $trayMenu
+function Show-FromTray {
+    $form.Show()
+    if ($form.WindowState -eq 'Minimized') { $form.WindowState = 'Normal' }
+    $form.Activate(); $form.BringToFront()
+}
+function Exit-Dvcl { $script:ReallyExit = $true; $form.Close() }
+[void](Add-MenuItem $trayMenu 'Open dvcl' { Show-FromTray })
+[void]$trayMenu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
+[void](Add-MenuItem $trayMenu 'Exit' { Exit-Dvcl })
+$trayMenu.Add_Opening({ Theme-Strip $trayMenu })
+$notify.Add_MouseClick({ param($s, $e) if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Left) { Show-FromTray } })
+
+function Claim-Instance([string]$root) {
+    $sha = [System.Security.Cryptography.SHA1]::Create()
+    $key = 'dvcl-' + (-join ($sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($root.ToLowerInvariant().TrimEnd('\'))) | Select-Object -First 8 | ForEach-Object { $_.ToString('x2') }))
+    $created = $false
+    $script:InstMutex = [System.Threading.Mutex]::new($true, ('Local\' + $key + '-m'), [ref]$created)
+    if (-not $created) {
+        try { $ev = [System.Threading.EventWaitHandle]::OpenExisting('Local\' + $key + '-e'); [void]$ev.Set() } catch {}
+        return $false
+    }
+    $script:ShowEvent = New-Object System.Threading.EventWaitHandle($false, [System.Threading.EventResetMode]::AutoReset, ('Local\' + $key + '-e'))
+    return $true
+}
+$instTimer = New-Object System.Windows.Forms.Timer
+$instTimer.Interval = 300
+$instTimer.Add_Tick({ if ($script:ShowEvent -and $script:ShowEvent.WaitOne(0)) { Show-FromTray } })
+
 $form.Add_FormClosing({
+    param($s, $e)
+    if ($script:TrayOn -and -not $script:ReallyExit -and $e.CloseReason -eq [System.Windows.Forms.CloseReason]::UserClosing) {
+        $e.Cancel = $true
+        $form.Hide()
+        if (-not $script:TrayTipShown) { $script:TrayTipShown = $true; $notify.ShowBalloonTip(2500, 'dvcl', 'Still running here. Right-click > Exit to quit.', [System.Windows.Forms.ToolTipIcon]::Info) }
+        return
+    }
     Save-Settings
-    $jobTimer.Stop(); $pollTimer.Stop(); $watchTimer.Stop()
+    $jobTimer.Stop(); $pollTimer.Stop(); $watchTimer.Stop(); $instTimer.Stop()
     foreach ($j in @($script:Jobs)) { try { $j.PS.Stop(); $j.PS.Dispose() } catch {} }
+    $notify.Visible = $false; $notify.Dispose()
+    if ($script:InstMutex) { try { $script:InstMutex.ReleaseMutex() } catch {}; $script:InstMutex.Dispose() }
 })
 
-[void]$form.ShowDialog()
+# Normal launch: one window per workspace, tray icon on
+if (-not $SelfCheck -and -not $Shot) {
+    $r0 = $null
+    if ($StartDir) { $r0 = Find-DvRoot $StartDir }
+    if (-not $r0 -and $settings.lastRepo) { $r0 = Find-DvRoot $settings.lastRepo }
+    if ($r0 -and -not (Claim-Instance $r0)) { exit }
+    $notify.Text = ('dvcl - ' + $(if ($r0) { Split-Path -Leaf $r0 } else { 'no repo' }))
+    if ($notify.Text.Length -gt 63) { $notify.Text = $notify.Text.Substring(0, 63) }
+    $notify.Visible = $true; $script:TrayOn = $true
+    $instTimer.Start()
+}
+[System.Windows.Forms.Application]::Run($form)

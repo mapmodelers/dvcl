@@ -2,6 +2,11 @@
 
 Versions follow [semver](https://semver.org). Tags: `vX.Y.Z`.
 
+## 0.8.0 - 2026-11-11
+
+- Closing the window keeps dvcl in the notification area; click the icon to open, right-click > Exit to quit. Launching dvcl again brings back the running window (one per workspace).
+- Dark theme is the default. No more light outlines: dark toolbars, menus, scrollbars, borders and title bar.
+
 ## 0.7.1 - 2026-11-11
 
 - Offline folder scan compiled (C#, built once into %LOCALAPPDATA%\dvcl): about 10x faster; same rules, PowerShell scan kept as fallback.
