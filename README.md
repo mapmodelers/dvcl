@@ -1,11 +1,12 @@
 # dvcl
 
-Changelists for [Diversion](https://diversion.dev).
+Changelists for [Diversion](https://diversion.dev). [Site](https://mapmodelers.github.io/dvcl/)
 
 ![dvcl](docs/screenshot.png)
 
-- Changelists: group pending files, submit, shelve, revert.
-- Local and Depot trees, state icons, path bars.
+- Numbered changelists: group pending files, submit, shelve, revert.
+- Shelves: Diversion shelves are shared with your team (they unshelve to test); local shelves stay on your PC.
+- Local and Depot trees, state icons, path bars. Drop a file on a tree to find it.
 - Offline mode: nothing syncs. Submit and Get latest go online, then back.
 - Command line: `dvcl help`.
 

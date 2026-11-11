@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>dvcl - changelists for Diversion</title>
+<meta name="description" content="Changelists, shelves and offline work for Diversion version control. Windows window + command line. Free, MIT.">
+<meta name="keywords" content="Diversion, version control, changelist, shelve, offline, game development, Unreal Engine, Windows">
+<meta property="og:title" content="dvcl - changelists for Diversion">
+<meta property="og:description" content="Changelists, shelves and offline work for Diversion version control.">
+<meta property="og:image" content="https://mapmodelers.github.io/dvcl/screenshot.png">
+<style>
+  :root { color-scheme: dark; --bg: #1e1e1e; --fg: #e6e6e6; --mut: #9a9a9a; --acc: #6ecd78; --line: #333; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.55 "Segoe UI", system-ui, sans-serif; }
+  main { max-width: 860px; margin: 0 auto; padding: 56px 24px 40px; }
+  h1 { font-size: 40px; margin: 0; letter-spacing: -0.5px; }
+  .tag { color: var(--mut); margin: 4px 0 28px; font-size: 18px; }
+  img { width: 100%; border: 1px solid var(--line); border-radius: 6px; display: block; }
+  ul { padding: 0; list-style: none; margin: 28px 0; }
+  li { padding: 6px 0 6px 18px; position: relative; }
+  li::before { content: ""; position: absolute; left: 0; top: 15px; width: 7px; height: 7px; border-radius: 50%; background: var(--acc); }
+  .btn { display: inline-block; padding: 9px 18px; border-radius: 5px; background: var(--acc); color: #111; text-decoration: none; font-weight: 600; margin-right: 10px; }
+  .btn.alt { background: none; color: var(--fg); border: 1px solid var(--line); }
+  footer { color: var(--mut); font-size: 13px; margin-top: 40px; border-top: 1px solid var(--line); padding-top: 14px; }
+  a { color: var(--acc); }
+</style>
+</head>
+<body>
+<main>
+  <h1>dvcl</h1>
+  <p class="tag">Changelists for <a href="https://diversion.dev">Diversion</a>.</p>
+  <img src="screenshot.png" alt="dvcl window: Local and Depot trees, numbered changelists">
+  <ul>
+    <li>Numbered changelists: group pending files, submit, shelve, revert.</li>
+    <li>Shelves: Diversion shelves are shared with your team; local shelves stay on your PC.</li>
+    <li>Offline: nothing syncs. Submit and Get latest go online, then back.</li>
+    <li>Local and Depot trees, state icons, path bars. Drop a file on a tree to find it.</li>
+    <li>Command line: <code>dvcl help</code>.</li>
+  </ul>
+  <a class="btn" href="https://github.com/mapmodelers/dvcl/archive/refs/heads/main.zip">Download</a>
+  <a class="btn alt" href="https://github.com/mapmodelers/dvcl">GitHub</a>
+  <a class="btn alt" href="https://github.com/mapmodelers/dvcl/blob/main/CHANGELOG.md">Changes</a>
+  <p style="color:var(--mut);font-size:14px;margin-top:18px">Windows + Diversion <code>dv</code> CLI. Unzip, run <code>install.cmd</code>.</p>
+  <footer>MIT, as is. No telemetry. Not affiliated with or endorsed by Diversion; Diversion is a trademark of its owner.</footer>
+</main>
+</body>
+</html>

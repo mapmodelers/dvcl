@@ -10,10 +10,10 @@ function Show-List($pending) {
     $shmap = Map-Shelves @(@(Get-LocalShelves) + @(Read-DvShelfCache))
     foreach ($name in (@('default') + @($script:CLs | ForEach-Object { $_.name }))) {
         $items = Get-CLItems $pending $name
-        $d = ''; $stale = @()
-        if ($name -ne 'default') { $c = Find-CL $name; if ($c.desc) { $d = '  "' + $c.desc + '"' }; $stale = Stale-Of $pending $c $set }
+        $d = ''; $stale = @(); $num = ''
+        if ($name -ne 'default') { $c = Find-CL $name; $num = 'CL' + $c.id + ' '; if ($c.desc) { $d = '  "' + $c.desc + '"' }; $stale = Stale-Of $pending $c $set }
         $s = ''; if ($stale.Count -gt 0) { $s = '  +' + $stale.Count + ' not pending' }
-        Say ("== " + $name + $d + "  (" + $items.Count + ")" + $s) 'Cyan'
+        Say ("== " + $num + $name + $d + "  (" + $items.Count + ")" + $s) 'Cyan'
         foreach ($p in $items) { Say ("   #{0,-4} {1}  {2}" -f $p.Index, (Kind-Letter $p.Kind), $p.Path) }
         foreach ($f in $stale) { Say ("   -     .  " + $f + "   (not pending)") 'DarkGray' }
         if ($shmap.ContainsKey($name.ToLowerInvariant())) { foreach ($sh in $shmap[$name.ToLowerInvariant()]) { Say ("   shelved " + $(if ($sh.Local) { $sh.Id + '  (local, ' + $sh.Count + ' files)' } else { $sh.Name + '  (Diversion)' })) 'DarkYellow' } }
@@ -32,6 +32,7 @@ dvcl - changelists for Diversion  (window: dvcl-gui)
 Run inside a Diversion workspace (any subfolder).
 
   dvcl                          list pending files grouped by changelist (#numbers used below)
+  <cl> = changelist name or number (dvcl submit 12)
   dvcl new <cl> [description]   create a changelist
   dvcl desc <cl> <description>  set / change its description
   dvcl add <cl> <spec...>       move files into <cl> (creates <cl> if missing)
@@ -40,7 +41,7 @@ Run inside a Diversion workspace (any subfolder).
   dvcl submit <cl> [-y]         commit ONLY <cl>'s files with its description, then close it
   dvcl submit default "msg"     commit the unassigned files
   dvcl revert <cl> [-y]         discard <cl>'s local changes (backup shelf made first)
-  dvcl shelve <cl>              cloud shelf of <cl>'s files, workspace untouched (= p4 shelve)
+  dvcl shelve <cl>              cloud shelf of <cl>'s files, workspace untouched
   dvcl shelves                  list shelves          dvcl unshelve <shelf>   apply one (kept)
   dvcl get                      get latest: pull the branch's new commits into the workspace
   dvcl sync on|off              go online (resume sync) / offline (pause sync). Offline, dvcl finds
@@ -127,6 +128,7 @@ function Run-SelfTest {
         T "store: 2 changelists reloaded" ($script:CLs.Count -eq 2)
         T "store: single-file list stays a list" ((Find-CL 'one').files.Count -eq 1)
         T "store: empty list reloads empty" ((Find-CL 'empty').files.Count -eq 0)
+        T "numbers: #1, #2 kept on reload, found by number" ((Find-CL 'one').id -eq 1 -and (Find-CL 'empty').id -eq 2 -and (Find-CL '#2').name -eq 'empty' -and (Find-CL '1').name -eq 'one' -and (Find-CL 'CL2').name -eq 'empty')
         T "owner lookup (case-insensitive)" ((Owner-Of 'MYGAME/content/b.uasset').name -eq 'one')
         T "items of 'one'" ((Get-CLItems $p 'one').Count -eq 1)
         T "items of default" ((Get-CLItems $p 'default').Count -eq 7)
@@ -148,6 +150,7 @@ function Run-SelfTest {
         Detach 'MyGame/Content/B.uasset'
         Remove-CL 'empty'
         T "delete changelist" ($null -eq (Find-CL 'empty'))
+        T "numbers never reused" ((New-CL 'again' '').id -gt 2); Remove-CL 'again'
         $threw = $false; try { Check-Name 'default' } catch { $threw = $true }
         T "name 'default' refused" $threw
         T "slug: 'ply file' -> ply_file" ((Slug-Base 'ply file') -eq 'ply_file')
@@ -240,6 +243,10 @@ if ($cmd -eq 'selftest') { Run-SelfTest; exit 0 }
 $root = Find-DvRoot (Get-Location).Path
 if (-not $root) { Write-Host "Not inside a Diversion workspace (no .diversion folder above $((Get-Location).Path)). cd into your repo first." -ForegroundColor Red; exit 1 }
 Set-DvRoot $root
+# a changelist can be given by its number: dvcl submit 12 (or CL12, #12)
+if ($cmd -in 'desc', 'add', 'move', 'mv', 'delete', 'submit', 'revert', 'shelve' -and $argv.Count -gt 0 -and $argv[0] -match '^(#|cl ?)?\d+$') {
+    Load-Db; $c = Find-CL $argv[0]; if ($c) { $argv[0] = $c.name }
+}
 Write-Log ("==== dvcl " + $cmd + " " + ($argv -join ' '))
 
 try {

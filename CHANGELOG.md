@@ -2,6 +2,13 @@
 
 Versions follow [semver](https://semver.org). Tags: `vX.Y.Z`.
 
+## 0.9.0 - 2026-11-11
+
+- Changelists have numbers (#1, #2...), never reused; existing ones get theirs on first start. Command line accepts them: `dvcl submit 12`.
+- Added files show green, edited files plain white (dark) / black (light).
+- Find: drop a file (from a tree, a changelist or Windows Explorer) on Local or Depot to show it there. Menus: Show in Local tree / Show in Depot tree.
+- Small site: https://mapmodelers.github.io/dvcl/
+
 ## 0.8.0 - 2026-11-11
 
 - Closing the window keeps dvcl in the notification area; click the icon to open, right-click > Exit to quit. Launching dvcl again brings back the running window (one per workspace).
@@ -19,7 +26,7 @@ Versions follow [semver](https://semver.org). Tags: `vX.Y.Z`.
 
 ## 0.6.1 - 2026-11-11
 
-- Shelf rows read "Shelved files (n)" (shelf name in the tooltip), like Perforce.
+- Shelf rows read "Shelved files (n)" (shelf name in the tooltip).
 - Shelf menu: move its files that are still pending elsewhere into its changelist.
 
 ## 0.6.0 - 2026-11-11

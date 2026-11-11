@@ -51,7 +51,7 @@ $script:PalLight = @{
     Border = [System.Drawing.SystemColors]::ControlDark; Hi = [System.Drawing.SystemColors]::Highlight
     offline = [System.Drawing.Color]::FromArgb(255, 236, 160); online = [System.Drawing.Color]::FromArgb(214, 240, 214)
     busy = [System.Drawing.Color]::FromArgb(210, 228, 250); down = [System.Drawing.Color]::FromArgb(250, 215, 215); loading = [System.Drawing.SystemColors]::Control
-    A = [System.Drawing.Color]::FromArgb(0, 120, 215); M = [System.Drawing.Color]::FromArgb(30, 30, 30); D = [System.Drawing.Color]::FromArgb(200, 40, 40)
+    A = [System.Drawing.Color]::FromArgb(0, 140, 60); M = [System.Drawing.Color]::FromArgb(30, 30, 30); D = [System.Drawing.Color]::FromArgb(200, 40, 40)
     R = [System.Drawing.Color]::FromArgb(140, 80, 0); X = [System.Drawing.Color]::FromArgb(200, 0, 160); Q = [System.Drawing.Color]::Gray
 }
 $script:PalDark = @{
@@ -61,12 +61,12 @@ $script:PalDark = @{
     Border = [System.Drawing.Color]::FromArgb(63, 63, 70); Hi = [System.Drawing.Color]::FromArgb(62, 62, 66)
     offline = [System.Drawing.Color]::FromArgb(92, 74, 20); online = [System.Drawing.Color]::FromArgb(35, 80, 45)
     busy = [System.Drawing.Color]::FromArgb(35, 60, 100); down = [System.Drawing.Color]::FromArgb(110, 40, 40); loading = [System.Drawing.Color]::FromArgb(45, 45, 48)
-    A = [System.Drawing.Color]::FromArgb(95, 170, 255); M = [System.Drawing.Color]::FromArgb(225, 225, 225); D = [System.Drawing.Color]::FromArgb(240, 105, 105)
+    A = [System.Drawing.Color]::FromArgb(110, 205, 120); M = [System.Drawing.Color]::FromArgb(235, 235, 235); D = [System.Drawing.Color]::FromArgb(240, 105, 105)
     R = [System.Drawing.Color]::FromArgb(230, 160, 70); X = [System.Drawing.Color]::FromArgb(240, 110, 220); Q = [System.Drawing.Color]::FromArgb(160, 160, 160)
 }
 $script:Pal = $script:PalLight
 $colKind = @{
-    'A' = [System.Drawing.Color]::FromArgb(0, 120, 215)
+    'A' = [System.Drawing.Color]::FromArgb(0, 140, 60)
     'M' = [System.Drawing.Color]::FromArgb(30, 30, 30)
     'D' = [System.Drawing.Color]::FromArgb(200, 40, 40)
     'R' = [System.Drawing.Color]::FromArgb(140, 80, 0)
@@ -183,11 +183,11 @@ $tabDepot.Controls.Add($tvDepot); $tabDepot.Controls.Add($barDepot.Panel); $tabD
 $main.Panel1.Controls.Add($trees)
 
 # ---- state icons (drawn here, no image files): file / folder + a colored badge per state
-#   + added (green)   pencil-dot modified (blue)   x deleted (red)   > renamed (orange)   ! conflict (magenta)
+#   + added (green)   dot modified (white)   x deleted (red)   > renamed (orange)   ! conflict (magenta)
 $icons = New-Object System.Windows.Forms.ImageList
 $icons.ImageSize = New-Object System.Drawing.Size(16, 16); $icons.ColorDepth = 'Depth32Bit'
 $script:BadgeColor = @{
-    'A' = [System.Drawing.Color]::FromArgb(40, 160, 60); 'M' = [System.Drawing.Color]::FromArgb(0, 110, 220)
+    'A' = [System.Drawing.Color]::FromArgb(40, 160, 60); 'M' = [System.Drawing.Color]::FromArgb(245, 245, 245)
     'D' = [System.Drawing.Color]::FromArgb(210, 40, 40); 'R' = [System.Drawing.Color]::FromArgb(220, 130, 0)
     '!' = [System.Drawing.Color]::FromArgb(200, 0, 160); '?' = [System.Drawing.Color]::Gray
 }
@@ -211,7 +211,7 @@ function New-Icon([string]$base, [string]$badge) {
         $w = New-Object System.Drawing.Pen([System.Drawing.Color]::White, 1.6)
         switch ($badge) {
             'A' { $g.DrawLine($w, 11.5, 9, 11.5, 14); $g.DrawLine($w, 9, 11.5, 14, 11.5) }
-            'M' { $g.FillEllipse([System.Drawing.Brushes]::White, 10, 10, 3, 3) }
+            'M' { $g.DrawEllipse((New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(90, 90, 90))), 7, 7, 8.6, 8.6); $g.FillEllipse((New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(60, 60, 60))), 10, 10, 3, 3) }
             'D' { $g.DrawLine($w, 9.5, 9.5, 13.5, 13.5); $g.DrawLine($w, 13.5, 9.5, 9.5, 13.5) }
             'R' { $g.DrawLine($w, 9, 11.5, 14, 11.5); $g.DrawLine($w, 12, 9.5, 14, 11.5); $g.DrawLine($w, 12, 13.5, 14, 11.5) }
             '!' { $g.DrawLine($w, 11.5, 8.5, 11.5, 12); $g.FillRectangle([System.Drawing.Brushes]::White, 11, 13, 1.6, 1.6) }
@@ -417,6 +417,7 @@ function Build-Tree {
                 # name derived from the description: show the description only
                 if ($name.StartsWith((Slug-Base (($c.desc -split "`n")[0])), [StringComparison]::OrdinalIgnoreCase)) { $label = $d } else { $label = $name + '   ' + $d }
             }
+            $label = '#' + $c.id + '  ' + $label
         }
         $shs = @(); if ($script:ShelfMap -and $script:ShelfMap.ContainsKey($name.ToLowerInvariant())) { $shs = @($script:ShelfMap[$name.ToLowerInvariant()]) }
         $count = '   (' + $items.Count
@@ -454,7 +455,7 @@ function Build-Tree {
         }
         # Shelves of this changelist (collapsed): local ones list their files
         foreach ($sh in $shs) {
-            # like Perforce: "Shelved files (n)" under the changelist; shelf name in the tooltip
+            # "Shelved files (n)" under the changelist; shelf name in the tooltip
             $label = 'Shelved files' + $(if ($sh.Count -ge 0) { ' (' + $sh.Count + ')' } else { '' }) + '   ' + $(if ($sh.Local) { 'local' } else { 'Diversion' }) + $(if ($sh.Created) { ', ' + $sh.Created } else { '' })
             $sn = New-Object System.Windows.Forms.TreeNode($label)
             $sn.ToolTipText = 'shelf ' + $(if ($sh.Local) { $sh.Id } else { $sh.Name + ' (' + $sh.Id + ')' })
@@ -498,7 +499,7 @@ function Apply-DvShelves($r) {
     Save-DvShelfCache $list
     Load-Shelves; Build-Tree
 }
-# Unshelve = copy back, then the files go to the shelf's changelist (Perforce-like)
+# Unshelve = copy back, then the files go to the shelf's changelist
 function Do-Unshelve($sh, [string]$cl) {
     if ($sh.Local) {
         if (-not (Ask-YesNo ("Unshelve '" + $sh.Id + "' (" + $sh.Count + " file(s)) into '" + $cl + "'?`r`nOverwrites those files in your workspace. Shelf kept. Close Unreal first.") 'Unshelve')) { return }
@@ -1246,20 +1247,40 @@ function Pending-Under([string]$rel) {
 }
 
 # Drag a file or folder from Local / Depot onto a changelist: moves its pending files there
+#   ...and onto the other tree: finds it there
+$script:DragFind = $null
+function Start-TreeDrag($src, [string]$rel, $items) {
+    $script:DragFind = $rel
+    $script:DragItems = $(if ($items -and @($items).Count -gt 0) { @($items) } else { $null })
+    try { [void]$src.DoDragDrop('dvcl', [System.Windows.Forms.DragDropEffects]'Move, Link') }
+    finally { $script:DragFind = $null; $script:DragItems = $null }
+}
 $dragFromTree = {
     param($s, $e)
     if (-not $e.Item.Tag) { return }
     $rel = Node-Rel $e.Item
-    $items = Pending-Under $rel
-    if ($items.Count -eq 0) { & $script:OnSay ('Nothing pending under ' + $rel) 'Gray'; return }
-    $script:DragItems = $items
-    [void]$s.DoDragDrop('dvcl', [System.Windows.Forms.DragDropEffects]::Move)
+    Start-TreeDrag $s $rel (Pending-Under $rel)
 }
 $tvLocal.Add_ItemDrag($dragFromTree)
 $tvDepot.Add_ItemDrag($dragFromTree)
 
+# Drop on Local / Depot (from a tree, a changelist or Windows Explorer): show it in that tree
+function Drop-FindPath($data) {
+    if ($data.GetDataPresent([System.Windows.Forms.DataFormats]::FileDrop)) { $f = @($data.GetData([System.Windows.Forms.DataFormats]::FileDrop)); if ($f.Count) { return [string]$f[0] } }
+    return $script:DragFind
+}
+$findDragOver = {
+    param($s, $e)
+    if (Drop-FindPath $e.Data) {
+        if ($e.AllowedEffect -band [System.Windows.Forms.DragDropEffects]::Link) { $e.Effect = [System.Windows.Forms.DragDropEffects]::Link } else { $e.Effect = [System.Windows.Forms.DragDropEffects]::Copy }
+    } else { $e.Effect = [System.Windows.Forms.DragDropEffects]::None }
+}
+$findDrop = { param($s, $e) $p = Drop-FindPath $e.Data; if ($p) { $s.Focus(); Navigate-Tree $s.Tag $p } }
+foreach ($t in @($tvLocal, $tvDepot)) { $t.AllowDrop = $true; $t.Add_DragEnter($findDragOver); $t.Add_DragOver($findDragOver); $t.Add_DragDrop($findDrop) }
+
 # Right-click on Local / Depot
 $menuL = New-Object System.Windows.Forms.ContextMenuStrip
+function CL-MenuText([string]$nm) { if ($nm -eq 'default') { return 'default' }; $c = Find-CL $nm; if ($c) { return ('#' + $c.id + '  ' + $nm) }; return $nm }
 $treeMenu = {
     param($s, $e)
     if ($e.Button -ne [System.Windows.Forms.MouseButtons]::Right -or -not $e.Node.Tag) { return }
@@ -1272,7 +1293,7 @@ $treeMenu = {
     $n = $script:MenuItems.Count
     $mv = Add-MenuItem $menuL ("Move " + $n + " pending file(s) to") $null ($n -gt 0)
     foreach ($nm in (@('default') + @($script:CLs | ForEach-Object { $_.name }))) {
-        $mi = Add-MenuItem $mv $nm $null $true
+        $mi = Add-MenuItem $mv (CL-MenuText $nm) $null $true
         $mi.Tag = $nm
         $mi.Add_Click({ param($src, $ev) Do-Move $src.Tag $script:MenuItems })
     }
@@ -1288,6 +1309,8 @@ $treeMenu = {
         [void](Add-MenuItem $menuL 'Download this folder to this PC' { Do-FolderSync $script:MenuRel $true })
         [void](Add-MenuItem $menuL 'Stop downloading this folder...' { Do-FolderSync $script:MenuRel $false })
     }
+    $script:MenuOther = $(if ($s.Tag -eq 'depot') { 'local' } else { 'depot' })
+    [void](Add-MenuItem $menuL ('Show in ' + $(if ($script:MenuOther -eq 'depot') { 'Depot' } else { 'Local' }) + ' tree') { Navigate-Tree $script:MenuOther $script:MenuRel })
     $mx = Add-MenuItem $menuL 'Show in Explorer' { Open-PathInExplorer 'local' $script:MenuDisplay }; $mx.ShortcutKeyDisplayString = 'Ctrl+Shift+S'
     [void](Add-MenuItem $menuL 'Copy path' { [System.Windows.Forms.Clipboard]::SetText($script:MenuDisplay) })
     Theme-Strip $menuL
@@ -1526,14 +1549,13 @@ $tv.Add_ItemDrag({
     if ($e.Item.Tag.Type -ne 'file') { return }
     $items = Target-Items-IfChecked
     if ($items.Count -eq 0 -or -not $e.Item.Checked) { $items = @($e.Item.Tag.Item) }
-    $script:DragItems = $items
-    [void]$tv.DoDragDrop('dvcl', [System.Windows.Forms.DragDropEffects]::Move)
+    Start-TreeDrag $tv $e.Item.Tag.Item.Path $items
 })
 $tv.Add_DragOver({
     param($s, $e)
     $pt = $tv.PointToClient((New-Object System.Drawing.Point($e.X, $e.Y)))
     $n = $tv.GetNodeAt($pt)
-    if ($n) { $tv.SelectedNode = $n; $e.Effect = [System.Windows.Forms.DragDropEffects]::Move } else { $e.Effect = [System.Windows.Forms.DragDropEffects]::None }
+    if ($n -and $script:DragItems) { $tv.SelectedNode = $n; $e.Effect = [System.Windows.Forms.DragDropEffects]::Move } else { $e.Effect = [System.Windows.Forms.DragDropEffects]::None }
 })
 $tv.Add_DragDrop({
     param($s, $e)
@@ -1542,7 +1564,6 @@ $tv.Add_DragDrop({
     if (-not $n -or -not $script:DragItems) { return }
     $to = $n.Tag.Name; if ($n.Tag.Type -ne 'cl') { $to = $n.Tag.Cl }
     Do-Move $to $script:DragItems
-    $script:DragItems = $null
 })
 
 # Multi-select: Ctrl+click toggles a file, Shift+click checks a range, Ctrl+A checks all, Esc clears
@@ -1594,6 +1615,7 @@ $tv.Add_NodeMouseClick({
         if ($script:MenuShelfPath) {
             [void]$menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
             [void](Add-MenuItem $menu 'Show in Local tree' { Navigate-Tree 'local' $script:MenuShelfPath })
+            [void](Add-MenuItem $menu 'Show in Depot tree' { Navigate-Tree 'depot' $script:MenuShelfPath })
         }
         Theme-Strip $menu; $menu.Show($tv, $e.Location); return
     }
@@ -1603,7 +1625,7 @@ $tv.Add_NodeMouseClick({
     $mv = Add-MenuItem $menu ("Move " + $items.Count + " file(s) to") $null ($items.Count -gt 0)
     foreach ($nm in (@('default') + @($script:CLs | ForEach-Object { $_.name }))) {
         $target = $nm
-        $mi = Add-MenuItem $mv $nm $null ($nm -ne $clName -or (Target-Items-IfChecked).Count -gt 0)
+        $mi = Add-MenuItem $mv (CL-MenuText $nm) $null ($nm -ne $clName -or (Target-Items-IfChecked).Count -gt 0)
         $mi.Tag = $target
         $mi.Add_Click({ param($src, $ev) Do-Move $src.Tag (Target-Items) })
     }
@@ -1626,6 +1648,7 @@ $tv.Add_NodeMouseClick({
         $isStale = $e.Node.Tag.Type -eq 'stale'
         if ($isStale) { [void](Add-MenuItem $menu 'Remove from changelist' { Do-RemoveEntry (Selected-Rel) }) }
         [void](Add-MenuItem $menu 'Show in Local tree' { Navigate-Tree 'local' (Selected-Rel) })
+        [void](Add-MenuItem $menu 'Show in Depot tree' { Navigate-Tree 'depot' (Selected-Rel) })
         [void](Add-MenuItem $menu 'History...' { Do-History (Selected-Rel) })
         $mx = Add-MenuItem $menu 'Show in Explorer' { Do-ShowInExplorer }; $mx.ShortcutKeyDisplayString = 'Ctrl+Shift+S'
         [void](Add-MenuItem $menu 'Copy path' { [System.Windows.Forms.Clipboard]::SetText(($script:Root + '\' + ((Selected-Rel) -replace '/', '\'))) })
@@ -1709,6 +1732,8 @@ function Run-GuiSelfCheck {
         C 'version file' ((Get-LocalVersion) -ne '0.0.0') (Get-LocalVersion)
         C 'layout: Local | Depot | changelists side by side' ($trees.Panel1.Contains($tvLocal) -and $trees.Panel2.Contains($tvDepot) -and $main.Panel2.Contains($tv) -and $trees.Panel1.Width -gt 80 -and $trees.Panel2.Width -gt 80 -and $main.Panel2.Width -gt 100) ("" + $trees.Panel1.Width + ' / ' + $trees.Panel2.Width + ' / ' + $main.Panel2.Width)
         C 'icons: image list set on the three trees' ((@($tv, $tvLocal, $tvDepot) | Where-Object { $_.ImageList -and $_.ImageList.Images.ContainsKey('file-A') }).Count -eq 3 -and $icons.Images.Count -ge 18) ([string]$icons.Images.Count)
+        C 'numbers: changelist rows start with #id' (@($tv.Nodes | Where-Object { $_.Tag.Name -ne 'default' -and $_.Text -notmatch '^#\d+  ' }).Count -eq 0)
+        C 'find: Local and Depot accept drops' ($tvLocal.AllowDrop -and $tvDepot.AllowDrop)
         C 'icons: changelist rows have the changelist icon' (@($tv.Nodes | Where-Object { $_.ImageKey -notin 'cl', 'cldef' }).Count -eq 0)
         C 'layout: path bars present' ($tabLocal.Contains($barLocal.Box) -and $tabDepot.Contains($barDepot.Box))
         C 'toolbar: Get latest + Tools + Locks' ((@($tool.Items | Where-Object { $_.Text -like 'Get latest*' -or $_.Text -in 'Tools', 'Locks' })).Count -eq 3)

@@ -280,30 +280,53 @@ function Kind-Letter([string]$k) {
 }
 
 # ---------------------------------------------------------------- changelist store
+# Changelists have numbers: #1, #2... never reused ("next" is kept in the file).
+$script:NextId = 1
 function Load-Db {
     $script:CLs = New-Object System.Collections.ArrayList
+    $script:NextId = 1
+    $missing = $false
     if ($script:Db -and (Test-Path -LiteralPath $script:Db)) {
         $txt = Get-Content -LiteralPath $script:Db -Raw -Encoding UTF8
         if ($txt -and $txt.Trim()) {
             $j = $txt | ConvertFrom-Json
+            if ($j.next) { $script:NextId = [int]$j.next }
             foreach ($c in @($j.changelists)) {
                 if ($null -eq $c) { continue }
                 $files = New-Object System.Collections.ArrayList
                 foreach ($f in @($c.files)) { if ($f) { [void]$files.Add([string]$f) } }
-                [void]$script:CLs.Add([pscustomobject]@{ name = [string]$c.name; desc = [string]$c.desc; files = $files })
+                $id = 0; if ($c.id) { $id = [int]$c.id }
+                if ($id -le 0) { $missing = $true } elseif ($id -ge $script:NextId) { $script:NextId = $id + 1 }
+                [void]$script:CLs.Add([pscustomobject]@{ id = $id; name = [string]$c.name; desc = [string]$c.desc; files = $files })
             }
         }
     }
+    # changelists from older versions get their numbers once
+    if ($missing) { foreach ($c in $script:CLs) { if ($c.id -le 0) { $c.id = $script:NextId; $script:NextId++ } }; Save-Db }
 }
+
+function New-ClObject([string]$name, [string]$desc) {
+    $c = [pscustomobject]@{ id = $script:NextId; name = $name; desc = ([string]$desc).Trim(); files = (New-Object System.Collections.ArrayList) }
+    $script:NextId++
+    return $c
+}
+
+# "#12 description" (or name) for display
+function CL-Label($c) { if (-not $c) { return 'default' }; $d = ($c.desc -replace '\s+', ' ').Trim(); if (-not $d) { $d = $c.name }; return ('#' + $c.id + '  ' + $d) }
 
 function Save-Db {
     $out = @()
-    foreach ($c in $script:CLs) { $out += [pscustomobject]@{ name = $c.name; desc = $c.desc; files = @($c.files) } }
-    $json = [pscustomobject]@{ changelists = $out } | ConvertTo-Json -Depth 6
+    foreach ($c in $script:CLs) { $out += [pscustomobject]@{ id = $c.id; name = $c.name; desc = $c.desc; files = @($c.files) } }
+    $json = [pscustomobject]@{ next = $script:NextId; changelists = $out } | ConvertTo-Json -Depth 6
     Set-Content -LiteralPath $script:Db -Value $json -Encoding UTF8
 }
 
-function Find-CL([string]$name) { foreach ($c in $script:CLs) { if ($c.name -ieq $name) { return $c } }; return $null }
+# By name, else by number ("12", "#12" or "CL12")
+function Find-CL([string]$name) {
+    foreach ($c in $script:CLs) { if ($c.name -ieq $name) { return $c } }
+    if ($name -match '^(?:#|cl ?)?(\d+)$') { $n = [int]$Matches[1]; foreach ($c in $script:CLs) { if ($c.id -eq $n) { return $c } } }
+    return $null
+}
 
 function Check-Name([string]$name) {
     if (-not $name) { Fail "missing changelist name" }
@@ -453,9 +476,9 @@ function New-CL([string]$name, [string]$desc) {
         $name = $new
     }
     if (Find-CL $name) { Fail "changelist '$name' already exists" }
-    $c = [pscustomobject]@{ name = $name; desc = ([string]$desc).Trim(); files = (New-Object System.Collections.ArrayList) }
+    $c = New-ClObject $name $desc
     [void]$script:CLs.Add($c); Save-Db
-    Say ("Created changelist '" + $name + "'") 'Green'
+    Say ("Created changelist #" + $c.id + " '" + $name + "'") 'Green'
     return $c
 }
 
@@ -966,12 +989,14 @@ function Shelf-ClName($sh) {
 # Shelves grouped by changelist name (lower-case keys); creates the missing changelists (one save)
 function Map-Shelves($shelves) {
     $map = @{}
-    $made = 0
+    $made = 0; $fresh = $false
     foreach ($sh in @($shelves)) {
         if ($null -eq $sh) { continue }
         $cl = Shelf-ClName $sh
+        # before adding one, re-read: numbers must not clash with another window's
+        if ($cl -ine 'default' -and -not (Find-CL $cl) -and -not $fresh) { Load-Db; $fresh = $true }
         if ($cl -ine 'default' -and -not (Find-CL $cl)) {
-            [void]$script:CLs.Add([pscustomobject]@{ name = $cl; desc = ([string]$sh.Name -replace '_', ' '); files = (New-Object System.Collections.ArrayList) })
+            [void]$script:CLs.Add((New-ClObject $cl ([string]$sh.Name -replace '_', ' ')))
             Write-Log ("changelist for shelf " + $sh.Id + " : " + $cl); $made++
         }
         $k = $cl.ToLowerInvariant()
