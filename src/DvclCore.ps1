@@ -534,15 +534,20 @@ function Revert-Items([string]$prefix, $items) {
 function Get-Shelves {
     $r = Invoke-Dv @('shelf')
     if ($r.Code -ne 0) { Fail ("dv shelf failed: " + ($r.Lines -join ' ')) }
+    return (Read-Shelves $r.Lines)
+}
+
+# `dv shelf` lines -> { Name; Id; Created; Local = $false; Count = -1 (unknown) }
+function Read-Shelves([string[]]$lines) {
     $res = New-Object System.Collections.ArrayList
     $cur = $null
-    foreach ($l in $r.Lines) {
+    foreach ($l in $lines) {
         if ($l -match '^\s*shelf\s+(.+?)\s+\((dv\.shelf\.[^)]+)\)') {
-            $cur = [pscustomobject]@{ Name = $Matches[1]; Id = $Matches[2]; Created = '' }
+            $cur = [pscustomobject]@{ Name = $Matches[1]; Id = $Matches[2]; Created = ''; Local = $false; Count = -1; Cl = ''; Files = @() }
             [void]$res.Add($cur)
         } elseif ($cur -and $l -match '^\s*Created:\s*(.+)$') { $cur.Created = $Matches[1].Trim() }
     }
-    return ,$res.ToArray()
+    $res.ToArray()   # streamed: @(Read-Shelves ...) = one row per shelf
 }
 
 function Apply-Shelf([string]$shelf) {
@@ -725,7 +730,7 @@ function Get-OfflinePending {
 
 # ---------------------------------------------------------------- local shelves (offline)
 # A copy of the files in <repo>\.dvcl\shelves\<id>\files + manifest.json. Nothing is uploaded.
-function Shelve-Local([string]$name, $items) {
+function Shelve-Local([string]$name, $items, [string]$cl = '') {
     if (@($items).Count -eq 0) { Fail "nothing to shelve" }
     $id = (Slug-Base $name) + '_' + (Get-Date -Format 'yyyyMMdd-HHmmss')
     $dir = [System.IO.Path]::Combine((Dvcl-File 'shelves'), $id)
@@ -742,7 +747,7 @@ function Shelve-Local([string]$name, $items) {
         [void]$list.Add([pscustomobject]@{ path = $p.Path; kind = $p.Kind; copied = $copied })
     }
     [void][System.IO.Directory]::CreateDirectory($dir)
-    $m = [pscustomobject]@{ name = $name; created = (Get-Date -Format 'yyyy-MM-dd HH:mm'); items = $list.ToArray() }
+    $m = [pscustomobject]@{ name = $name; cl = $cl; created = (Get-Date -Format 'yyyy-MM-dd HH:mm'); items = $list.ToArray() }
     [System.IO.File]::WriteAllText([System.IO.Path]::Combine($dir, 'manifest.json'), ($m | ConvertTo-Json -Depth 5), $script:Utf8)
     Write-Log ("local shelf " + $id + " : " + $n + " file(s)")
     Say ("Shelved " + $n + " file(s) locally as '" + $id + "' (copy in .dvcl\shelves, nothing uploaded).") 'Green'
@@ -756,9 +761,10 @@ function Get-LocalShelves {
         foreach ($d in [System.IO.Directory]::GetDirectories($root)) {
             $mf = [System.IO.Path]::Combine($d, 'manifest.json')
             if (-not (Test-Path -LiteralPath $mf)) { continue }
-            try { $m = [System.IO.File]::ReadAllText($mf) | ConvertFrom-Json } catch { continue }
+            try { $m = [System.IO.File]::ReadAllText($mf).TrimStart([char]0xFEFF) | ConvertFrom-Json } catch { Write-Log ("shelf manifest unreadable: " + $mf); continue }
             $id = [System.IO.Path]::GetFileName($d)
-            [void]$res.Add([pscustomobject]@{ Name = [string]$m.name; Id = $id; Created = [string]$m.created; Local = $true; Count = @($m.items | Where-Object { $_.copied }).Count })
+            $files = @($m.items | Where-Object { $_.copied } | ForEach-Object { [pscustomobject]@{ Path = [string]$_.path; Kind = [string]$_.kind } })
+            [void]$res.Add([pscustomobject]@{ Name = [string]$m.name; Id = $id; Created = [string]$m.created; Local = $true; Count = $files.Count; Cl = [string]$m.cl; Files = $files })
         }
     }
     # streamed (no comma-return): @(Get-LocalShelves) must give one row per shelf
@@ -817,4 +823,49 @@ function Read-DepotCache([string]$commit) {
     $arr = New-Object 'string[]' ($all.Count - 1)
     [Array]::Copy($all, 1, $arr, 0, $all.Count - 1)
     return ,$arr
+}
+
+# ---------------------------------------------------------------- shelves belong to changelists
+# A shelf's changelist: the one recorded when it was made (local), else its name without the
+# _yyyyMMdd-HHmm(ss) stamp dvcl adds, else its whole name. Missing changelists are created, so a
+# changelist can hold only shelves (like a shelved changelist).
+function Shelf-ClName($sh) {
+    if ($sh.Cl) { return [string]$sh.Cl }
+    $n = [string]$sh.Name
+    if ($n -match '^(.+?)_\d{8}-\d{4,6}$') { $n = $Matches[1] }
+    if ($n -ieq 'default') { return 'default' }
+    return (Slug-Base $n)
+}
+
+# Shelves grouped by changelist name (lower-case keys); creates the missing changelists (one save)
+function Map-Shelves($shelves) {
+    $map = @{}
+    $made = 0
+    foreach ($sh in @($shelves)) {
+        if ($null -eq $sh) { continue }
+        $cl = Shelf-ClName $sh
+        if ($cl -ine 'default' -and -not (Find-CL $cl)) {
+            [void]$script:CLs.Add([pscustomobject]@{ name = $cl; desc = ([string]$sh.Name -replace '_', ' '); files = (New-Object System.Collections.ArrayList) })
+            Write-Log ("changelist for shelf " + $sh.Id + " : " + $cl); $made++
+        }
+        $k = $cl.ToLowerInvariant()
+        if (-not $map.ContainsKey($k)) { $map[$k] = New-Object System.Collections.ArrayList }
+        [void]$map[$k].Add($sh)
+    }
+    if ($made -gt 0) { Save-Db }
+    return $map
+}
+
+# Diversion shelves are listed online only: kept in .dvcl\dv-shelves.tsv for offline display
+function Save-DvShelfCache($shelves) {
+    $lines = @($shelves | ForEach-Object { $_.Name + "`t" + $_.Id + "`t" + $_.Created })
+    [System.IO.File]::WriteAllLines((Dvcl-File 'dv-shelves.tsv'), [string[]]$lines, $script:Utf8)
+}
+function Read-DvShelfCache {
+    $f = Dvcl-File 'dv-shelves.tsv'
+    if (-not (Test-Path -LiteralPath $f)) { return }
+    foreach ($l in [System.IO.File]::ReadAllLines($f)) {
+        $x = $l.Split("`t"); if ($x.Count -lt 2) { continue }
+        [pscustomobject]@{ Name = $x[0]; Id = $x[1]; Created = $(if ($x.Count -gt 2) { $x[2] } else { '' }); Local = $false; Count = -1; Cl = ''; Files = @() }
+    }
 }

@@ -179,6 +179,7 @@ function New-Icon([string]$base, [string]$badge) {
         'folder' { $b = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(235, 190, 70)); $g.FillRectangle($b, 1, 3, 6, 3); $g.FillRectangle($b, 1, 5, 14, 9) }
         'folderoff' { $pn = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(170, 170, 170)); $g.DrawRectangle($pn, 1, 3, 5, 2); $g.DrawRectangle($pn, 1, 5, 13, 8) }
         'cl'     { $g.FillRectangle((New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(200, 60, 60))), 2, 2, 12, 12); foreach ($y in 5, 8, 11) { $g.DrawLine([System.Drawing.Pens]::White, 4, $y, 11, $y) } }
+        'shelf'  { $g.FillRectangle((New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(150, 105, 60))), 1, 5, 14, 9); $g.FillRectangle((New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(190, 145, 90))), 0, 3, 16, 3); $g.DrawLine([System.Drawing.Pens]::White, 6, 8, 10, 8) }
         'cldef'  { $g.FillRectangle((New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(150, 150, 150))), 2, 2, 12, 12); foreach ($y in 5, 8, 11) { $g.DrawLine([System.Drawing.Pens]::White, 4, $y, 11, $y) } }
     }
     if ($badge) {
@@ -197,7 +198,7 @@ function New-Icon([string]$base, [string]$badge) {
     return $bmp
 }
 $icons.Images.Add('none', (New-Object System.Drawing.Bitmap(16, 16)))
-foreach ($b in 'file', 'folder', 'folderoff', 'cl', 'cldef') { $icons.Images.Add($b, (New-Icon $b '')) }
+foreach ($b in 'file', 'folder', 'folderoff', 'cl', 'cldef', 'shelf') { $icons.Images.Add($b, (New-Icon $b '')) }
 $icons.Images.Add('stale', (New-Icon 'faded' ''))
 foreach ($k in 'A', 'M', 'D', 'R', '!', '?') { $icons.Images.Add(('file-' + $k), (New-Icon 'file' $k)); $icons.Images.Add(('folder-' + $k), (New-Icon 'folder' $k)) }
 # Local / Depot trees exist before the icons: attach the list here
@@ -220,7 +221,7 @@ $pendHead.Dock = 'Top'; $pendHead.Height = 24; $pendHead.WrapContents = $false
 $ph = New-Object System.Windows.Forms.Label; $ph.AutoSize = $true; $ph.Font = $fontBold; $ph.Text = 'Changelists'
 $ph.Margin = New-Object System.Windows.Forms.Padding(4, 4, 18, 0)
 [void]$pendHead.Controls.Add($ph)
-foreach ($lg in @(@('file-A', 'added'), @('file-M', 'modified'), @('file-D', 'deleted'), @('file-R', 'renamed'), @('file-!', 'conflict'), @('stale', 'stale'))) {
+foreach ($lg in @(@('file-A', 'added'), @('file-M', 'modified'), @('file-D', 'deleted'), @('file-R', 'renamed'), @('file-!', 'conflict'), @('stale', 'stale'), @('shelf', 'shelved'))) {
     $pb = New-Object System.Windows.Forms.PictureBox; $pb.Size = New-Object System.Drawing.Size(16, 16); $pb.Image = $icons.Images[$lg[0]]
     $pb.Margin = New-Object System.Windows.Forms.Padding(6, 4, 2, 0)
     $lt = New-Object System.Windows.Forms.Label; $lt.AutoSize = $true; $lt.Text = $lg[1]; $lt.ForeColor = [System.Drawing.Color]::FromArgb(80, 80, 80)
@@ -388,8 +389,11 @@ function Build-Tree {
                 if ($name.StartsWith((Slug-Base (($c.desc -split "`n")[0])), [StringComparison]::OrdinalIgnoreCase)) { $label = $d } else { $label = $name + '   ' + $d }
             }
         }
-        $count = '   (' + $items.Count + ')'
-        if ($stale.Count -gt 0) { $count = '   (' + $items.Count + ' +' + $stale.Count + ' stale)' }
+        $shs = @(); if ($script:ShelfMap -and $script:ShelfMap.ContainsKey($name.ToLowerInvariant())) { $shs = @($script:ShelfMap[$name.ToLowerInvariant()]) }
+        $count = '   (' + $items.Count
+        if ($stale.Count -gt 0) { $count += ' +' + $stale.Count + ' stale' }
+        if ($shs.Count -gt 0) { $count += ', ' + $shs.Count + ' shelved' }
+        $count += ')'
         $n = New-Object System.Windows.Forms.TreeNode(($label + $count))
         $n.Tag = [pscustomobject]@{ Type = 'cl'; Name = $name; Stale = $stale.Count }
         Set-Icon $n $(if ($name -eq 'default') { 'cldef' } else { 'cl' })
@@ -419,11 +423,67 @@ function Build-Tree {
             $f.NodeFont = $fontUi
             [void]$n.Nodes.Add($f)
         }
+        # Shelves of this changelist (collapsed): local ones list their files
+        foreach ($sh in $shs) {
+            $label = $(if ($sh.Local) { $sh.Id } else { $sh.Name }) + '   ' + $(if ($sh.Local) { 'local' } else { 'Diversion' }) + $(if ($sh.Created) { ', ' + $sh.Created } else { '' })
+            $sn = New-Object System.Windows.Forms.TreeNode($label)
+            $sn.Tag = [pscustomobject]@{ Type = 'shelf'; Shelf = $sh; Cl = $name }; $sn.NodeFont = $fontUi
+            $sn.ForeColor = [System.Drawing.Color]::FromArgb(120, 80, 30); Set-Icon $sn 'shelf'
+            foreach ($sf in @($sh.Files)) {
+                $k = Kind-Letter $sf.Kind
+                $fn = New-Object System.Windows.Forms.TreeNode($sf.Path)
+                $fn.Tag = [pscustomobject]@{ Type = 'shelffile'; Path = $sf.Path; Cl = $name }; $fn.NodeFont = $fontUi
+                $fn.ForeColor = [System.Drawing.Color]::FromArgb(110, 110, 110); Set-Icon $fn ('file-' + $k)
+                [void]$sn.Nodes.Add($fn)
+            }
+            [void]$n.Nodes.Add($sn)
+        }
         [void]$tv.Nodes.Add($n)
     }
     $tv.ExpandAll()
+    foreach ($cn in $tv.Nodes) { foreach ($x in $cn.Nodes) { if ($x.Tag.Type -eq 'shelf') { $x.Collapse() } } }
     if ($tv.Nodes.Count -gt 0) { $tv.Nodes[0].EnsureVisible() }
     $tv.EndUpdate()
+}
+
+$script:Shelves = @(); $script:ShelfMap = @{}
+# Local shelves + last known Diversion shelves, grouped by changelist (creates missing changelists)
+function Load-Shelves {
+    $script:Shelves = @(@(Get-LocalShelves) + @(Read-DvShelfCache))
+    $script:ShelfMap = Map-Shelves $script:Shelves
+}
+function Apply-DvShelves($r) {
+    if ($r.Code -ne 0) { return }
+    $list = @(Read-Shelves $r.Lines)
+    Save-DvShelfCache $list
+    Load-Shelves; Build-Tree
+}
+# Unshelve = copy back, then the files go to the shelf's changelist (Perforce-like)
+function Do-Unshelve($sh, [string]$cl) {
+    if ($sh.Local) {
+        if (-not (Ask-YesNo ("Unshelve '" + $sh.Id + "' (" + $sh.Count + " file(s)) into '" + $cl + "'?`r`nOverwrites those files in your workspace. Shelf kept. Close Unreal first.") 'Unshelve')) { return }
+        Run-Busy {
+            Apply-LocalShelf $sh.Id
+            if ($cl -and $cl -ine 'default') { Move-ToCL $cl @($sh.Files) }
+        } 'Unshelving'
+    } else {
+        if (-not (Ensure-Online 'Unshelve')) { Back-Offline; return }
+        try {
+            if (-not (Ask-YesNo ("Unshelve Diversion shelf '" + $sh.Name + "'? Shelf kept.") 'Unshelve')) { return }
+            Run-Busy { Apply-Shelf $sh.Id } 'Unshelving'
+        } finally { Back-Offline }
+    }
+    Refresh-All
+}
+function Do-DeleteShelf($sh) {
+    $label = $(if ($sh.Local) { $sh.Id } else { $sh.Name })
+    if (-not (Ask-YesNo ("Delete shelf '" + $label + "'? Cannot be undone.") 'Delete shelf')) { return }
+    if ($sh.Local) { Run-Busy { Delete-LocalShelf $sh.Id } }
+    else {
+        if (-not (Ensure-Online 'Delete shelf')) { Back-Offline; return }
+        try { Run-Busy { Delete-Shelf $sh.Id } } finally { Back-Offline }
+    }
+    Refresh-All
 }
 
 function Total-Entries { $t = 0; foreach ($c in $script:CLs) { $t += $c.files.Count }; return $t }
@@ -620,6 +680,7 @@ function Apply-Scan($res) {
 }
 
 function Show-Pending($st, [bool]$unreachable) {
+    Load-Shelves
     $script:Pending = $st.Files
     $script:Paused = $script:Offline
     $script:WsCommit = $st.Commit
@@ -628,6 +689,8 @@ function Show-Pending($st, [bool]$unreachable) {
     $sw = [Diagnostics.Stopwatch]::StartNew()
     Build-Tree
     Write-Timing ('build-pending-tree (' + $st.Files.Count + ' files)') $sw.Elapsed.TotalMilliseconds
+    # Diversion shelves: listed online in the background (no lock), cached for offline
+    if (-not $script:Offline -and -not $unreachable) { Start-DvAsync @('shelf') 'Apply-DvShelves' $true $true '' }
     $script:Branch = $st.Branch
     $note = ''; if ($script:BaselineFresh) { $note = '  (tracking from now)' }
     if ($unreachable) { Set-Mode 'down' '' }
@@ -678,7 +741,7 @@ function Target-Items {
     $n = $tv.SelectedNode
     if (-not $n) { return ,@() }
     if ($n.Tag.Type -eq 'file') { return ,@($n.Tag.Item) }
-    if ($n.Tag.Type -eq 'stale') { return ,@() }
+    if ($n.Tag.Type -in 'stale', 'shelf', 'shelffile') { return ,@() }
     if ($n.Tag.Type -eq 'more') { return ,@(Get-CLItems $script:Pending $n.Tag.Cl) }
     return ,@(Get-CLItems $script:Pending $n.Tag.Name)
 }
@@ -731,7 +794,7 @@ function Do-Shelve {
         if ($items.Count -eq 0) { [void][System.Windows.Forms.MessageBox]::Show($form, "Changelist '" + $name + "' has no pending file.", 'Shelve'); return }
         $a = [System.Windows.Forms.MessageBox]::Show($form, "Shelve " + $items.Count + " file(s)`r`n`r`nYes: local (this PC only)`r`nNo: Diversion (uploaded to the repo)", 'Shelve', 'YesNoCancel', 'Question')
         if ($a -eq 'Cancel') { return }
-        if ($a -eq 'Yes') { Run-Busy { [void](Shelve-Local $name $items) }; return }
+        if ($a -eq 'Yes') { Run-Busy { [void](Shelve-Local $name $items $name) } 'Shelving'; Refresh-All; return }
         if (-not (Ensure-Online 'Shelve')) { Back-Offline; return }
     }
     elseif (-not (Refresh-Now)) { return }
@@ -776,6 +839,7 @@ function Do-EditDesc {
 function Do-DeleteCL {
     $name = Selected-CL
     if ($name -eq 'default') { return }
+    if ($script:ShelfMap.ContainsKey($name.ToLowerInvariant())) { [void][System.Windows.Forms.MessageBox]::Show($form, "'" + $name + "' has shelves. Delete them first.", 'Delete changelist', 'OK', 'Information'); return }
     if (-not (Ask-YesNo ("Delete changelist '" + $name + "'?`r`nIts files go back to default. Nothing is reverted.") 'Delete changelist')) { return }
     Run-Busy { Remove-CL $name; Build-Tree }
 }
@@ -808,8 +872,7 @@ function Do-Shelves {
         if ($lv.SelectedItems.Count -eq 0) { return }
         $s = $lv.SelectedItems[0].Tag
         if ($s.Local) {
-            if (-not (Ask-YesNo ("Copy the " + $s.Count + " file(s) of local shelf '" + $s.Id + "' back over your workspace? (the shelf is kept)`r`nClose Unreal first.") 'Unshelve')) { return }
-            Run-Busy { Apply-LocalShelf $s.Id }
+            $d.Close(); Do-Unshelve $s (Shelf-ClName $s); return
         } else {
             if (-not (Ensure-Online 'Unshelving from Diversion')) { return }
             if (-not (Ask-YesNo ("Apply shelf '" + $s.Name + "' to your workspace? (the shelf is kept)") 'Unshelve')) { return }
@@ -1329,6 +1392,18 @@ $tv.Add_NodeMouseClick({
     if ($e.Button -ne [System.Windows.Forms.MouseButtons]::Right) { return }
     $tv.SelectedNode = $e.Node
     $menu.Items.Clear()
+    if ($e.Node.Tag.Type -in 'shelf', 'shelffile') {
+        $script:MenuShelf = $e.Node.Tag; if ($e.Node.Tag.Type -eq 'shelffile') { $script:MenuShelf = $e.Node.Parent.Tag }
+        $script:MenuShelfPath = $(if ($e.Node.Tag.Type -eq 'shelffile') { $e.Node.Tag.Path } else { '' })
+        [void](Add-MenuItem $menu ("Unshelve into '" + $script:MenuShelf.Cl + "'...") { Do-Unshelve $script:MenuShelf.Shelf $script:MenuShelf.Cl })
+        [void](Add-MenuItem $menu 'Delete shelf...' { Do-DeleteShelf $script:MenuShelf.Shelf })
+        if ($script:MenuShelf.Shelf.Local) { [void](Add-MenuItem $menu 'Open shelf folder' { Open-InExplorer ([System.IO.Path]::Combine((Dvcl-File 'shelves'), $script:MenuShelf.Shelf.Id)) }) }
+        if ($script:MenuShelfPath) {
+            [void]$menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
+            [void](Add-MenuItem $menu 'Show in Local tree' { Navigate-Tree 'local' $script:MenuShelfPath })
+        }
+        $menu.Show($tv, $e.Location); return
+    }
     $isCl = $e.Node.Tag.Type -eq 'cl'
     $clName = Selected-CL
     $items = Target-Items
@@ -1465,6 +1540,9 @@ function Run-GuiSelfCheck {
         [void]$r.Add('INFO  offline: ' + [bool]$script:Offline + '   offline flag: ' + (Test-OfflineFlag) + '   baseline fresh: ' + [bool]$script:BaselineFresh)
         $clNodes = @($tv.Nodes | Where-Object { $_.Tag.Type -eq 'cl' })
         C 'pending tree: default + changelists' ($clNodes.Count -eq (1 + $script:CLs.Count)) ([string]$clNodes.Count)
+        $shNodes = 0; foreach ($cn in $tv.Nodes) { foreach ($x in $cn.Nodes) { if ($x.Tag.Type -eq 'shelf') { $shNodes++ } } }
+        C 'shelves shown under their changelists' ($shNodes -eq @($script:Shelves).Count) ("" + $shNodes + ' / ' + @($script:Shelves).Count)
+        [void]$r.Add('INFO  shelves: ' + (@($script:Shelves | ForEach-Object { $(if ($_.Local) { $_.Id } else { $_.Name }) + ' -> ' + (Shelf-ClName $_) }) -join ', '))
         $files = File-Nodes
         C 'pending tree: all pending files shown' ($files.Count -eq $script:Pending.Count) ("" + $files.Count + ' / ' + $script:Pending.Count)
         $staleShown = 0; foreach ($cn in $tv.Nodes) { foreach ($fn in $cn.Nodes) { if ($fn.Tag.Type -eq 'stale') { $staleShown++ } } }

@@ -2,6 +2,12 @@
 
 Versions follow [semver](https://semver.org). Tags: `vX.Y.Z`.
 
+## 0.6.0 - 2026-11-11
+
+- Shelves belong to changelists and show under them in the main view (local or Diversion). A changelist can hold pending files, shelves, or both.
+- Unshelve puts the files back into the shelf's changelist. A changelist with shelves cannot be deleted.
+- Diversion shelves are listed online in the background and kept for offline display.
+
 ## 0.5.2 - 2026-11-11
 
 - Fix: Shelves dialog failed with two or more local shelves.

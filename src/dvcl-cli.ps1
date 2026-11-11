@@ -7,6 +7,7 @@ $ErrorActionPreference = 'Stop'
 
 function Show-List($pending) {
     $set = Pending-Set $pending
+    $shmap = Map-Shelves @(@(Get-LocalShelves) + @(Read-DvShelfCache))
     foreach ($name in (@('default') + @($script:CLs | ForEach-Object { $_.name }))) {
         $items = Get-CLItems $pending $name
         $d = ''; $stale = @()
@@ -15,6 +16,7 @@ function Show-List($pending) {
         Say ("== " + $name + $d + "  (" + $items.Count + ")" + $s) 'Cyan'
         foreach ($p in $items) { Say ("   #{0,-4} {1}  {2}" -f $p.Index, (Kind-Letter $p.Kind), $p.Path) }
         foreach ($f in $stale) { Say ("   -     .  " + $f + "   (not pending)") 'DarkGray' }
+        if ($shmap.ContainsKey($name.ToLowerInvariant())) { foreach ($sh in $shmap[$name.ToLowerInvariant()]) { Say ("   shelved " + $(if ($sh.Local) { $sh.Id + '  (local, ' + $sh.Count + ' files)' } else { $sh.Name + '  (Diversion)' })) 'DarkYellow' } }
     }
 }
 
@@ -195,6 +197,11 @@ function Run-SelfTest {
             $id2 = Shelve-Local 'other work' @($off | Where-Object { $_.Path -like '*New/D.uasset' })
             $rows = @(Get-LocalShelves)
             T "two local shelves = two rows (not one row holding both)" ($rows.Count -eq 2 -and $rows[0] -isnot [array] -and $rows[0].Id -and $rows[1].Id)
+            $m = Map-Shelves $rows
+            T "shelves map to changelists (recorded, by name, created when missing)" ($m.ContainsKey('my_work') -and $m.ContainsKey('other_work') -and (Find-CL 'other_work'))
+            T "shelf name without dvcl stamp -> changelist" ((Shelf-ClName ([pscustomobject]@{ Name = 'town_blockout_20261111-0645'; Cl = '' })) -eq 'town_blockout' -and (Shelf-ClName ([pscustomobject]@{ Name = 'x'; Cl = 'mine' })) -eq 'mine')
+            T "Diversion shelf list parsed one row per shelf" (@(Read-Shelves @('shelf a_20261111-0101 (dv.shelf.1)', '  Created: today', 'shelf b (dv.shelf.2)')).Count -eq 2)
+            Remove-CL 'other_work'; Remove-CL 'my_work'
             Delete-LocalShelf $id2
             Apply-LocalShelf $id
             T "local unshelve restores the shelved content" ([System.IO.File]::ReadAllText((Full-Path 'Game/Content/A.uasset')) -eq 'a2-longer')
