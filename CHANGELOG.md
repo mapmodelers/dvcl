@@ -2,6 +2,11 @@
 
 Versions follow [semver](https://semver.org). Tags: `vX.Y.Z`.
 
+## 0.9.1 - 2026-11-11
+
+- A dvcl left running in the notification area restarts on the new version when opened after an update.
+- Dark theme: dark expand arrows and path tooltips in the changelist view (no light +/- boxes).
+
 ## 0.9.0 - 2026-11-11
 
 - Changelists have numbers (#1, #2...), never reused; existing ones get theirs on first start. Command line accepts them: `dvcl submit 12`.

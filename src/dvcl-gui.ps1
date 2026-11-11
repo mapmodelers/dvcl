@@ -37,6 +37,7 @@ $script:GhRepo  = 'mapmodelers/dvcl'
 function Get-LocalVersion {
     try { return (Get-Content -LiteralPath (Join-Path $script:ToolDir 'VERSION') -Raw).Trim() } catch { return '0.0.0' }
 }
+$script:RunVersion = Get-LocalVersion   # a newer version on disk restarts the window when it is opened again
 
 # ---------------------------------------------------------------- look
 $fontUi   = New-Object System.Drawing.Font('Segoe UI', 9)
@@ -1419,6 +1420,7 @@ namespace DvclNative {
   public static class Win {
     [DllImport("uxtheme.dll", CharSet = CharSet.Unicode)] public static extern int SetWindowTheme(IntPtr h, string app, string id);
     [DllImport("dwmapi.dll")] public static extern int DwmSetWindowAttribute(IntPtr h, int a, ref int v, int s);
+    [DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr h, int m, IntPtr w, IntPtr l);
   }
 }
 '@
@@ -1439,6 +1441,11 @@ function Theme-Walk($root) {
             if ($c -is [System.Windows.Forms.TreeView] -or $c -is [System.Windows.Forms.TextBox] -or $c -is [System.Windows.Forms.ListView]) { $c.BorderStyle = $(if ($d) { 'FixedSingle' } else { 'Fixed3D' }) }
             if ($c -is [System.Windows.Forms.TextBox] -and -not $c.Multiline -and $d) { $c.BorderStyle = 'FixedSingle' }
             if ($ui) { try { [void][DvclNative.Win]::SetWindowTheme($c.Handle, $(if ($d) { 'DarkMode_Explorer' } else { 'Explorer' }), $null) } catch {} }
+            if ($c -is [System.Windows.Forms.TreeView]) {
+                # dark: no tree lines = dark expand arrows instead of light +/- boxes; dark path tooltip (TVM_GETTOOLTIPS)
+                if ($c -eq $tv) { $c.ShowLines = -not $d }
+                if ($ui) { try { $tt = [DvclNative.Win]::SendMessage($c.Handle, 0x1119, [IntPtr]::Zero, [IntPtr]::Zero); if ($tt -ne [IntPtr]::Zero) { [void][DvclNative.Win]::SetWindowTheme($tt, $(if ($d) { 'DarkMode_Explorer' } else { 'Explorer' }), $null) } } catch {} }
+            }
         }
         elseif ($c -is [System.Windows.Forms.Button]) {
             if ($d) { $c.FlatStyle = 'Flat'; $c.BackColor = $P.Back; $c.ForeColor = $P.Fore; $c.FlatAppearance.BorderColor = $P.Border; $c.FlatAppearance.MouseOverBackColor = $P.Hi }
@@ -1734,6 +1741,8 @@ function Run-GuiSelfCheck {
         C 'icons: image list set on the three trees' ((@($tv, $tvLocal, $tvDepot) | Where-Object { $_.ImageList -and $_.ImageList.Images.ContainsKey('file-A') }).Count -eq 3 -and $icons.Images.Count -ge 18) ([string]$icons.Images.Count)
         C 'numbers: changelist rows start with #id' (@($tv.Nodes | Where-Object { $_.Tag.Name -ne 'default' -and $_.Text -notmatch '^#\d+  ' }).Count -eq 0)
         C 'find: Local and Depot accept drops' ($tvLocal.AllowDrop -and $tvDepot.AllowDrop)
+        C 'restart: running version matches disk, restart path known' ($script:RunVersion -eq (Get-LocalVersion) -and $script:SelfPath -and (Test-Path -LiteralPath $script:SelfPath))
+        C 'theme: changelist tree lines follow theme (none in dark)' ($tv.ShowLines -eq (-not $script:Dark))
         C 'icons: changelist rows have the changelist icon' (@($tv.Nodes | Where-Object { $_.ImageKey -notin 'cl', 'cldef' }).Count -eq 0)
         C 'layout: path bars present' ($tabLocal.Contains($barLocal.Box) -and $tabDepot.Contains($barDepot.Box))
         C 'toolbar: Get latest + Tools + Locks' ((@($tool.Items | Where-Object { $_.Text -like 'Get latest*' -or $_.Text -in 'Tools', 'Locks' })).Count -eq 3)
@@ -1871,11 +1880,15 @@ $notify.Icon = $(if ($form.Icon) { $form.Icon } else { [System.Drawing.SystemIco
 $notify.Text = 'dvcl'
 $notify.ContextMenuStrip = $trayMenu
 function Show-FromTray {
+    # dvcl was updated while this window was running: restart on the new version
+    if ($script:TrayOn -and (Get-LocalVersion) -ne $script:RunVersion) { Restart-Dvcl; return }
     $form.Show()
     if ($form.WindowState -eq 'Minimized') { $form.WindowState = 'Normal' }
     $form.Activate(); $form.BringToFront()
 }
 function Exit-Dvcl { $script:ReallyExit = $true; $form.Close() }
+$script:SelfPath = $PSCommandPath
+function Restart-Dvcl { Say ('dvcl ' + (Get-LocalVersion) + ' on disk: restarting') 'Gray'; $script:Restart = $true; Exit-Dvcl }
 [void](Add-MenuItem $trayMenu 'Open dvcl' { Show-FromTray })
 [void]$trayMenu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
 [void](Add-MenuItem $trayMenu 'Exit' { Exit-Dvcl })
@@ -1910,7 +1923,12 @@ $form.Add_FormClosing({
     $jobTimer.Stop(); $pollTimer.Stop(); $watchTimer.Stop(); $instTimer.Stop()
     foreach ($j in @($script:Jobs)) { try { $j.PS.Stop(); $j.PS.Dispose() } catch {} }
     $notify.Visible = $false; $notify.Dispose()
-    if ($script:InstMutex) { try { $script:InstMutex.ReleaseMutex() } catch {}; $script:InstMutex.Dispose() }
+    if ($script:InstMutex) { try { $script:InstMutex.ReleaseMutex() } catch {}; $script:InstMutex.Dispose(); $script:InstMutex = $null }
+    if ($script:Restart) {
+        $a = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-STA', '-WindowStyle', 'Hidden', '-File', ('"' + $script:SelfPath + '"'))
+        if ($script:Root) { $a += ('"' + $script:Root.TrimEnd('\') + '"') }
+        Start-Process powershell -ArgumentList $a -WindowStyle Hidden
+    }
 })
 
 # Normal launch: one window per workspace, tray icon on
