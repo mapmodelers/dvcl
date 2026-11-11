@@ -350,6 +350,7 @@ function Stale-Of($pending, $c, $set = $null) {
 
 # Removes not-pending entries ($name = one changelist, '' = all). Returns how many.
 function Clean-Stale($pending, [string]$name, [bool]$paused) {
+    Load-Db   # re-read: another window, the command line or an agent may have changed it
     if ($paused) { Fail "sync is paused: every entry looks not pending. Resume sync first." }
     $set = Pending-Set $pending
     $n = 0
@@ -368,6 +369,7 @@ function Clean-Stale($pending, [string]$name, [bool]$paused) {
 # Only paths that are pending now and in no changelist; the latest prune of a path wins.
 # $lines: log lines (default: this repo's log). Returns how many entries were restored.
 function Recover-Pruned($pending, [string[]]$lines = $null) {
+    Load-Db
     if ($null -eq $lines) {
         if (-not $script:Log -or -not (Test-Path -LiteralPath $script:Log)) { Say "No log: nothing to recover." 'Yellow'; return 0 }
         $lines = @(Get-Content -LiteralPath $script:Log -Encoding UTF8)
@@ -384,7 +386,7 @@ function Recover-Pruned($pending, [string[]]$lines = $null) {
         $clName = $last[$k][0]
         if ($clName -notmatch '^[A-Za-z0-9_\-]{1,40}$' -or $clName -ieq 'default') { continue }
         $c = Find-CL $clName
-        if (-not $c) { $c = New-CL $clName '' }
+        if (-not $c) { Save-Db; [void](New-CL $clName ''); $c = Find-CL $clName }   # New-CL re-reads the file: save first
         [void]$c.files.Add($p.Path); $n++
         Write-Log ("recover " + $c.name + " : " + $p.Path)
     }
@@ -443,6 +445,7 @@ function Files-For-Commit($items) {
 
 # ---------------------------------------------------------------- operations (shared by CLI and GUI)
 function New-CL([string]$name, [string]$desc) {
+    Load-Db   # re-read: another window, the command line or an agent may have changed it
     if (-not $name) { $name = $desc }
     if ($name -notmatch '^[A-Za-z0-9_\-]{1,40}$' -or $name -ieq 'default') {
         $new = Unique-Name $name
@@ -457,11 +460,13 @@ function New-CL([string]$name, [string]$desc) {
 }
 
 function Set-CLDesc([string]$name, [string]$desc) {
+    Load-Db   # re-read: another window, the command line or an agent may have changed it
     $c = Find-CL $name; if (-not $c) { Fail ("no changelist '" + $name + "'") }
     $c.desc = ([string]$desc).Trim(); Save-Db
 }
 
 function Remove-CL([string]$name) {
+    Load-Db   # re-read: another window, the command line or an agent may have changed it
     $c = Find-CL $name; if (-not $c) { Fail ("no changelist '" + $name + "'") }
     [void]$script:CLs.Remove($c); Save-Db
     Say ("Deleted changelist '" + $c.name + "' (" + $c.files.Count + " file(s) back to default). Nothing was reverted.") 'Green'
@@ -469,6 +474,7 @@ function Remove-CL([string]$name) {
 
 # Moves pending items to a changelist ('default' = unassign). Creates the changelist if missing.
 function Move-ToCL([string]$name, $items) {
+    Load-Db   # re-read: another window, the command line or an agent may have changed it
     if ($name -ieq 'default') {
         foreach ($p in $items) { Detach $p.Path }
     } else {
@@ -490,6 +496,7 @@ function Submit-Items([string]$clName, $items, [string]$desc, $pending = $null) 
     $files = Files-For-Commit $items
     $r = Invoke-Dv (@('commit') + $files + @('-m', $desc))
     if ($r.Code -ne 0) { Fail ("dv commit failed (exit " + $r.Code + "): " + ($r.Lines -join ' ')) }
+    Load-Db
     foreach ($p in $items) { Detach $p.Path }
     $c = Find-CL $clName
     if ($c) {

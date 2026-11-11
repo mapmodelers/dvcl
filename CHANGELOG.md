@@ -2,6 +2,12 @@
 
 Versions follow [semver](https://semver.org). Tags: `vX.Y.Z`.
 
+## 0.7.0 - 2026-11-11
+
+- Dark theme (toolbar: Dark / Light), remembered.
+- Several users of one workspace (dvcl windows, command line, agents): every change re-reads the changelists first, so nobody's edits are overwritten; outside changes show within 2 s.
+- Refresh keeps the selected and checked files.
+
 ## 0.6.1 - 2026-11-11
 
 - Shelf rows read "Shelved files (n)" (shelf name in the tooltip), like Perforce.

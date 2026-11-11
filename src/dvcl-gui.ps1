@@ -19,14 +19,14 @@ trap { [void][System.Windows.Forms.MessageBox]::Show(($_.Exception.Message + "`r
 $script:SettingsFile = Join-Path $env:APPDATA 'dvcl\settings.json'
 function Load-Settings {
     try { if (Test-Path -LiteralPath $script:SettingsFile) { return (Get-Content -LiteralPath $script:SettingsFile -Raw | ConvertFrom-Json) } } catch {}
-    return [pscustomobject]@{ lastRepo = ''; w = 980; h = 640 }
+    return [pscustomobject]@{ lastRepo = ''; w = 980; h = 640; theme = 'light' }
 }
 function Save-Settings {
     if ($Shot) { return }   # screenshot runs never touch the user's settings
     try {
         $dir = Split-Path -Parent $script:SettingsFile
         if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir | Out-Null }
-        [pscustomobject]@{ lastRepo = [string]$script:Root; w = $form.Width; h = $form.Height } | ConvertTo-Json | Set-Content -LiteralPath $script:SettingsFile -Encoding UTF8
+        [pscustomobject]@{ lastRepo = [string]$script:Root; w = $form.Width; h = $form.Height; theme = $(if ($script:Dark) { 'dark' } else { 'light' }) } | ConvertTo-Json | Set-Content -LiteralPath $script:SettingsFile -Encoding UTF8
     } catch {}
 }
 $settings = Load-Settings
@@ -42,6 +42,27 @@ function Get-LocalVersion {
 $fontUi   = New-Object System.Drawing.Font('Segoe UI', 9)
 $fontBold = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
 $fontMono = New-Object System.Drawing.Font('Consolas', 9)
+# ---- theme: palette read by everything that colors (light = Windows defaults, dark = VS-like)
+$script:Dark = $false
+$script:PalLight = @{
+    Back = [System.Drawing.SystemColors]::Control; Fore = [System.Drawing.SystemColors]::ControlText; Input = [System.Drawing.SystemColors]::Window
+    Muted = [System.Drawing.Color]::FromArgb(110, 110, 110); Stale = [System.Drawing.Color]::DarkGray; Shelf = [System.Drawing.Color]::FromArgb(120, 80, 30)
+    Log = [System.Drawing.Color]::FromArgb(250, 250, 250); Link = [System.Drawing.Color]::FromArgb(0, 90, 190)
+    offline = [System.Drawing.Color]::FromArgb(255, 236, 160); online = [System.Drawing.Color]::FromArgb(214, 240, 214)
+    busy = [System.Drawing.Color]::FromArgb(210, 228, 250); down = [System.Drawing.Color]::FromArgb(250, 215, 215); loading = [System.Drawing.SystemColors]::Control
+    A = [System.Drawing.Color]::FromArgb(0, 120, 215); M = [System.Drawing.Color]::FromArgb(30, 30, 30); D = [System.Drawing.Color]::FromArgb(200, 40, 40)
+    R = [System.Drawing.Color]::FromArgb(140, 80, 0); X = [System.Drawing.Color]::FromArgb(200, 0, 160); Q = [System.Drawing.Color]::Gray
+}
+$script:PalDark = @{
+    Back = [System.Drawing.Color]::FromArgb(45, 45, 48); Fore = [System.Drawing.Color]::FromArgb(225, 225, 225); Input = [System.Drawing.Color]::FromArgb(30, 30, 30)
+    Muted = [System.Drawing.Color]::FromArgb(150, 150, 150); Stale = [System.Drawing.Color]::FromArgb(115, 115, 115); Shelf = [System.Drawing.Color]::FromArgb(205, 165, 110)
+    Log = [System.Drawing.Color]::FromArgb(24, 24, 24); Link = [System.Drawing.Color]::FromArgb(110, 175, 255)
+    offline = [System.Drawing.Color]::FromArgb(92, 74, 20); online = [System.Drawing.Color]::FromArgb(35, 80, 45)
+    busy = [System.Drawing.Color]::FromArgb(35, 60, 100); down = [System.Drawing.Color]::FromArgb(110, 40, 40); loading = [System.Drawing.Color]::FromArgb(45, 45, 48)
+    A = [System.Drawing.Color]::FromArgb(95, 170, 255); M = [System.Drawing.Color]::FromArgb(225, 225, 225); D = [System.Drawing.Color]::FromArgb(240, 105, 105)
+    R = [System.Drawing.Color]::FromArgb(230, 160, 70); X = [System.Drawing.Color]::FromArgb(240, 110, 220); Q = [System.Drawing.Color]::FromArgb(160, 160, 160)
+}
+$script:Pal = $script:PalLight
 $colKind = @{
     'A' = [System.Drawing.Color]::FromArgb(0, 120, 215)
     'M' = [System.Drawing.Color]::FromArgb(30, 30, 30)
@@ -316,6 +337,7 @@ function Show-Dialog([string]$title, [string]$nameLabel, [string]$nameValue, [st
     $ca = New-Object System.Windows.Forms.Button; $ca.Text = 'Cancel'; $ca.Left = 357; $ca.Top = $y; $ca.Width = 75; $ca.DialogResult = 'Cancel'
     $d.Controls.Add($ok); $d.Controls.Add($ca); $d.AcceptButton = $ok; $d.CancelButton = $ca
     $d.ClientSize = New-Object System.Drawing.Size(446, ($y + 36))
+    Theme-Walk $d
     $res = $d.ShowDialog($form)
     if ($res -ne 'OK') { return $null }
     $n = ''; $t = ''
@@ -346,6 +368,7 @@ function Show-SubmitDialog([string]$clName, [string]$desc, $items) {
     $d.Controls.Add($cl); $d.Controls.Add($l2); $d.Controls.Add($tb); $d.Controls.Add($l); $d.Controls.Add($bar)
     $d.CancelButton = $ca
     $d.Add_Shown({ $ok.Left = $bar.ClientSize.Width - 200; $ca.Left = $bar.ClientSize.Width - 100; $tb.Focus() })
+    Theme-Walk $d
     if ($d.ShowDialog($form) -ne 'OK') { return $null }
     $sel = @(); foreach ($i in $cl.CheckedIndices) { $sel += $items[$i] }
     return [pscustomobject]@{ Desc = $tb.Text.Trim(); Items = $sel }
@@ -363,6 +386,7 @@ function Show-TextDialog([string]$title, [string[]]$lines) {
     $bar.Controls.Add($bClose)
     $d.Controls.Add($tb); $d.Controls.Add($bar); $d.CancelButton = $bClose
     $d.Add_Shown({ $tb.SelectionLength = 0 })
+    Theme-Walk $d
     [void]$d.ShowDialog($form)
 }
 
@@ -373,6 +397,9 @@ $script:BaselineFresh = $false
 
 $script:MaxRows = 1500
 function Build-Tree {
+    # keep what the user selected / checked across rebuilds (refresh, theme, outside changes)
+    $keepChecked = @{}; foreach ($fn in (File-Nodes)) { if ($fn.Checked) { $keepChecked[$fn.Tag.Item.Path] = 1 } }
+    $keepSel = $null; if ($tv.SelectedNode -and $tv.SelectedNode.Tag) { $t = $tv.SelectedNode.Tag; $keepSel = [string]$t.Type + '|' + $(if ($t.Type -eq 'file') { $t.Item.Path } elseif ($t.Type -eq 'cl') { $t.Name } else { [string]$t.Path + [string]$t.Cl }) }
     $tv.BeginUpdate()
     $tv.Nodes.Clear()
     $set = Pending-Set $script:Pending
@@ -402,7 +429,7 @@ function Build-Tree {
         foreach ($p in $items) {
             if ($shown -ge $script:MaxRows) {
                 $more = New-Object System.Windows.Forms.TreeNode(('+' + ($items.Count - $shown) + ' more'))
-                $more.Tag = [pscustomobject]@{ Type = 'more'; Cl = $name }; $more.ForeColor = [System.Drawing.Color]::DarkGray; $more.NodeFont = $fontUi; Set-Icon $more 'none'
+                $more.Tag = [pscustomobject]@{ Type = 'more'; Cl = $name }; $more.ForeColor = $script:Pal.Stale; $more.NodeFont = $fontUi; Set-Icon $more 'none'
                 [void]$n.Nodes.Add($more); break
             }
             $shown++
@@ -419,7 +446,7 @@ function Build-Tree {
             $f = New-Object System.Windows.Forms.TreeNode($sp)
             $f.Tag = [pscustomobject]@{ Type = 'stale'; Path = $sp; Cl = $name }
             Set-Icon $f 'stale'
-            $f.ForeColor = [System.Drawing.Color]::DarkGray
+            $f.ForeColor = $script:Pal.Stale
             $f.NodeFont = $fontUi
             [void]$n.Nodes.Add($f)
         }
@@ -430,12 +457,12 @@ function Build-Tree {
             $sn = New-Object System.Windows.Forms.TreeNode($label)
             $sn.ToolTipText = 'shelf ' + $(if ($sh.Local) { $sh.Id } else { $sh.Name + ' (' + $sh.Id + ')' })
             $sn.Tag = [pscustomobject]@{ Type = 'shelf'; Shelf = $sh; Cl = $name }; $sn.NodeFont = $fontUi
-            $sn.ForeColor = [System.Drawing.Color]::FromArgb(120, 80, 30); Set-Icon $sn 'shelf'
+            $sn.ForeColor = $script:Pal.Shelf; Set-Icon $sn 'shelf'
             foreach ($sf in @($sh.Files)) {
                 $k = Kind-Letter $sf.Kind
                 $fn = New-Object System.Windows.Forms.TreeNode($sf.Path)
                 $fn.Tag = [pscustomobject]@{ Type = 'shelffile'; Path = $sf.Path; Cl = $name }; $fn.NodeFont = $fontUi
-                $fn.ForeColor = [System.Drawing.Color]::FromArgb(110, 110, 110); Set-Icon $fn ('file-' + $k)
+                $fn.ForeColor = $script:Pal.Muted; Set-Icon $fn ('file-' + $k)
                 [void]$sn.Nodes.Add($fn)
             }
             [void]$n.Nodes.Add($sn)
@@ -443,7 +470,16 @@ function Build-Tree {
         [void]$tv.Nodes.Add($n)
     }
     $tv.ExpandAll()
-    foreach ($cn in $tv.Nodes) { foreach ($x in $cn.Nodes) { if ($x.Tag.Type -eq 'shelf') { $x.Collapse() } } }
+    foreach ($cn in $tv.Nodes) {
+        if ($keepSel -eq ('cl|' + $cn.Tag.Name)) { $tv.SelectedNode = $cn }
+        foreach ($x in $cn.Nodes) {
+            if ($x.Tag.Type -eq 'shelf') { $x.Collapse() }
+            if ($x.Tag.Type -eq 'file') {
+                if ($keepChecked.ContainsKey($x.Tag.Item.Path)) { $x.Checked = $true }
+                if ($keepSel -eq ('file|' + $x.Tag.Item.Path)) { $tv.SelectedNode = $x }
+            }
+        }
+    }
     if ($tv.Nodes.Count -gt 0) { $tv.Nodes[0].EnsureVisible() }
     $tv.EndUpdate()
 }
@@ -588,11 +624,11 @@ $script:ModeText = @{
 function Set-Mode([string]$state, [string]$desc) {
     $script:Mode = $state
     switch ($state) {
-        'offline' { $modeBar.BackColor = [System.Drawing.Color]::FromArgb(255, 236, 160); $modeLbl.Text = 'OFFLINE'; $btnMode.Text = 'Go online'; $btnMode.Tag = 'on'; $btnMode.Visible = $true }
-        'online'  { $modeBar.BackColor = [System.Drawing.Color]::FromArgb(214, 240, 214); $modeLbl.Text = 'ONLINE'; $btnMode.Text = 'Go offline'; $btnMode.Tag = 'off'; $btnMode.Visible = $true }
-        'busy'    { $modeBar.BackColor = [System.Drawing.Color]::FromArgb(210, 228, 250); $modeLbl.Text = 'BUSY'; $btnMode.Visible = $false }
-        'down'    { $modeBar.BackColor = [System.Drawing.Color]::FromArgb(250, 215, 215); $modeLbl.Text = 'NO DIVERSION'; $btnMode.Text = 'Retry'; $btnMode.Tag = 'retry'; $btnMode.Visible = $true }
-        default   { $modeBar.BackColor = [System.Drawing.SystemColors]::Control; $modeLbl.Text = '...'; $btnMode.Visible = $false }
+        'offline' { $modeBar.BackColor = $script:Pal.offline; $modeLbl.Text = 'OFFLINE'; $btnMode.Text = 'Go online'; $btnMode.Tag = 'on'; $btnMode.Visible = $true }
+        'online'  { $modeBar.BackColor = $script:Pal.online; $modeLbl.Text = 'ONLINE'; $btnMode.Text = 'Go offline'; $btnMode.Tag = 'off'; $btnMode.Visible = $true }
+        'busy'    { $modeBar.BackColor = $script:Pal.busy; $modeLbl.Text = 'BUSY'; $btnMode.Visible = $false }
+        'down'    { $modeBar.BackColor = $script:Pal.down; $modeLbl.Text = 'NO DIVERSION'; $btnMode.Text = 'Retry'; $btnMode.Tag = 'retry'; $btnMode.Visible = $true }
+        default   { $modeBar.BackColor = $script:Pal.loading; $modeLbl.Text = '...'; $btnMode.Visible = $false }
     }
     if (-not $desc) { $desc = $script:ModeText[$state] }
     $modeDesc.Text = $desc
@@ -609,7 +645,7 @@ function Set-BranchInfo {
     if ($script:Offline) { $h = '' }
     elseif ($script:Head -and $script:WsCommit) { if ($script:Head -eq $script:WsCommit) { $h = 'up to date' } else { $h = 'NEW COMMITS' } }
     $branchLbl.Text = $script:Branch + ' @ ' + $script:WsCommit + $(if ($h) { '  -  ' + $h } else { '' })
-    $branchLbl.ForeColor = $(if ($h -like '*NEW COMMITS*') { [System.Drawing.Color]::FromArgb(0, 90, 190) } else { [System.Drawing.Color]::FromArgb(70, 70, 70) })
+    $branchLbl.ForeColor = $(if ($h -like '*NEW COMMITS*') { $script:Pal.Link } else { $script:Pal.Muted })
 }
 
 # ---------------------------------------------------------------- refresh
@@ -889,6 +925,7 @@ function Do-Shelves {
         Run-Busy { if ($s.Local) { Delete-LocalShelf $s.Id } else { Delete-Shelf $s.Id }; & $fill }
     })
     $d.Add_Shown({ Run-Busy { & $fill } })
+    Theme-Walk $d
     [void]$d.ShowDialog($form)
     Refresh-All
 }
@@ -1067,7 +1104,7 @@ function Add-DepotChildren($nodes, [string]$dir) {
         $n.Tag = [pscustomobject]@{ Type = 'ddir'; Path = $rel; Name = $d }
         Mark-Pending $n $rel
         # not downloaded on this PC (selective sync): grey
-        if (-not [System.IO.Directory]::Exists((Join-Path $script:Root ($rel -replace '/', '\')))) { $n.ForeColor = [System.Drawing.Color]::DarkGray; Set-Icon $n 'folderoff'; $n.ToolTipText = 'not on this PC' }
+        if (-not [System.IO.Directory]::Exists((Join-Path $script:Root ($rel -replace '/', '\')))) { $n.ForeColor = $script:Pal.Stale; Set-Icon $n 'folderoff'; $n.ToolTipText = 'not on this PC' }
         Add-Placeholder $n
         [void]$nodes.Add($n)
     }
@@ -1296,6 +1333,73 @@ function Get-BugUrl {
 }
 function Do-ReportBug { Start-Process (Get-BugUrl) }
 
+# ---------------------------------------------------------------- theme
+function Theme-Walk($root) {
+    $P = $script:Pal
+    foreach ($c in @($root) + @(Get-Descendants $root)) {
+        if ($c -eq $modeBar -or $c -eq $modeFlow -or $c -is [System.Windows.Forms.ProgressBar] -or $c -is [System.Windows.Forms.PictureBox]) { continue }
+        if ($c -is [System.Windows.Forms.TreeView] -or $c -is [System.Windows.Forms.ListView] -or $c -is [System.Windows.Forms.CheckedListBox]) { $c.BackColor = $P.Input; $c.ForeColor = $P.Fore; if ($c -is [System.Windows.Forms.TreeView]) { $c.LineColor = $P.Muted } }
+        elseif ($c -is [System.Windows.Forms.TextBox]) { $c.BackColor = $(if ($c -eq $logBox) { $P.Log } else { $P.Input }); $c.ForeColor = $P.Fore }
+        elseif ($c -is [System.Windows.Forms.Button]) {
+            if ($script:Dark) { $c.FlatStyle = 'Flat'; $c.BackColor = $P.Back; $c.ForeColor = $P.Fore; $c.FlatAppearance.BorderColor = $P.Muted }
+            else { $c.FlatStyle = 'System'; $c.UseVisualStyleBackColor = $true; $c.ForeColor = $P.Fore }
+        }
+        elseif ($c -is [System.Windows.Forms.Label]) { if ($c -ne $branchLbl) { $c.ForeColor = $P.Fore } }
+        elseif ($c -is [System.Windows.Forms.ToolStrip]) {
+            $c.RenderMode = $(if ($script:Dark) { 'System' } else { 'ManagerRenderMode' }); $c.BackColor = $P.Back; $c.ForeColor = $P.Fore
+            foreach ($it in $c.Items) { if ($it -ne $btnGet -or $btnGet.Text -eq 'Get latest') { $it.ForeColor = $P.Fore } }
+        }
+        elseif ($c -is [System.Windows.Forms.Form] -or $c -is [System.Windows.Forms.Panel] -or $c -is [System.Windows.Forms.SplitContainer] -or $c -is [System.Windows.Forms.FlowLayoutPanel]) { $c.BackColor = $P.Back; $c.ForeColor = $P.Fore }
+    }
+}
+function Get-Descendants($c) { foreach ($x in $c.Controls) { $x; Get-Descendants $x } }
+
+# Windows 10/11 dark title bar (best effort)
+function Set-TitleDark($f, [bool]$on) {
+    try {
+        if (-not ('DvclNative.Dwm' -as [type])) { Add-Type -Namespace DvclNative -Name Dwm -MemberDefinition '[DllImport("dwmapi.dll")] public static extern int DwmSetWindowAttribute(IntPtr h, int a, ref int v, int s);' }
+        $v = [int]$on; [void][DvclNative.Dwm]::DwmSetWindowAttribute($f.Handle, 20, [ref]$v, 4)
+    } catch {}
+}
+
+function Apply-Theme([bool]$dark, [bool]$rebuild = $true) {
+    $script:Dark = $dark
+    $script:Pal = $(if ($dark) { $script:PalDark } else { $script:PalLight })
+    foreach ($k in 'A', 'M', 'D', 'R') { $colKind[$k] = $script:Pal[$k] }
+    $colKind['!'] = $script:Pal.X; $colKind['?'] = $script:Pal.Q
+    Theme-Walk $form
+    foreach ($m in @($menu, $menuL)) { if ($m) { $m.RenderMode = $(if ($dark) { 'System' } else { 'ManagerRenderMode' }); $m.BackColor = $script:Pal.Back; $m.ForeColor = $script:Pal.Fore } }
+    $btnTheme.Text = $(if ($dark) { 'Light' } else { 'Dark' })
+    if ($script:Mode) { Set-Mode $script:Mode $modeDesc.Text }
+    Set-BranchInfo
+    Set-TitleDark $form $dark
+    if ($rebuild -and $script:Root) { Build-Tree; $script:LocalBuilt = $false; $script:DepotBuilt = $false; Show-Tab }
+    Save-Settings
+}
+
+# ---------------------------------------------------------------- outside changes
+# Another dvcl window, the command line or an agent may change changelists / shelves meanwhile:
+# every change re-reads the file first (core), and this timer shows outside changes within 2 s.
+$script:DbStamp = 0; $script:ShelfStamp = 0
+function Get-Stamps {
+    $a = 0; $b = 0
+    try { if ($script:Db -and (Test-Path -LiteralPath $script:Db)) { $a = (Get-Item -LiteralPath $script:Db).LastWriteTimeUtc.Ticks } } catch {}
+    try { $sd = Dvcl-File 'shelves'; if (Test-Path -LiteralPath $sd) { $b = (Get-Item -LiteralPath $sd).LastWriteTimeUtc.Ticks } } catch {}
+    return @($a, $b)
+}
+$watchTimer = New-Object System.Windows.Forms.Timer
+$watchTimer.Interval = 2000
+$watchTimer.Add_Tick({
+    if (-not $script:Root -or $script:BusyDepth -gt 0 -or $script:StatusRunning) { return }
+    $st = Get-Stamps
+    if ($script:DbStamp -eq 0) { $script:DbStamp = $st[0]; $script:ShelfStamp = $st[1]; return }
+    if ($st[0] -ne $script:DbStamp -or $st[1] -ne $script:ShelfStamp) {
+        $script:DbStamp = $st[0]; $script:ShelfStamp = $st[1]
+        Load-Db; Load-Shelves; Build-Tree
+        Write-Log 'changelists / shelves changed: view updated'
+    }
+})
+
 # ---------------------------------------------------------------- toolbar
 [void](Add-Btn 'Refresh' 'Reload pending changes (F5)' { Refresh-All })
 [void]$tool.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
@@ -1314,6 +1418,7 @@ $ddTools = Add-DropBtn 'Tools' 'Changelist maintenance'
 [void](Add-Btn 'Repo...' 'Pick another Diversion workspace' { Do-ChangeRepo })
 $bBug = Add-Btn 'Report bug' 'Open a new issue on GitHub' { Do-ReportBug }; $bBug.Alignment = 'Right'
 $bUpd = Add-Btn 'Update' 'Check GitHub for a new version and update' { Do-Update }; $bUpd.Alignment = 'Right'
+$btnTheme = Add-Btn 'Dark' 'Dark / light theme' { Apply-Theme (-not $script:Dark) }; $btnTheme.Alignment = 'Right'
 
 # Checked files only (used by "New changelist": nothing checked = empty changelist)
 function Target-Items-IfChecked {
@@ -1475,6 +1580,8 @@ $form.Add_Shown({
     if ($StartDir) { $root = Find-DvRoot $StartDir }
     if (-not $root -and $settings.lastRepo) { $root = Find-DvRoot $settings.lastRepo }
     $script:SyncMode = [bool]$SelfCheck -or [bool]$Shot
+    if ($settings.theme -eq 'dark' -and -not $Shot) { Apply-Theme $true $false }
+    if (-not $SelfCheck -and -not $Shot) { $watchTimer.Start() }
     if ($root) {
         Set-DvRoot $root; Save-Settings
         Write-Log ("==== dvcl window " + (Get-LocalVersion))
@@ -1530,6 +1637,10 @@ function Run-GuiSelfCheck {
         if ($script:Offline) { [void]$r.Add('SKIP  branch head (offline)') } else { C 'branch head read from dv show' ([bool]$script:Head) 'see RUN dv show in dvcl.log' }
         try { $lk = Get-Locks; C 'locks list readable' $true; [void]$r.Add('INFO  locks: ' + @($lk).Count) } catch { C 'locks list readable' $false $_.Exception.Message }
         # background runner (normal launches): window keeps pumping messages while dv runs
+        $wasDark = $script:Dark
+        Apply-Theme (-not $wasDark); $c1 = $tvLocal.BackColor; $m1 = $colKind['M']
+        Apply-Theme $wasDark; $c2 = $tvLocal.BackColor
+        C 'theme: toggle recolors trees and file states, then restores' ($c1 -ne $c2 -and $m1 -ne $colKind['M'] -and $btnTheme.Text -eq $(if ($wasDark) { 'Light' } else { 'Dark' })) ("" + $c1 + ' / ' + $c2)
         C 'window unlocked when idle' ($script:BusyDepth -eq 0 -and $tool.Enabled -and $split.Enabled -and -not $busyBar.Visible) ("depth " + $script:BusyDepth)
         $script:SyncMode = $false; $script:scAsync = $null; $ticks = 0
         $swA = [Diagnostics.Stopwatch]::StartNew()
@@ -1642,7 +1753,7 @@ function Run-GuiSelfCheck {
 }
 $form.Add_FormClosing({
     Save-Settings
-    $jobTimer.Stop(); $pollTimer.Stop()
+    $jobTimer.Stop(); $pollTimer.Stop(); $watchTimer.Stop()
     foreach ($j in @($script:Jobs)) { try { $j.PS.Stop(); $j.PS.Dispose() } catch {} }
 })
 
