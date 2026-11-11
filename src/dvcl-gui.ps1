@@ -1,7 +1,7 @@
 # dvcl-gui.ps1 - changelist window for Diversion: Local / Depot trees and pending changelists side by side.
 # Launch with dvcl-gui.cmd (needs -STA). Optional arg: a folder inside a Diversion workspace.
 
-param([string]$StartDir = '', [switch]$SelfCheck)
+param([string]$StartDir = '', [switch]$SelfCheck, [string]$Shot = '')   # -Shot <png>: README screenshot (tests\screenshot.ps1)
 
 # Startup telemetry (TIMING lines in <repo>\.dvcl\dvcl.log)
 $script:ScriptStart = Get-Date
@@ -22,6 +22,7 @@ function Load-Settings {
     return [pscustomobject]@{ lastRepo = ''; w = 980; h = 640 }
 }
 function Save-Settings {
+    if ($Shot) { return }   # screenshot runs never touch the user's settings
     try {
         $dir = Split-Path -Parent $script:SettingsFile
         if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir | Out-Null }
@@ -1393,7 +1394,7 @@ $form.Add_Shown({
     $root = $null
     if ($StartDir) { $root = Find-DvRoot $StartDir }
     if (-not $root -and $settings.lastRepo) { $root = Find-DvRoot $settings.lastRepo }
-    $script:SyncMode = [bool]$SelfCheck
+    $script:SyncMode = [bool]$SelfCheck -or [bool]$Shot
     if ($root) {
         Set-DvRoot $root; Save-Settings
         Write-Log ("==== dvcl window " + (Get-LocalVersion))
@@ -1402,7 +1403,26 @@ $form.Add_Shown({
         Refresh-All
     } else { Do-ChangeRepo }
     if ($SelfCheck) { Run-GuiSelfCheck; $form.Close() }
+    if ($Shot) { Take-Shot $Shot; $form.Close() }
 })
+
+# README screenshot of the window as it is (demo workspace from tests\screenshot.ps1)
+function Take-Shot([string]$png) {
+    $form.WindowState = 'Normal'; $form.Width = 1280; $form.Height = 700
+    [System.Windows.Forms.Application]::DoEvents()
+    $split.SplitterDistance = [int]($split.Height * 0.88)
+    $main.SplitterDistance = [int]($main.Width * 0.5)
+    $trees.SplitterDistance = [int]($trees.Width * 0.5)
+    # shallowest modified file: shown without scrolling the trees sideways
+    $first = @($script:Pending | Where-Object { (Kind-Letter $_.Kind) -eq 'M' } | Sort-Object { ($_.Path -split '/').Count }, { $_.Path.Length }) | Select-Object -First 1
+    if ($first) { Navigate-Tree 'local' $first.Path $true; Navigate-Tree 'depot' $first.Path $true }
+    $tv.Focus(); if ($first) { foreach ($cn in $tv.Nodes) { foreach ($fn in $cn.Nodes) { if ($fn.Tag.Type -eq 'file' -and $fn.Tag.Item.Path -eq $first.Path) { $tv.SelectedNode = $fn } } } }
+    $logBox.Clear()
+    for ($i = 0; $i -lt 5; $i++) { [System.Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 100 }
+    $bmp = New-Object System.Drawing.Bitmap($form.Width, $form.Height)
+    $form.DrawToBitmap($bmp, (New-Object System.Drawing.Rectangle(0, 0, $form.Width, $form.Height)))
+    $bmp.Save($png, [System.Drawing.Imaging.ImageFormat]::Png); $bmp.Dispose()
+}
 
 # ---------------------------------------------------------------- self-check (dvcl-gui -SelfCheck): drives the real window, writes a report, closes.
 # Report: <tool>\tests\gui-selfcheck.txt (gitignored). Changes nothing: no submit, shelve, revert, sync, update or browser.

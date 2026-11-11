@@ -2,6 +2,11 @@
 
 Versions follow [semver](https://semver.org). Tags: `vX.Y.Z`.
 
+## 0.5.2 - 2026-11-11
+
+- Fix: Shelves dialog failed with two or more local shelves.
+- README shorter, new screenshot (made by tests/screenshot.ps1 from a demo project).
+
 ## 0.5.1 - 2026-11-10
 
 - Faster launch offline: Diversion is not asked (its first answer took ~20 s); branch and commit come from the last online read.

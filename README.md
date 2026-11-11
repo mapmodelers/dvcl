@@ -4,10 +4,13 @@ Changelists for [Diversion](https://diversion.dev).
 
 ![dvcl](docs/screenshot.png)
 
-Download, run `install.cmd`. Requires Windows and the Diversion `dv` CLI.
+- Changelists: group pending files, submit, shelve, revert.
+- Local and Depot trees, state icons, path bars.
+- Offline mode: nothing syncs. Submit and Get latest go online, then back.
+- Command line: `dvcl help`.
 
-**Update** and **Report bug** are in the window. Command line: `dvcl help`.
+Windows + Diversion `dv` CLI. Download, run `install.cmd`.
 
-No telemetry: dvcl contacts GitHub only when you click Update or Report bug.
+No telemetry: GitHub is contacted only by Update and Report bug.
 
-MIT license, provided as is. Not affiliated with or endorsed by Diversion; Diversion is a trademark of its owner.
+MIT, as is. Not affiliated with or endorsed by Diversion; Diversion is a trademark of its owner.

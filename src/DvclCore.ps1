@@ -761,7 +761,8 @@ function Get-LocalShelves {
             [void]$res.Add([pscustomobject]@{ Name = [string]$m.name; Id = $id; Created = [string]$m.created; Local = $true; Count = @($m.items | Where-Object { $_.copied }).Count })
         }
     }
-    return ,@($res.ToArray() | Sort-Object Id -Descending)
+    # streamed (no comma-return): @(Get-LocalShelves) must give one row per shelf
+    $res.ToArray() | Sort-Object Id -Descending
 }
 
 # Copies the shelved files back over the workspace (the shelf is kept)

@@ -190,12 +190,16 @@ function Run-SelfTest {
             T "offline flag set / cleared" ($f1 -and -not (Test-OfflineFlag))
             $id = Shelve-Local 'my work' @($off | Where-Object { $_.Path -like '*.uasset' })
             MkF 'Game/Content/A.uasset' 'changed-after-shelve'
-            $ls = Get-LocalShelves
+            $ls = @(Get-LocalShelves)
             T "local shelf listed with its copied files" ($ls.Count -eq 1 -and $ls[0].Id -eq $id -and $ls[0].Count -eq 3)
+            $id2 = Shelve-Local 'other work' @($off | Where-Object { $_.Path -like '*New/D.uasset' })
+            $rows = @(Get-LocalShelves)
+            T "two local shelves = two rows (not one row holding both)" ($rows.Count -eq 2 -and $rows[0] -isnot [array] -and $rows[0].Id -and $rows[1].Id)
+            Delete-LocalShelf $id2
             Apply-LocalShelf $id
             T "local unshelve restores the shelved content" ([System.IO.File]::ReadAllText((Full-Path 'Game/Content/A.uasset')) -eq 'a2-longer')
             Delete-LocalShelf $id
-            T "local shelf deleted" ((Get-LocalShelves).Count -eq 0)
+            T "local shelf deleted" (@(Get-LocalShelves).Count -eq 0)
             Save-LastHead 'main' 'dv.commit.7'; $h = Read-LastHead
             T "launch cache: branch + commit" ($h.Branch -eq 'main' -and $h.Commit -eq 'dv.commit.7')
             Save-DepotCache 'dv.commit.7' ([string[]]@('A/', 'A/b.uasset'))
