@@ -52,7 +52,7 @@ $script:PalLight = @{
     Back = [System.Drawing.SystemColors]::Control; Fore = [System.Drawing.SystemColors]::ControlText; Input = [System.Drawing.SystemColors]::Window
     Muted = [System.Drawing.Color]::FromArgb(110, 110, 110); Stale = [System.Drawing.Color]::DarkGray; Shelf = [System.Drawing.Color]::FromArgb(120, 80, 30)
     Log = [System.Drawing.Color]::FromArgb(250, 250, 250); Link = [System.Drawing.Color]::FromArgb(0, 90, 190)
-    Border = [System.Drawing.SystemColors]::ControlDark; Hi = [System.Drawing.SystemColors]::Highlight
+    Border = [System.Drawing.SystemColors]::ControlDark; Hi = [System.Drawing.SystemColors]::Highlight; Sel = [System.Drawing.SystemColors]::Highlight
     offline = [System.Drawing.Color]::FromArgb(255, 236, 160); online = [System.Drawing.Color]::FromArgb(214, 240, 214)
     busy = [System.Drawing.Color]::FromArgb(210, 228, 250); down = [System.Drawing.Color]::FromArgb(250, 215, 215); loading = [System.Drawing.SystemColors]::Control
     A = [System.Drawing.Color]::FromArgb(0, 140, 60); M = [System.Drawing.Color]::FromArgb(30, 30, 30); D = [System.Drawing.Color]::FromArgb(200, 40, 40)
@@ -62,7 +62,7 @@ $script:PalDark = @{
     Back = [System.Drawing.Color]::FromArgb(45, 45, 48); Fore = [System.Drawing.Color]::FromArgb(225, 225, 225); Input = [System.Drawing.Color]::FromArgb(30, 30, 30)
     Muted = [System.Drawing.Color]::FromArgb(150, 150, 150); Stale = [System.Drawing.Color]::FromArgb(115, 115, 115); Shelf = [System.Drawing.Color]::FromArgb(205, 165, 110)
     Log = [System.Drawing.Color]::FromArgb(24, 24, 24); Link = [System.Drawing.Color]::FromArgb(110, 175, 255)
-    Border = [System.Drawing.Color]::FromArgb(63, 63, 70); Hi = [System.Drawing.Color]::FromArgb(62, 62, 66)
+    Border = [System.Drawing.Color]::FromArgb(63, 63, 70); Hi = [System.Drawing.Color]::FromArgb(62, 62, 66); Sel = [System.Drawing.Color]::FromArgb(0, 120, 215)
     offline = [System.Drawing.Color]::FromArgb(92, 74, 20); online = [System.Drawing.Color]::FromArgb(35, 80, 45)
     busy = [System.Drawing.Color]::FromArgb(35, 60, 100); down = [System.Drawing.Color]::FromArgb(110, 40, 40); loading = [System.Drawing.Color]::FromArgb(45, 45, 48)
     A = [System.Drawing.Color]::FromArgb(110, 205, 120); M = [System.Drawing.Color]::FromArgb(235, 235, 235); D = [System.Drawing.Color]::FromArgb(240, 105, 105)
@@ -1224,6 +1224,16 @@ function Navigate-Tree([string]$kind, [string]$text, [bool]$quiet = $false) {
 
 $tvLocal.Add_BeforeExpand({ param($s, $e) Load-Children $e.Node })
 $tvDepot.Add_BeforeExpand({ param($s, $e) Load-Children $e.Node })
+$script:DrawTreeNode = {
+    param($s, $e)
+    if (-not $script:Dark -or $s.Focused -or -not ($e.State -band [System.Windows.Forms.TreeNodeStates]::Selected) -or $e.Bounds.Width -le 0) { $e.DrawDefault = $true; return }
+    $b = New-Object System.Drawing.SolidBrush($script:Pal.Hi)
+    $e.Graphics.FillRectangle($b, $e.Bounds); $b.Dispose()
+    $fnt = $e.Node.NodeFont; if (-not $fnt) { $fnt = $s.Font }
+    $fc = $e.Node.ForeColor; if ($fc.IsEmpty) { $fc = $script:Pal.Fore }
+    [System.Windows.Forms.TextRenderer]::DrawText($e.Graphics, $e.Node.Text, $fnt, $e.Bounds, $fc, [System.Windows.Forms.TextFormatFlags]'Left, VerticalCenter, NoPrefix, SingleLine')
+}
+foreach ($t0 in @($tv, $tvLocal, $tvDepot)) { $t0.Add_DrawNode($script:DrawTreeNode); $t0.Add_LostFocus({ param($s, $e) $s.Invalidate() }); $t0.Add_GotFocus({ param($s, $e) $s.Invalidate() }) }
 $tvLocal.Add_AfterSelect({ param($s, $e) $barLocal.Box.Text = Node-Display $e.Node; if ($e.Node.Tag) { History-Follow (Node-Rel $e.Node) } })
 $tvDepot.Add_AfterSelect({ param($s, $e) $barDepot.Box.Text = Node-Display $e.Node; if ($e.Node.Tag) { History-Follow (Node-Rel $e.Node) } })
 $tv.Add_AfterSelect({ param($s, $e) if ($e.Node.Tag -and $e.Node.Tag.Type -in 'file', 'stale', 'shelffile') { $r = Selected-Rel; if (-not $r -and $e.Node.Tag.Path) { $r = $e.Node.Tag.Path }; History-Follow $r } })
@@ -1458,6 +1468,8 @@ function Theme-Walk($root) {
             if ($c -is [System.Windows.Forms.TreeView]) {
                 # dark: no tree lines = dark expand arrows instead of light +/- boxes; dark path tooltip (TVM_GETTOOLTIPS)
                 if ($c -eq $tv) { $c.ShowLines = -not $d }
+                # dark: the selection of an unfocused tree is drawn dark (Windows draws it light)
+                $c.DrawMode = $(if ($d) { 'OwnerDrawText' } else { 'Normal' })
                 if ($ui) { try { $tt = [DvclNative.Win]::SendMessage($c.Handle, 0x1119, [IntPtr]::Zero, [IntPtr]::Zero); if ($tt -ne [IntPtr]::Zero) { [void][DvclNative.Win]::SetWindowTheme($tt, $(if ($d) { 'DarkMode_Explorer' } else { 'Explorer' }), $null) } } catch {} }
             }
         }
@@ -1810,6 +1822,7 @@ function Run-GuiSelfCheck {
         C 'find: Local and Depot accept drops' ($tvLocal.AllowDrop -and $tvDepot.AllowDrop)
         C 'restart: running version matches disk, restart path known' ($script:RunVersion -eq (Get-LocalVersion) -and $script:SelfPath -and (Test-Path -LiteralPath $script:SelfPath))
         C 'theme: changelist tree lines follow theme (none in dark)' ($tv.ShowLines -eq (-not $script:Dark))
+        C 'theme: unfocused selections drawn dark (trees, commit lists)' (($tv.DrawMode -eq 'OwnerDrawText') -eq $script:Dark -and $vSub.List.OwnerDraw -and $vHist.Files.OwnerDraw)
         C 'icons: changelist rows have the changelist icon' (@($tv.Nodes | Where-Object { $_.ImageKey -notin 'cl', 'cldef' }).Count -eq 0)
         C 'layout: path bars present' ($tabLocal.Contains($barLocal.Box) -and $tabDepot.Contains($barDepot.Box))
         C 'toolbar: Get latest + Tools + Locks' ((@($tool.Items | Where-Object { $_.Text -like 'Get latest*' -or $_.Text -in 'Tools', 'Locks' })).Count -eq 3)

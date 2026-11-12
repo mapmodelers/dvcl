@@ -8,6 +8,23 @@
 $script:Views = @{}
 $script:CommitFiles = @{}   # commit id -> files (commits never change)
 
+# Dark theme: rows drawn here (Windows draws an unfocused selection light)
+$script:DrawListCell = {
+    param($s, $e)
+    $it = $e.Item; $sel = $it.Selected
+    # column 0 reports the whole row's width: clip to the column
+    $cb = $e.Bounds; if ($e.ColumnIndex -eq 0) { $cb = New-Object System.Drawing.Rectangle($cb.X, $cb.Y, [Math]::Min($cb.Width, $s.Columns[0].Width), $cb.Height) }
+    $bg = $s.BackColor; if ($sel) { $bg = $(if ($s.Focused) { $script:Pal.Sel } else { $script:Pal.Hi }) }
+    $b = New-Object System.Drawing.SolidBrush($bg); $e.Graphics.FillRectangle($b, $cb); $b.Dispose()
+    $x = $cb.X + 3
+    if ($e.ColumnIndex -eq 0 -and $s.SmallImageList -and $it.ImageKey -and $s.SmallImageList.Images.ContainsKey($it.ImageKey)) {
+        $e.Graphics.DrawImage($s.SmallImageList.Images[$it.ImageKey], $x, $cb.Y + [int](($cb.Height - 16) / 2), 16, 16); $x += 19
+    }
+    $fc = $it.ForeColor; if ($sel -and $s.Focused) { $fc = [System.Drawing.Color]::White }
+    $r = New-Object System.Drawing.Rectangle($x, $cb.Y, [Math]::Max(0, $cb.Right - $x - 2), $cb.Height)
+    [System.Windows.Forms.TextRenderer]::DrawText($e.Graphics, $e.SubItem.Text, $it.Font, $r, $fc, [System.Windows.Forms.TextFormatFlags]'Left, VerticalCenter, NoPrefix, SingleLine, EndEllipsis')
+}
+
 function New-CommitView([string]$key) {
     $root = New-Object System.Windows.Forms.Panel
     $bar = New-Object System.Windows.Forms.Panel
@@ -21,7 +38,7 @@ function New-CommitView([string]$key) {
     $tip.SetToolTip($bMore, 'Load 100 more commits')
     $follow = $null
     if ($key -eq 'history') {
-        $follow = New-Object System.Windows.Forms.CheckBox; $follow.Text = 'Follow'; $follow.Dock = 'Right'; $follow.Width = 64; $follow.Checked = $true; $follow.Tag = $key
+        $follow = New-Object System.Windows.Forms.CheckBox; $follow.Text = 'Follow'; $follow.Dock = 'Right'; $follow.Width = 80; $follow.Checked = $true; $follow.Tag = $key
         $follow.Padding = New-Object System.Windows.Forms.Padding(6, 0, 0, 0)
         $tip.SetToolTip($follow, 'Show the history of whatever file or folder you select')
         $tip.SetToolTip($path, 'File or folder (Enter = show its history)')
@@ -37,6 +54,13 @@ function New-CommitView([string]$key) {
     $files = New-Object System.Windows.Forms.ListView
     $files.Dock = 'Fill'; $files.View = 'Details'; $files.FullRowSelect = $true; $files.MultiSelect = $false; $files.HideSelection = $false; $files.SmallImageList = $icons; $files.Tag = $key
     [void]$files.Columns.Add('Files of the selected commit', 900)
+    foreach ($lv in @($list, $files)) {
+        $lv.OwnerDraw = $true
+        $lv.Add_DrawColumnHeader({ param($s, $e) $e.DrawDefault = $true })
+        $lv.Add_DrawItem({ param($s, $e) $e.DrawDefault = -not $script:Dark })
+        $lv.Add_DrawSubItem($script:DrawListCell)
+        $lv.Add_LostFocus({ param($s, $e) $s.Invalidate() }); $lv.Add_GotFocus({ param($s, $e) $s.Invalidate() })
+    }
     $sc.Panel1.Controls.Add($list); $sc.Panel2.Controls.Add($files)
     $root.Controls.Add($sc); $root.Controls.Add($info); $root.Controls.Add($bar)
     $v = [pscustomobject]@{ Key = $key; Root = $root; Path = $path; Filter = $filter; Follow = $follow; Info = $info; Split = $sc; List = $list; Files = $files

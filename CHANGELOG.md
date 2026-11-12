@@ -2,6 +2,11 @@
 
 Versions follow [semver](https://semver.org). Tags: `vX.Y.Z`.
 
+## 0.10.2 - 2026-11-12
+
+- Dark theme: the selection of an unfocused tree or list is dark (was white).
+- History: "Follow" no longer cut.
+
 ## 0.10.1 - 2026-11-12
 
 - Commit files: a description starting with "A ", "M "... is no longer read as a file.
