@@ -1718,7 +1718,7 @@ $form.Add_Shown({
     if ($StartDir) { $root = Find-DvRoot $StartDir }
     if (-not $root -and $settings.lastRepo) { $root = Find-DvRoot $settings.lastRepo }
     $script:SyncMode = [bool]$SelfCheck -or [bool]$Shot
-    if ($settings.ui -ne 'light' -and -not $Shot) { Apply-Theme $true $false }   # dark unless chosen light
+    if ($Shot -or $settings.ui -ne 'light') { Apply-Theme $true $false }   # dark unless chosen light (screenshot: dark)
     if (-not $SelfCheck -and -not $Shot) { $watchTimer.Start() }
     if ($root) {
         Set-DvRoot $root; Save-Settings
@@ -1735,9 +1735,20 @@ $form.Add_Shown({
 function Take-Shot([string]$png) {
     $form.WindowState = 'Normal'; $form.Width = 1280; $form.Height = 700
     [System.Windows.Forms.Application]::DoEvents()
-    $split.SplitterDistance = [int]($split.Height * 0.88)
+    $split.SplitterDistance = [int]($split.Height * 0.6)
     $main.SplitterDistance = [int]($main.Width * 0.5)
     $trees.SplitterDistance = [int]($trees.Width * 0.5)
+    # History panel with demo commits (the demo workspace has no Diversion): two not got yet
+    $hp = 'MyGame/Content/Maps/Town/Town.umap'
+    $mk = { param($n, $a, $d, $t) [pscustomobject]@{ Id = ('dv.commit.' + $n); Num = $n; Author = $a; Date = $d; Desc = $t } }
+    $vHist.Commits = @((& $mk 14 'sam' '2026-11-12T09:10:00Z' 'Town: market square props'), (& $mk 13 'mapmodelers' '2026-11-11T17:42:00Z' 'Town: road decals and curbs'),
+        (& $mk 12 'mapmodelers' '2026-11-10T16:20:00Z' 'Town blockout: roads and plots'), (& $mk 9 'sam' '2026-11-07T11:05:00Z' 'Town map, first pass'))
+    $script:CommitFiles['dv.commit.13'] = [pscustomobject]@{ Ok = $true; Raw = @(); Files = @(
+            [pscustomobject]@{ Kind = 'M'; Path = $hp }, [pscustomobject]@{ Kind = 'A'; Path = 'MyGame/Content/Maps/Town/Decals/DI_Curb_01.uasset' },
+            [pscustomobject]@{ Kind = 'A'; Path = 'MyGame/Content/Maps/Town/Decals/DI_Road_Crack_02.uasset' }, [pscustomobject]@{ Kind = 'D'; Path = 'MyGame/Content/Maps/Town/Decals/DI_Old_Paint.uasset' }) }
+    $vHist.Follow.Checked = $false; $vHist.Path.Text = $hp; $vHist.Loaded = $script:Root + '|' + $hp + '|' + $vHist.Limit
+    Activate-Pad 'history'; Fill-Commits $vHist
+    $vHist.List.Items[1].Selected = $true
     # shallowest modified file: shown without scrolling the trees sideways
     $first = @($script:Pending | Where-Object { (Kind-Letter $_.Kind) -eq 'M' } | Sort-Object { ($_.Path -split '/').Count }, { $_.Path.Length }) | Select-Object -First 1
     if ($first) { Navigate-Tree 'local' $first.Path $true; Navigate-Tree 'depot' $first.Path $true }

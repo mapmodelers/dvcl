@@ -313,8 +313,9 @@ function Parse-ShowFiles([string[]]$lines) {
     $list = New-Object System.Collections.ArrayList
     foreach ($raw in @($lines)) {
         $l = [string]$raw; $k = $null; $path = $null
-        if ($l -match '^\s*([AMDRC])\d*(?:\t|\s{1,})(\S.*)$') { $k = $Matches[1]; $path = $Matches[2] }
-        elseif ($l -match '^\s*(Added|Modified|Deleted|Renamed|Moved|New|Removed|Changed)\s*:?\s+(\S.*)$') { $k = Kind-Letter $Matches[1]; $path = $Matches[2] }
+        # at column 0 only: the commit description is indented and may start with "A new..."
+        if ($l -match '^([AMDRC])\d*(?:\t|\s+)(\S.*)$') { $k = $Matches[1]; $path = $Matches[2] }
+        elseif ($l -match '^(Added|Modified|Deleted|Renamed|Moved|New|Removed|Changed)\s*:?\s+(\S.*)$') { $k = Kind-Letter $Matches[1]; $path = $Matches[2] }
         if (-not $k) { continue }
         if ($k -eq 'C') { $k = 'A' }
         $path = $path.Trim()

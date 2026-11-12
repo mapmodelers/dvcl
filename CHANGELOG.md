@@ -2,6 +2,12 @@
 
 Versions follow [semver](https://semver.org). Tags: `vX.Y.Z`.
 
+## 0.10.1 - 2026-11-12
+
+- Commit files: a description starting with "A ", "M "... is no longer read as a file.
+- tests\check-dv.ps1: checks dvcl's reading of a real workspace's commits (read-only).
+- Screenshot: dark theme, History panel.
+
 ## 0.10.0 - 2026-11-12
 
 - Panels you arrange: Local, Depot, Changelists, Submitted, History and Log are tabs. Drag a tab onto another panel (tabs), to a window edge, or out of the window (its own window). Right-click a tab: Move to, New window, Reset layout. Toolbar View: bring a panel to front. Layout is remembered.
