@@ -2,6 +2,12 @@
 
 Versions follow [semver](https://semver.org). Tags: `vX.Y.Z`.
 
+## 0.10.0 - 2026-11-12
+
+- Panels you arrange: Local, Depot, Changelists, Submitted, History and Log are tabs. Drag a tab onto another panel (tabs), to a window edge, or out of the window (its own window). Right-click a tab: Move to, New window, Reset layout. Toolbar View: bring a panel to front. Layout is remembered.
+- Submitted: the branch's commits, newest first (local time); commits not in your workspace yet are highlighted (Get latest). Pick one: its files. Filter, More, optional path.
+- History: commits of a file or folder; follows what you select while it is on screen. File menu: show in trees, history, diff with your workspace.
+
 ## 0.9.1 - 2026-11-11
 
 - A dvcl left running in the notification area restarts on the new version when opened after an update.

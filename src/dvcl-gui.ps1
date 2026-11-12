@@ -13,6 +13,7 @@ Add-Type -AssemblyName System.Drawing
 # Window is launched without a console: show fatal errors in a message box
 trap { [void][System.Windows.Forms.MessageBox]::Show(($_.Exception.Message + "`r`n`r`n" + $_.InvocationInfo.PositionMessage), 'dvcl - fatal error', 'OK', 'Error'); break }
 . (Join-Path $PSScriptRoot 'DvclCore.ps1')
+. (Join-Path $PSScriptRoot 'DvclDock.ps1')
 [System.Windows.Forms.Application]::EnableVisualStyles()
 
 # ---------------------------------------------------------------- settings (last repo, window size)
@@ -26,7 +27,9 @@ function Save-Settings {
     try {
         $dir = Split-Path -Parent $script:SettingsFile
         if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir | Out-Null }
-        [pscustomobject]@{ lastRepo = [string]$script:Root; w = $form.Width; h = $form.Height; ui = $(if ($script:Dark) { 'dark' } else { 'light' }) } | ConvertTo-Json | Set-Content -LiteralPath $script:SettingsFile -Encoding UTF8
+        # self-check runs keep the user's layout
+        $lay = $settings.layout; if (-not $SelfCheck -and $script:LayoutReady) { $lay = Get-Layout }
+        [pscustomobject]@{ lastRepo = [string]$script:Root; w = $form.Width; h = $form.Height; ui = $(if ($script:Dark) { 'dark' } else { 'light' }); layout = $lay } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $script:SettingsFile -Encoding UTF8
     } catch {}
 }
 $settings = Load-Settings
@@ -76,7 +79,8 @@ $colKind = @{
 }
 
 # ---------------------------------------------------------------- main window
-# Layout: toolbar / state bar / [Local|Depot trees  |  Pending changelists] / log / status bar
+# Layout: toolbar / state bar / zones [left | center | right] over [bottom] / status bar.
+# Panels (Local, Depot, Changelists, Submitted, History, Log) are tabs in those zones (DvclDock.ps1).
 $form = New-Object System.Windows.Forms.Form
 $form.Text = 'dvcl'
 $form.Font = $fontUi
@@ -148,7 +152,6 @@ $trees = New-Object System.Windows.Forms.SplitContainer
 $trees.Dock = 'Fill'; $trees.Orientation = 'Vertical'
 $tabLocal = New-Object System.Windows.Forms.Panel; $tabLocal.Dock = 'Fill'
 $tabDepot = New-Object System.Windows.Forms.Panel; $tabDepot.Dock = 'Fill'
-$trees.Panel1.Controls.Add($tabLocal); $trees.Panel2.Controls.Add($tabDepot)
 function New-Head([string]$text, [string]$tip) {
     $l = New-Object System.Windows.Forms.Label
     $l.Dock = 'Top'; $l.Height = 22; $l.TextAlign = 'MiddleLeft'; $l.Font = $fontBold; $l.Text = $text
@@ -177,10 +180,8 @@ $tvLocal = New-BrowseTree; $tvLocal.Tag = 'local'; $tvLocal.AllowDrop = $false
 $tvDepot = New-BrowseTree; $tvDepot.Tag = 'depot'; $tvDepot.AllowDrop = $false
 $barLocal = New-PathBar 'local'
 $barDepot = New-PathBar 'depot'
-$headLocal = New-Head 'Local'
-$headDepot = New-Head 'Depot'
-$tabLocal.Controls.Add($tvLocal); $tabLocal.Controls.Add($barLocal.Panel); $tabLocal.Controls.Add($headLocal)
-$tabDepot.Controls.Add($tvDepot); $tabDepot.Controls.Add($barDepot.Panel); $tabDepot.Controls.Add($headDepot)
+$tabLocal.Controls.Add($tvLocal); $tabLocal.Controls.Add($barLocal.Panel)
+$tabDepot.Controls.Add($tvDepot); $tabDepot.Controls.Add($barDepot.Panel)
 $main.Panel1.Controls.Add($trees)
 
 # ---- state icons (drawn here, no image files): file / folder + a colored badge per state
@@ -242,9 +243,6 @@ $tv.Font = $fontBold   # changelist rows bold; file rows set back to regular (av
 # Header with the icon legend
 $pendHead = New-Object System.Windows.Forms.FlowLayoutPanel
 $pendHead.Dock = 'Top'; $pendHead.Height = 24; $pendHead.WrapContents = $false
-$ph = New-Object System.Windows.Forms.Label; $ph.AutoSize = $true; $ph.Font = $fontBold; $ph.Text = 'Changelists'
-$ph.Margin = New-Object System.Windows.Forms.Padding(4, 4, 18, 0)
-[void]$pendHead.Controls.Add($ph)
 foreach ($lg in @(@('file-A', 'added'), @('file-M', 'modified'), @('file-D', 'deleted'), @('file-R', 'renamed'), @('file-!', 'conflict'), @('stale', 'stale'), @('shelf', 'shelved'))) {
     $pb = New-Object System.Windows.Forms.PictureBox; $pb.Size = New-Object System.Drawing.Size(16, 16); $pb.Image = $icons.Images[$lg[0]]
     $pb.Margin = New-Object System.Windows.Forms.Padding(6, 4, 2, 0)
@@ -252,12 +250,28 @@ foreach ($lg in @(@('file-A', 'added'), @('file-M', 'modified'), @('file-D', 'de
     $lt.Margin = New-Object System.Windows.Forms.Padding(0, 5, 4, 0)
     [void]$pendHead.Controls.Add($pb); [void]$pendHead.Controls.Add($lt)
 }
-$main.Panel2.Controls.Add($tv); $main.Panel2.Controls.Add($pendHead)
+$padPending = New-Object System.Windows.Forms.Panel
+$padPending.Controls.Add($tv); $padPending.Controls.Add($pendHead)
 
 $logBox = New-Object System.Windows.Forms.TextBox
 $logBox.Dock = 'Fill'; $logBox.Multiline = $true; $logBox.ReadOnly = $true; $logBox.ScrollBars = 'Vertical'
 $logBox.Font = $fontMono; $logBox.BackColor = [System.Drawing.Color]::FromArgb(250, 250, 250); $logBox.WordWrap = $false
-$split.Panel2.Controls.Add($logBox)
+$padLog = New-Object System.Windows.Forms.Panel
+$padLog.Controls.Add($logBox)
+
+# Zones and panels (submitted / history: DvclViews.ps1)
+. (Join-Path $PSScriptRoot 'DvclViews.ps1')
+foreach ($k in 'left', 'center', 'right', 'bottom') { [void](New-Zone $k) }
+$trees.Panel1.Controls.Add($script:Zones.left.Root); $trees.Panel2.Controls.Add($script:Zones.center.Root)
+$main.Panel2.Controls.Add($script:Zones.right.Root); $split.Panel2.Controls.Add($script:Zones.bottom.Root)
+$vSub = New-CommitView 'submitted'; $vHist = New-CommitView 'history'
+Register-Pad 'local' 'Local' $tabLocal 'left'
+Register-Pad 'depot' 'Depot' $tabDepot 'center'
+Register-Pad 'pending' 'Changelists' $padPending 'right'
+Register-Pad 'submitted' 'Submitted' $vSub.Root 'right'
+Register-Pad 'log' 'Log' $padLog 'bottom'
+Register-Pad 'history' 'History' $vHist.Root 'bottom'
+foreach ($id in @($script:Pads.Keys)) { Dock-Pad $id $script:Pads[$id].Home -1 $false }
 
 $status = New-Object System.Windows.Forms.StatusStrip
 $statusLbl = New-Object System.Windows.Forms.ToolStripStatusLabel
@@ -292,7 +306,7 @@ function Begin-Busy([string]$what) {
     $script:BusyDepth++
     if (-not $what) { $what = 'Working...' }
     $busyLbl.Text = $what; $busyBar.Visible = $true; $busyLbl.Visible = $true
-    $tool.Enabled = $false; $split.Enabled = $false; $btnMode.Enabled = $false
+    $tool.Enabled = $false; $split.Enabled = $false; $btnMode.Enabled = $false; Set-FloatsEnabled $false
     $form.UseWaitCursor = $true
     [System.Windows.Forms.Application]::DoEvents()
 }
@@ -300,7 +314,7 @@ function End-Busy {
     if ($script:BusyDepth -gt 0) { $script:BusyDepth-- }
     if ($script:BusyDepth -gt 0) { return }
     $busyBar.Visible = $false; $busyLbl.Visible = $false
-    $tool.Enabled = $true; $split.Enabled = $true; $btnMode.Enabled = $true
+    $tool.Enabled = $true; $split.Enabled = $true; $btnMode.Enabled = $true; Set-FloatsEnabled $true
     $form.UseWaitCursor = $false
 }
 
@@ -750,6 +764,7 @@ function Show-Pending($st, [bool]$unreachable) {
     if (-not $script:FirstShown) { $script:FirstShown = $true; Write-Timing 'script-start-to-pending-list' $script:Clock.Elapsed.TotalMilliseconds }
     if ($st.Syncing -and -not $script:Paused -and -not $script:SyncMode) { $pollTimer.Start() }
     if ($st.Branch -and -not $script:Offline) { Start-DvAsync @('show', $st.Branch) 'Apply-Head' $true $true }
+    Views-Refresh
     if ($script:RefreshAgain) { $script:RefreshAgain = $false; Refresh-All }
 }
 
@@ -1005,15 +1020,7 @@ function Do-GetLatest {
     Refresh-All
 }
 
-function Do-History([string]$rel) {
-    if (-not $rel) { return }
-    $script:hist = $null
-    Run-Busy { $script:hist = Get-History $rel }
-    if ($null -ne $script:hist) {
-        $lines = @($script:hist); if ($lines.Count -eq 0) { $lines = @('(no commit touches this path)') }
-        Show-TextDialog ('History - ' + $rel) $lines
-    }
-}
+function Do-History([string]$rel) { Show-History $rel }
 
 # Not-pending entries: one changelist ($name) or all ('')
 function Do-CleanStale([string]$name) {
@@ -1217,8 +1224,9 @@ function Navigate-Tree([string]$kind, [string]$text, [bool]$quiet = $false) {
 
 $tvLocal.Add_BeforeExpand({ param($s, $e) Load-Children $e.Node })
 $tvDepot.Add_BeforeExpand({ param($s, $e) Load-Children $e.Node })
-$tvLocal.Add_AfterSelect({ param($s, $e) $barLocal.Box.Text = Node-Display $e.Node })
-$tvDepot.Add_AfterSelect({ param($s, $e) $barDepot.Box.Text = Node-Display $e.Node })
+$tvLocal.Add_AfterSelect({ param($s, $e) $barLocal.Box.Text = Node-Display $e.Node; if ($e.Node.Tag) { History-Follow (Node-Rel $e.Node) } })
+$tvDepot.Add_AfterSelect({ param($s, $e) $barDepot.Box.Text = Node-Display $e.Node; if ($e.Node.Tag) { History-Follow (Node-Rel $e.Node) } })
+$tv.Add_AfterSelect({ param($s, $e) if ($e.Node.Tag -and $e.Node.Tag.Type -in 'file', 'stale', 'shelffile') { $r = Selected-Rel; if (-not $r -and $e.Node.Tag.Path) { $r = $e.Node.Tag.Path }; History-Follow $r } })
 
 foreach ($b in @($barLocal, $barDepot)) {
     $b.Box.Add_KeyDown({ param($s, $e) if ($e.KeyCode -eq 'Return') { Navigate-Tree $s.Tag $s.Text; $e.Handled = $true; $e.SuppressKeyPress = $true } })
@@ -1302,7 +1310,7 @@ $treeMenu = {
     [void](Add-MenuItem $mv 'New changelist...' { [void](Do-NewCL $script:MenuItems) })
     [void]$menuL.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
     $isFile = $e.Node.Tag.Type -in 'lfile', 'dfile'
-    [void](Add-MenuItem $menuL 'History...' { Do-History $script:MenuRel } $isFile)
+    [void](Add-MenuItem $menuL 'History' { Do-History $script:MenuRel } $isFile)
     if ($isFile) {
         [void](Add-MenuItem $menuL 'Lock' { Do-Lock @($script:MenuRel) $true })
         [void](Add-MenuItem $menuL 'Unlock' { Do-Lock @($script:MenuRel) $false })
@@ -1421,6 +1429,8 @@ namespace DvclNative {
     [DllImport("uxtheme.dll", CharSet = CharSet.Unicode)] public static extern int SetWindowTheme(IntPtr h, string app, string id);
     [DllImport("dwmapi.dll")] public static extern int DwmSetWindowAttribute(IntPtr h, int a, ref int v, int s);
     [DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr h, int m, IntPtr w, IntPtr l);
+    [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);
+    [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
   }
 }
 '@
@@ -1441,6 +1451,10 @@ function Theme-Walk($root) {
             if ($c -is [System.Windows.Forms.TreeView] -or $c -is [System.Windows.Forms.TextBox] -or $c -is [System.Windows.Forms.ListView]) { $c.BorderStyle = $(if ($d) { 'FixedSingle' } else { 'Fixed3D' }) }
             if ($c -is [System.Windows.Forms.TextBox] -and -not $c.Multiline -and $d) { $c.BorderStyle = 'FixedSingle' }
             if ($ui) { try { [void][DvclNative.Win]::SetWindowTheme($c.Handle, $(if ($d) { 'DarkMode_Explorer' } else { 'Explorer' }), $null) } catch {} }
+            if ($c -is [System.Windows.Forms.ListView] -and $ui) {
+                # column header (LVM_GETHEADER)
+                try { $hh = [DvclNative.Win]::SendMessage($c.Handle, 0x101F, [IntPtr]::Zero, [IntPtr]::Zero); if ($hh -ne [IntPtr]::Zero) { [void][DvclNative.Win]::SetWindowTheme($hh, $(if ($d) { 'DarkMode_ItemsView' } else { 'Explorer' }), $null) } } catch {}
+            }
             if ($c -is [System.Windows.Forms.TreeView]) {
                 # dark: no tree lines = dark expand arrows instead of light +/- boxes; dark path tooltip (TVM_GETTOOLTIPS)
                 if ($c -eq $tv) { $c.ShowLines = -not $d }
@@ -1482,7 +1496,10 @@ function Apply-Theme([bool]$dark, [bool]$rebuild = $true) {
     foreach ($k in 'A', 'M', 'D', 'R') { $colKind[$k] = $script:Pal[$k] }
     $colKind['!'] = $script:Pal.X; $colKind['?'] = $script:Pal.Q
     Theme-Walk $form
-    foreach ($m in @($menu, $menuL, $trayMenu)) { if ($m) { Theme-Strip $m } }
+    foreach ($f in (Float-Forms)) { Theme-Docked $f }
+    Style-Zones
+    foreach ($v in @($script:Views.Values)) { $v.Info.LinkColor = $script:Pal.Link; $v.Info.ActiveLinkColor = $script:Pal.Link; if ($v.Commits.Count) { Fill-Commits $v } }
+    foreach ($m in @($menu, $menuL, $trayMenu, $script:TabMenu, $script:ViewMenu)) { if ($m) { Theme-Strip $m } }
     $btnTheme.Text = $(if ($dark) { 'Light' } else { 'Dark' })
     if ($script:Mode) { Set-Mode $script:Mode $modeDesc.Text }
     Set-BranchInfo
@@ -1528,6 +1545,13 @@ $ddTools = Add-DropBtn 'Tools' 'Changelist maintenance'
 [void](Add-DropItem $ddTools 'Remove all not-pending entries' 'Drop entries Diversion no longer reports (committed elsewhere)' { Do-CleanStale '' })
 [void](Add-DropItem $ddTools 'Recover entries lost by dvcl 0.2' 'Put back files that dvcl 0.2 dropped from changelists while sync was paused' { Do-Recover })
 [void]$tool.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
+$ddView = Add-DropBtn 'View' 'Panels: drag a tab to move it, out of the window for its own window; right-click a tab for more'
+foreach ($pid0 in @($script:Pads.Keys)) {
+    $mi = Add-DropItem $ddView ($script:Pads[$pid0].Title) ('Bring ' + $script:Pads[$pid0].Title + ' to front') { param($src, $ev) Activate-Pad $src.Tag; $z = Zone-Of $src.Tag; if ($z -and $z.Form) { $z.Form.Activate() } }
+    $mi.Tag = $pid0
+}
+[void]$ddView.DropDownItems.Add((New-Object System.Windows.Forms.ToolStripSeparator))
+[void](Add-DropItem $ddView 'Reset layout' 'Panels back to their places' { Reset-Layout })
 [void](Add-Btn 'Repo...' 'Pick another Diversion workspace' { Do-ChangeRepo })
 $bBug = Add-Btn 'Report bug' 'Open a new issue on GitHub' { Do-ReportBug }; $bBug.Alignment = 'Right'
 $bUpd = Add-Btn 'Update' 'Check GitHub for a new version and update' { Do-Update }; $bUpd.Alignment = 'Right'
@@ -1656,7 +1680,7 @@ $tv.Add_NodeMouseClick({
         if ($isStale) { [void](Add-MenuItem $menu 'Remove from changelist' { Do-RemoveEntry (Selected-Rel) }) }
         [void](Add-MenuItem $menu 'Show in Local tree' { Navigate-Tree 'local' (Selected-Rel) })
         [void](Add-MenuItem $menu 'Show in Depot tree' { Navigate-Tree 'depot' (Selected-Rel) })
-        [void](Add-MenuItem $menu 'History...' { Do-History (Selected-Rel) })
+        [void](Add-MenuItem $menu 'History' { Do-History (Selected-Rel) })
         $mx = Add-MenuItem $menu 'Show in Explorer' { Do-ShowInExplorer }; $mx.ShortcutKeyDisplayString = 'Ctrl+Shift+S'
         [void](Add-MenuItem $menu 'Copy path' { [System.Windows.Forms.Clipboard]::SetText(($script:Root + '\' + ((Selected-Rel) -replace '/', '\'))) })
     }
@@ -1686,9 +1710,9 @@ $form.Add_KeyDown({
 })
 
 $form.Add_Shown({
-    $split.SplitterDistance = [int]($split.Height * 0.76)
-    $main.SplitterDistance = [int]($main.Width * 0.56)
-    $trees.SplitterDistance = [int]($trees.Width * 0.5)
+    # saved panel layout (self-check and screenshot: default)
+    $lay = $null; if (-not $SelfCheck -and -not $Shot) { $lay = $settings.layout }
+    try { Apply-Layout $lay } catch { Write-Log ('layout: ' + $_.Exception.Message); Apply-Layout $null }
     # Repo: argument / current folder, else last used, else ask
     $root = $null
     if ($StartDir) { $root = Find-DvRoot $StartDir }
@@ -1737,7 +1761,39 @@ function Run-GuiSelfCheck {
         C 'repo opened' ([bool]$script:Root)
         C 'icon loaded' ($null -ne $form.Icon)
         C 'version file' ((Get-LocalVersion) -ne '0.0.0') (Get-LocalVersion)
-        C 'layout: Local | Depot | changelists side by side' ($trees.Panel1.Contains($tvLocal) -and $trees.Panel2.Contains($tvDepot) -and $main.Panel2.Contains($tv) -and $trees.Panel1.Width -gt 80 -and $trees.Panel2.Width -gt 80 -and $main.Panel2.Width -gt 100) ("" + $trees.Panel1.Width + ' / ' + $trees.Panel2.Width + ' / ' + $main.Panel2.Width)
+        C 'layout: default zones: Local | Depot | Changelists, Log below' ($trees.Panel1.Contains($tvLocal) -and $trees.Panel2.Contains($tvDepot) -and $main.Panel2.Contains($tv) -and $split.Panel2.Contains($logBox) -and $trees.Panel1.Width -gt 80 -and $trees.Panel2.Width -gt 80 -and $main.Panel2.Width -gt 100) ("" + $trees.Panel1.Width + ' / ' + $trees.Panel2.Width + ' / ' + $main.Panel2.Width)
+        $n = 0; foreach ($z in @($script:Zones.Values)) { $n += $z.Pads.Count }
+        C 'dock: 6 panels, each in exactly one zone' ($script:Pads.Count -eq 6 -and $n -eq 6 -and @($script:Pads.Values | Where-Object { -not $_.Zone }).Count -eq 0) ([string]$n)
+        Dock-Pad 'pending' 'bottom'; Dock-Pad 'submitted' 'bottom'; [System.Windows.Forms.Application]::DoEvents()
+        $f1 = $split.Panel2.Contains($tv) -and $main.Panel2Collapsed
+        Apply-Layout $null
+        C 'dock: moved panels fold their empty zone; reset puts them back' ($f1 -and $main.Panel2.Contains($tv) -and -not $main.Panel2Collapsed -and (Zone-Of 'submitted').Name -eq 'right')
+        $zf = Float-Pad 'history' (New-Object System.Drawing.Rectangle(($form.Left + 40), ($form.Top + 40), 400, 300)); [System.Windows.Forms.Application]::DoEvents()
+        $f2 = ($zf.Form.Visible -and $vHist.Root.FindForm() -eq $zf.Form -and $zf.Form.Owner -eq $form)
+        $zf.Form.Close(); [System.Windows.Forms.Application]::DoEvents()
+        C 'dock: own window; closing it puts the panel back' ($f2 -and (Zone-Of 'history').Name -eq 'bottom' -and $script:Zones.Count -eq 4) ([string]$script:Zones.Count)
+        Dock-Pad 'log' 'left'; $zf = Float-Pad 'depot' (New-Object System.Drawing.Rectangle(($form.Left + 60), ($form.Top + 60), 400, 300)); Dock-Pad 'history' $zf.Name
+        $saved = (Get-Layout) | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+        Apply-Layout $null; Apply-Layout $saved; [System.Windows.Forms.Application]::DoEvents()
+        $zd = Zone-Of 'depot'
+        C 'dock: layout saved and restored (zones, own window with 2 tabs)' ((Zone-Of 'log').Name -eq 'left' -and $zd.Form -and $zd.Pads.Count -eq 2 -and (Zone-Of 'history') -eq $zd) ("" + (Zone-Of 'log').Name + ' / ' + $zd.Name)
+        Apply-Layout $null
+        C 'dock: tabs styled, menus ready' ($script:Zones.right.Strip.Controls.Count -eq 2 -and $script:TabMenu -and $script:ViewMenu)
+        # Submitted / History: real dv answers (INFO only: depends on Diversion being reachable)
+        Load-Commits 'submitted' $true
+        [void]$r.Add('INFO  submitted: ' + $vSub.Info.Text)
+        [void]$r.Add('INFO  submitted: ' + $vSub.Commits.Count + ' parsed; first: ' + (@($vSub.Commits | Select-Object -First 1 | ForEach-Object { $_.Id + ' | ' + $_.Author + ' | ' + $_.Date + ' | ' + ($_.Desc -replace "`n", ' / ') }) -join ''))
+        foreach ($l in @($vSub.Raw | Select-Object -First 12)) { [void]$r.Add('INFO  dv log | ' + $l) }
+        if ($vSub.Commits.Count) {
+            $cid = $vSub.Commits[0].Id; Load-Files 'submitted' $cid; $cf = $script:CommitFiles[$cid]
+            if ($cf) { [void]$r.Add('INFO  commit files: ' + @($cf.Files).Count + ' parsed; first: ' + (@($cf.Files | Select-Object -First 2 | ForEach-Object { $_.Kind + ' ' + $_.Path }) -join ' ; ')); foreach ($l in @($cf.Raw | Select-Object -First 10)) { [void]$r.Add('INFO  dv show | ' + $l) } }
+            else { [void]$r.Add('INFO  commit files: dv show failed') }
+            C 'submitted: commits listed with numbers' ($vSub.List.Items.Count -gt 0 -and $vSub.List.Items[0].Text -match '^\d+$') $vSub.List.Items[0].Text
+            C 'submitted: dates as yyyy-MM-dd HH:mm (local)' ($vSub.List.Items[0].SubItems[1].Text -match '^\d{4}-\d\d-\d\d \d\d:\d\d$') $vSub.List.Items[0].SubItems[1].Text
+            C 'submitted: commit files parsed' ($cf -and @($cf.Files).Count -gt 0)
+        }
+        $vHist.Path.Text = ''; Load-Commits 'history' $true
+        C 'history: asks for a path when none' ($vHist.Info.Text -like 'Select a file*') $vHist.Info.Text
         C 'icons: image list set on the three trees' ((@($tv, $tvLocal, $tvDepot) | Where-Object { $_.ImageList -and $_.ImageList.Images.ContainsKey('file-A') }).Count -eq 3 -and $icons.Images.Count -ge 18) ([string]$icons.Images.Count)
         C 'numbers: changelist rows start with #id' (@($tv.Nodes | Where-Object { $_.Tag.Name -ne 'default' -and $_.Text -notmatch '^#\d+  ' }).Count -eq 0)
         C 'find: Local and Depot accept drops' ($tvLocal.AllowDrop -and $tvDepot.AllowDrop)
@@ -1882,7 +1938,7 @@ $notify.ContextMenuStrip = $trayMenu
 function Show-FromTray {
     # dvcl was updated while this window was running: restart on the new version
     if ($script:TrayOn -and (Get-LocalVersion) -ne $script:RunVersion) { Restart-Dvcl; return }
-    $form.Show()
+    $form.Show(); Show-Floats
     if ($form.WindowState -eq 'Minimized') { $form.WindowState = 'Normal' }
     $form.Activate(); $form.BringToFront()
 }
@@ -1915,6 +1971,7 @@ $form.Add_FormClosing({
     param($s, $e)
     if ($script:TrayOn -and -not $script:ReallyExit -and $e.CloseReason -eq [System.Windows.Forms.CloseReason]::UserClosing) {
         $e.Cancel = $true
+        Save-Layout; Hide-Floats
         $form.Hide()
         if (-not $script:TrayTipShown) { $script:TrayTipShown = $true; $notify.ShowBalloonTip(2500, 'dvcl', 'Still running here. Right-click > Exit to quit.', [System.Windows.Forms.ToolTipIcon]::Info) }
         return

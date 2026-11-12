@@ -150,6 +150,14 @@ function Run-SelfTest {
         Detach 'MyGame/Content/B.uasset'
         Remove-CL 'empty'
         T "delete changelist" ($null -eq (Find-CL 'empty'))
+        $lg = @(Parse-Log @('commit dv.commit.52 (HEAD -> main)', 'Author: Sam <s@x.y>', 'Date:   2026-11-10T10:00:00Z', '', '    station roof', '    second line', 'commit dv.commit.51', 'Author: Al', 'Date: 2026-11-09', '', '    fence'))
+        T "log: blocks parsed (id, number, author, date, description)" ($lg.Count -eq 2 -and $lg[0].Num -eq 52 -and $lg[0].Author -eq 'Sam' -and $lg[0].Date -like '2026-11-10*' -and $lg[0].Desc -eq "station roof`nsecond line" -and $lg[1].Desc -eq 'fence')
+        $lo = @(Parse-Log @('dv.commit.9 fix lights', 'dv.commit.8 - first'))
+        T "log: one line per commit" ($lo.Count -eq 2 -and $lo[0].Desc -eq 'fix lights' -and $lo[1].Desc -eq 'first' -and $lo[1].Num -eq 8)
+        $sf = @(Parse-ShowFiles @('commit dv.commit.52', "M`tGame/Content/A.uasset", "A`tGame/B.umap", "R`tGame/old.txt`tGame/new.txt", 'D  Game/C.ini', 'Modified: Game/D.ini'))
+        T "show: changed files parsed" ($sf.Count -eq 5 -and $sf[0].Kind -eq 'M' -and $sf[2].Path -eq 'Game/new.txt' -and $sf[3].Kind -eq 'D' -and $sf[4].Path -eq 'Game/D.ini')
+        $loc = ([datetime]::new(2026, 11, 12, 8, 35, 0, [DateTimeKind]::Utc)).ToLocalTime().ToString('yyyy-MM-dd HH:mm')
+        T "dates: ISO UTC to local, US order to ISO" ((Format-CommitDate '2026-11-12T08:35:02Z') -eq $loc -and (Format-CommitDate '11-12-2026 09:35:02') -eq '2026-11-12 09:35')
         T "numbers never reused" ((New-CL 'again' '').id -gt 2); Remove-CL 'again'
         $threw = $false; try { Check-Name 'default' } catch { $threw = $true }
         T "name 'default' refused" $threw

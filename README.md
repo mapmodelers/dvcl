@@ -7,6 +7,8 @@ Changelists for [Diversion](https://diversion.dev). [Site](https://mapmodelers.g
 - Numbered changelists: group pending files, submit, shelve, revert.
 - Shelves: Diversion shelves are shared with your team (they unshelve to test); local shelves stay on your PC.
 - Local and Depot trees, state icons, path bars. Drop a file on a tree to find it.
+- Submitted and History: commits, their files, what you have not got yet.
+- Panels you arrange: drag tabs together, to an edge, or out into their own window.
 - Offline mode: nothing syncs. Submit and Get latest go online, then back.
 - Command line: `dvcl help`.
 

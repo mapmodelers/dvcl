@@ -275,6 +275,56 @@ function Get-History([string]$path) {
     return ,@($r.Lines)
 }
 
+# ---------------------------------------------------------------- submitted commits (dv log / dv show)
+# dv log: one block per commit, starting with the line holding its id (dv.commit.N);
+# "Author:" / "Date:" lines, the rest is the description. --oneline: id + description on one line.
+function Commit-Num([string]$id) { if ($id -match '(\d+)\s*$') { return [int]$Matches[1] }; return 0 }
+function Parse-Log([string[]]$lines) {
+    $list = New-Object System.Collections.ArrayList
+    $cur = $null
+    foreach ($raw in @($lines)) {
+        $l = [string]$raw
+        if ($l -match '^\s*(?:commit\s*:?\s+)?(dv\.commit\.\d+)\b(.*)$') {
+            $rest = $Matches[2] -replace '^\s*\([^)]*\)', '' -replace '^\s*[-:|]\s*', ''
+            $cur = [pscustomobject]@{ Id = $Matches[1]; Num = (Commit-Num $Matches[1]); Author = ''; Date = ''; Desc = $rest.Trim() }
+            [void]$list.Add($cur); continue
+        }
+        if (-not $cur) { continue }
+        if ($l -match '^\s*(?:Author|By|Committer|User)\s*:\s*(.+)$') { $cur.Author = ($Matches[1] -replace '\s*<[^>]*>', '').Trim(); continue }
+        if ($l -match '^\s*(?:Date|Time|Created)\s*:\s*(.+)$') { $cur.Date = $Matches[1].Trim(); continue }
+        if ($l -match '^\s*(?:Branch|Merge|Parents?|Ref)\s*:') { continue }
+        if ($l.Trim()) { $cur.Desc = ($(if ($cur.Desc) { $cur.Desc + "`n" } else { '' }) + $l.Trim()) }
+    }
+    return $list   # streamed: callers wrap in @()
+}
+# dv show --name-status: "M<tab>path", "R<tab>old<tab>new" (or "old -> new"), or "Modified: path"
+# Commit date for display, local time: "2026-11-12 09:35". dv gives ISO UTC with --date iso,
+# else "MM-DD-YYYY HH:MM:SS".
+function Format-CommitDate([string]$d) {
+    $t = ([string]$d).Trim()
+    if ($t -match '^\d{4}-\d\d-\d\dT\d\d:\d\d(:\d\d)?Z$') {
+        try { return ([datetime]::Parse($t, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AdjustToUniversal -bor [Globalization.DateTimeStyles]::AssumeUniversal)).ToLocalTime().ToString('yyyy-MM-dd HH:mm') } catch {}
+    }
+    if ($t -match '^(\d{4}-\d\d-\d\d)[T ](\d\d:\d\d)') { return ($Matches[1] + ' ' + $Matches[2]) }
+    if ($t -match '^(\d\d)-(\d\d)-(\d{4})\s+(\d\d:\d\d)') { return ($Matches[3] + '-' + $Matches[1] + '-' + $Matches[2] + ' ' + $Matches[4]) }
+    return $t
+}
+function Parse-ShowFiles([string[]]$lines) {
+    $list = New-Object System.Collections.ArrayList
+    foreach ($raw in @($lines)) {
+        $l = [string]$raw; $k = $null; $path = $null
+        if ($l -match '^\s*([AMDRC])\d*(?:\t|\s{1,})(\S.*)$') { $k = $Matches[1]; $path = $Matches[2] }
+        elseif ($l -match '^\s*(Added|Modified|Deleted|Renamed|Moved|New|Removed|Changed)\s*:?\s+(\S.*)$') { $k = Kind-Letter $Matches[1]; $path = $Matches[2] }
+        if (-not $k) { continue }
+        if ($k -eq 'C') { $k = 'A' }
+        $path = $path.Trim()
+        if ($path -match '\t') { $path = ($path -split '\t')[-1] } elseif ($path -match ' -> ') { $path = ($path -split ' -> ')[-1] }
+        $path = ($path.Trim().Trim('"') -replace '\\', '/').TrimStart('/')
+        if ($path) { [void]$list.Add([pscustomobject]@{ Kind = $k; Path = $path }) }
+    }
+    return $list   # streamed: callers wrap in @()
+}
+
 function Kind-Letter([string]$k) {
     switch -regex ($k) { '^New|^Add' { 'A' } '^Mod|^Chang' { 'M' } '^Del|^Rem' { 'D' } '^Ren|^Mov' { 'R' } '^Conf' { '!' } default { '?' } }
 }
