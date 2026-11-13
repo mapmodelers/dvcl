@@ -2,6 +2,12 @@
 
 Versions follow [semver](https://semver.org). Tags: `vX.Y.Z`.
 
+## 0.11.0 - 2026-11-12
+
+- Changelists: no more tick boxes. Select like Explorer: click, Ctrl+click, Shift+click, Ctrl+A, Esc; drag the selection onto a changelist. Clicking a changelist = all its files.
+- Shelves: zipped-folder icon.
+- Click on empty space: nothing selected. Trees repaint without flicker.
+
 ## 0.10.2 - 2026-11-12
 
 - Dark theme: the selection of an unfocused tree or list is dark (was white).

@@ -30,5 +30,8 @@ $c = New-CL 'town_blockout' 'town blockout'
 Move-ToCL 'town_blockout' @($pend | Where-Object { $_.Path -like '*Town*' -or $_.Path -like '*Fence*' })
 $out = Join-Path $tool 'docs\screenshot.png'
 & powershell -NoProfile -ExecutionPolicy Bypass -STA -File (Join-Path $tool 'src\dvcl-gui.ps1') $root -Shot $out
+# window self-check on this demo too (it has pending files: selection tests run) -> tests\gui-selfcheck-demo.txt
+& powershell -NoProfile -ExecutionPolicy Bypass -STA -File (Join-Path $tool 'src\dvcl-gui.ps1') $root -SelfCheck
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'gui-selfcheck.txt') -Destination (Join-Path $PSScriptRoot 'gui-selfcheck-demo.txt') -Force
 Remove-Item -LiteralPath $Base -Recurse -Force
 Write-Host ('screenshot: ' + $out)

@@ -7,3 +7,4 @@ tests/last-report.txt
 dvcl.exe
 tests/gui-selfcheck.txt
 tests/last-run.txt
+tests/gui-selfcheck-demo.txt

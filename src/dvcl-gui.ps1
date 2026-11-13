@@ -29,7 +29,8 @@ function Save-Settings {
         if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir | Out-Null }
         # self-check runs keep the user's layout
         $lay = $settings.layout; if (-not $SelfCheck -and $script:LayoutReady) { $lay = Get-Layout }
-        [pscustomobject]@{ lastRepo = [string]$script:Root; w = $form.Width; h = $form.Height; ui = $(if ($script:Dark) { 'dark' } else { 'light' }); layout = $lay } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $script:SettingsFile -Encoding UTF8
+        $last = [string]$script:Root; if ($SelfCheck -and $settings.lastRepo) { $last = [string]$settings.lastRepo }
+        [pscustomobject]@{ lastRepo = $last; w = $form.Width; h = $form.Height; ui = $(if ($script:Dark) { 'dark' } else { 'light' }); layout = $lay } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $script:SettingsFile -Encoding UTF8
     } catch {}
 }
 $settings = Load-Settings
@@ -204,7 +205,14 @@ function New-Icon([string]$base, [string]$badge) {
         'folder' { $b = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(235, 190, 70)); $g.FillRectangle($b, 1, 3, 6, 3); $g.FillRectangle($b, 1, 5, 14, 9) }
         'folderoff' { $pn = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(170, 170, 170)); $g.DrawRectangle($pn, 1, 3, 5, 2); $g.DrawRectangle($pn, 1, 5, 13, 8) }
         'cl'     { $g.FillRectangle((New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(200, 60, 60))), 2, 2, 12, 12); foreach ($y in 5, 8, 11) { $g.DrawLine([System.Drawing.Pens]::White, 4, $y, 11, $y) } }
-        'shelf'  { $g.FillRectangle((New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(150, 105, 60))), 1, 5, 14, 9); $g.FillRectangle((New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(190, 145, 90))), 0, 3, 16, 3); $g.DrawLine([System.Drawing.Pens]::White, 6, 8, 10, 8) }
+        'shelf'  {
+            # zipped folder
+            $g.SmoothingMode = 'None'
+            $b = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(235, 190, 70)); $g.FillRectangle($b, 1, 3, 6, 3); $g.FillRectangle($b, 1, 5, 14, 9)
+            $z = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(70, 70, 70))
+            foreach ($y in 5, 7, 9) { $g.FillRectangle($z, 6, $y, 2, 1); $g.FillRectangle($z, 8, ($y + 1), 2, 1) }
+            $g.FillRectangle($z, 6, 11, 4, 3)
+        }
         'cldef'  { $g.FillRectangle((New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(150, 150, 150))), 2, 2, 12, 12); foreach ($y in 5, 8, 11) { $g.DrawLine([System.Drawing.Pens]::White, 4, $y, 11, $y) } }
     }
     if ($badge) {
@@ -237,7 +245,9 @@ function Pending-IconKey($p) {
 
 # Right: pending changelists
 $tv = New-Object System.Windows.Forms.TreeView
-$tv.Dock = 'Fill'; $tv.CheckBoxes = $true; $tv.HideSelection = $false; $tv.FullRowSelect = $true
+$tv.Dock = 'Fill'; $tv.CheckBoxes = $false; $tv.HideSelection = $false; $tv.FullRowSelect = $false; $tv.DrawMode = 'OwnerDrawText'
+# Multi-selection like Explorer (click, Ctrl+click, Shift+click, Ctrl+A): selected file paths
+$script:Sel = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
 $tv.ShowLines = $true; $tv.AllowDrop = $true; $tv.ItemHeight = 20; $tv.ImageList = $icons; $tv.ShowNodeToolTips = $true
 $tv.Font = $fontBold   # changelist rows bold; file rows set back to regular (avoids clipped bold text)
 # Header with the icon legend
@@ -414,8 +424,7 @@ $script:BaselineFresh = $false
 
 $script:MaxRows = 1500
 function Build-Tree {
-    # keep what the user selected / checked across rebuilds (refresh, theme, outside changes)
-    $keepChecked = @{}; foreach ($fn in (File-Nodes)) { if ($fn.Checked) { $keepChecked[$fn.Tag.Item.Path] = 1 } }
+    # keep what the user selected across rebuilds (refresh, theme, outside changes)
     $keepSel = $null; if ($tv.SelectedNode -and $tv.SelectedNode.Tag) { $t = $tv.SelectedNode.Tag; $keepSel = [string]$t.Type + '|' + $(if ($t.Type -eq 'file') { $t.Item.Path } elseif ($t.Type -eq 'cl') { $t.Name } else { [string]$t.Path + [string]$t.Cl }) }
     $tv.BeginUpdate()
     $tv.Nodes.Clear()
@@ -493,7 +502,6 @@ function Build-Tree {
         foreach ($x in $cn.Nodes) {
             if ($x.Tag.Type -eq 'shelf') { $x.Collapse() }
             if ($x.Tag.Type -eq 'file') {
-                if ($keepChecked.ContainsKey($x.Tag.Item.Path)) { $x.Checked = $true }
                 if ($keepSel -eq ('file|' + $x.Tag.Item.Path)) { $tv.SelectedNode = $x }
             }
         }
@@ -790,10 +798,11 @@ function Selected-CL {
     return $n.Tag.Cl
 }
 
-# Target files: checked files, else the selected file, else all files of the selected changelist
+# Target files: selected files, else the selected changelist's files
+function Is-Sel($n) { return ($n -and $n.Tag -and $n.Tag.Type -eq 'file' -and $script:Sel.Contains($n.Tag.Item.Path)) }
 function Target-Items {
     $sel = New-Object System.Collections.ArrayList
-    foreach ($fn in (File-Nodes)) { if ($fn.Checked) { [void]$sel.Add($fn.Tag.Item) } }
+    foreach ($fn in (File-Nodes)) { if (Is-Sel $fn) { [void]$sel.Add($fn.Tag.Item) } }
     if ($sel.Count -gt 0) { return ,$sel.ToArray() }
     $n = $tv.SelectedNode
     if (-not $n) { return ,@() }
@@ -1233,7 +1242,8 @@ $script:DrawTreeNode = {
     $fc = $e.Node.ForeColor; if ($fc.IsEmpty) { $fc = $script:Pal.Fore }
     [System.Windows.Forms.TextRenderer]::DrawText($e.Graphics, $e.Node.Text, $fnt, $e.Bounds, $fc, [System.Windows.Forms.TextFormatFlags]'Left, VerticalCenter, NoPrefix, SingleLine')
 }
-foreach ($t0 in @($tv, $tvLocal, $tvDepot)) { $t0.Add_DrawNode($script:DrawTreeNode); $t0.Add_LostFocus({ param($s, $e) $s.Invalidate() }); $t0.Add_GotFocus({ param($s, $e) $s.Invalidate() }) }
+foreach ($t0 in @($tvLocal, $tvDepot)) { $t0.Add_DrawNode($script:DrawTreeNode) }
+foreach ($t0 in @($tv, $tvLocal, $tvDepot)) { $t0.Add_LostFocus({ param($s, $e) $s.Invalidate() }); $t0.Add_GotFocus({ param($s, $e) $s.Invalidate() }) }
 $tvLocal.Add_AfterSelect({ param($s, $e) $barLocal.Box.Text = Node-Display $e.Node; if ($e.Node.Tag) { History-Follow (Node-Rel $e.Node) } })
 $tvDepot.Add_AfterSelect({ param($s, $e) $barDepot.Box.Text = Node-Display $e.Node; if ($e.Node.Tag) { History-Follow (Node-Rel $e.Node) } })
 $tv.Add_AfterSelect({ param($s, $e) if ($e.Node.Tag -and $e.Node.Tag.Type -in 'file', 'stale', 'shelffile') { $r = Selected-Rel; if (-not $r -and $e.Node.Tag.Path) { $r = $e.Node.Tag.Path }; History-Follow $r } })
@@ -1466,10 +1476,12 @@ function Theme-Walk($root) {
                 try { $hh = [DvclNative.Win]::SendMessage($c.Handle, 0x101F, [IntPtr]::Zero, [IntPtr]::Zero); if ($hh -ne [IntPtr]::Zero) { [void][DvclNative.Win]::SetWindowTheme($hh, $(if ($d) { 'DarkMode_ItemsView' } else { 'Explorer' }), $null) } } catch {}
             }
             if ($c -is [System.Windows.Forms.TreeView]) {
+                # double-buffered (TVM_SETEXTENDEDSTYLE, TVS_EX_DOUBLEBUFFER): no flicker on selection repaint
+                if ($ui) { try { [void][DvclNative.Win]::SendMessage($c.Handle, 0x112C, [IntPtr]4, [IntPtr]4) } catch {} }
                 # dark: no tree lines = dark expand arrows instead of light +/- boxes; dark path tooltip (TVM_GETTOOLTIPS)
                 if ($c -eq $tv) { $c.ShowLines = -not $d }
                 # dark: the selection of an unfocused tree is drawn dark (Windows draws it light)
-                $c.DrawMode = $(if ($d) { 'OwnerDrawText' } else { 'Normal' })
+                $c.DrawMode = $(if ($d -or $c -eq $tv) { 'OwnerDrawText' } else { 'Normal' })
                 if ($ui) { try { $tt = [DvclNative.Win]::SendMessage($c.Handle, 0x1119, [IntPtr]::Zero, [IntPtr]::Zero); if ($tt -ne [IntPtr]::Zero) { [void][DvclNative.Win]::SetWindowTheme($tt, $(if ($d) { 'DarkMode_Explorer' } else { 'Explorer' }), $null) } } catch {} }
             }
         }
@@ -1545,10 +1557,10 @@ $watchTimer.Add_Tick({
 # ---------------------------------------------------------------- toolbar
 [void](Add-Btn 'Refresh' 'Reload pending changes (F5)' { Refresh-All })
 [void]$tool.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
-[void](Add-Btn 'New' 'New changelist; checked files move into it (Ctrl+N)' { [void](Do-NewCL (Target-Items-IfChecked)) })
+[void](Add-Btn 'New' 'New changelist; selected files move into it (Ctrl+N)' { [void](Do-NewCL (Target-Items-IfChecked)) })
 [void](Add-Btn 'Submit...' 'Submit the selected changelist (Ctrl+Enter)' { Do-Submit })
 [void](Add-Btn 'Shelve...' 'Shelve the selected changelist to the cloud, workspace untouched' { Do-Shelve })
-[void](Add-Btn 'Revert...' 'Discard local changes of checked / selected files (backup shelf first)' { Do-Revert })
+[void](Add-Btn 'Revert...' 'Discard local changes of the selected files (backup shelf first)' { Do-Revert })
 [void](Add-Btn 'Shelves' 'List, unshelve or delete shelves' { Do-Shelves })
 [void](Add-Btn 'Locks' 'Files locked in this repository' { Do-ShowLocks })
 [void]$tool.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
@@ -1569,20 +1581,14 @@ $bBug = Add-Btn 'Report bug' 'Open a new issue on GitHub' { Do-ReportBug }; $bBu
 $bUpd = Add-Btn 'Update' 'Check GitHub for a new version and update' { Do-Update }; $bUpd.Alignment = 'Right'
 $btnTheme = Add-Btn 'Dark' 'Dark / light theme' { Apply-Theme (-not $script:Dark) }; $btnTheme.Alignment = 'Right'
 
-# Checked files only (used by "New changelist": nothing checked = empty changelist)
+# Selected files only (used by "New changelist": nothing selected = empty changelist)
 function Target-Items-IfChecked {
     $sel = New-Object System.Collections.ArrayList
-    foreach ($fn in (File-Nodes)) { if ($fn.Checked) { [void]$sel.Add($fn.Tag.Item) } }
+    foreach ($fn in (File-Nodes)) { if (Is-Sel $fn) { [void]$sel.Add($fn.Tag.Item) } }
     return ,$sel.ToArray()
 }
 
 # ---------------------------------------------------------------- tree events
-# Checking a changelist checks its files
-$tv.Add_AfterCheck({
-    param($s, $e)
-    if ($e.Action -eq [System.Windows.Forms.TreeViewAction]::Unknown) { return }
-    if ($e.Node.Tag.Type -eq 'cl') { foreach ($c in $e.Node.Nodes) { $c.Checked = $e.Node.Checked } }
-})
 
 $tv.Add_NodeMouseDoubleClick({ param($s, $e) if ($e.Node.Tag.Type -eq 'file') { $tv.SelectedNode = $e.Node; Do-ShowInExplorer } elseif ($e.Node.Tag.Type -eq 'cl') { $tv.SelectedNode = $e.Node; Do-EditDesc } })
 
@@ -1590,8 +1596,9 @@ $tv.Add_NodeMouseDoubleClick({ param($s, $e) if ($e.Node.Tag.Type -eq 'file') { 
 $tv.Add_ItemDrag({
     param($s, $e)
     if ($e.Item.Tag.Type -ne 'file') { return }
+    # dragging a file outside the selection drags it alone (and selects it), like Explorer
+    if (-not (Is-Sel $e.Item)) { Select-Click $e.Item ([System.Windows.Forms.Keys]::None) }
     $items = Target-Items-IfChecked
-    if ($items.Count -eq 0 -or -not $e.Item.Checked) { $items = @($e.Item.Tag.Item) }
     Start-TreeDrag $tv $e.Item.Tag.Item.Path $items
 })
 $tv.Add_DragOver({
@@ -1609,23 +1616,65 @@ $tv.Add_DragDrop({
     Do-Move $to $script:DragItems
 })
 
-# Multi-select: Ctrl+click toggles a file, Shift+click checks a range, Ctrl+A checks all, Esc clears
+# Multi-select like Explorer: click = this file, Ctrl+click = add/remove, Shift+click = range
+# (Ctrl+Shift = add range), arrows move it, Ctrl+A = all files, Esc = none.
+# Clicking a changelist selects the changelist (= all its files for the commands).
 $script:Anchor = $null
 $tv.Add_NodeMouseClick({
     param($s, $e)
-    if ($e.Button -ne [System.Windows.Forms.MouseButtons]::Left -or $e.Node.Tag.Type -ne 'file') { return }
-    if ($tv.HitTest($e.Location).Location -eq [System.Windows.Forms.TreeViewHitTestLocations]::StateImage) { $script:Anchor = $e.Node; return }
-    Select-Click $e.Node ([System.Windows.Forms.Control]::ModifierKeys)
+    $mods = [System.Windows.Forms.Control]::ModifierKeys
+    if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Right) {
+        # right-click outside the selection: that item alone
+        if (-not (Is-Sel $e.Node)) { $tv.SelectedNode = $e.Node; Select-Click $e.Node ([System.Windows.Forms.Keys]::None) }
+        return
+    }
+    if ($e.Button -ne [System.Windows.Forms.MouseButtons]::Left) { return }
+    if ($tv.HitTest($e.Location).Location -eq [System.Windows.Forms.TreeViewHitTestLocations]::PlusMinus) { return }
+    Select-Click $e.Node $mods
+})
+$tv.Add_AfterSelect({
+    param($s, $e)
+    if ($e.Action -ne [System.Windows.Forms.TreeViewAction]::ByKeyboard) { return }
+    $mods = [System.Windows.Forms.Control]::ModifierKeys
+    if ($mods -band [System.Windows.Forms.Keys]::Control) { $tv.Invalidate(); return }   # Ctrl+arrows: move without selecting
+    Select-Click $e.Node ($mods -band [System.Windows.Forms.Keys]::Shift)
 })
 function Select-Click($node, $mods) {
-    if (($mods -band [System.Windows.Forms.Keys]::Shift) -and $script:Anchor -and $script:Anchor.TreeView) {
+    $shift = ($mods -band [System.Windows.Forms.Keys]::Shift); $ctrl = ($mods -band [System.Windows.Forms.Keys]::Control)
+    if (-not $node -or -not $node.Tag -or $node.Tag.Type -ne 'file') {
+        if (-not $ctrl) { $script:Sel.Clear() }; $script:Anchor = $null; $tv.Invalidate(); return
+    }
+    $p = $node.Tag.Item.Path
+    if ($shift -and $script:Anchor -and $script:Anchor.TreeView) {
         $all = File-Nodes; $a = $all.IndexOf($script:Anchor); $b = $all.IndexOf($node)
-        if ($a -ge 0 -and $b -ge 0) { for ($i = [Math]::Min($a, $b); $i -le [Math]::Max($a, $b); $i++) { $all[$i].Checked = $true } }
-    } elseif ($mods -band [System.Windows.Forms.Keys]::Control) {
-        $node.Checked = -not $node.Checked; $script:Anchor = $node
-    } else { $script:Anchor = $node }
+        if (-not $ctrl) { $script:Sel.Clear() }
+        if ($a -ge 0 -and $b -ge 0) { for ($i = [Math]::Min($a, $b); $i -le [Math]::Max($a, $b); $i++) { [void]$script:Sel.Add($all[$i].Tag.Item.Path) } }
+    } elseif ($ctrl) {
+        if (-not $script:Sel.Remove($p)) { [void]$script:Sel.Add($p) }; $script:Anchor = $node
+    } else { $script:Sel.Clear(); [void]$script:Sel.Add($p); $script:Anchor = $node }
+    $tv.Invalidate()
 }
-function Check-AllFiles([bool]$on) { foreach ($n in (File-Nodes)) { $n.Checked = $on }; if (-not $on) { foreach ($cn in $tv.Nodes) { $cn.Checked = $false } } }
+# Click below the last row: nothing selected, like Explorer
+function Tree-EmptyClick($pt) { if (-not $tv.GetNodeAt($pt)) { $script:Sel.Clear(); $script:Anchor = $null; $tv.SelectedNode = $null; $tv.Invalidate() } }
+$tv.Add_MouseDown({ param($s, $e) if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Left) { Tree-EmptyClick $e.Location } })
+function Check-AllFiles([bool]$on) { $script:Sel.Clear(); if ($on) { foreach ($n in (File-Nodes)) { [void]$script:Sel.Add($n.Tag.Item.Path) } }; $tv.Invalidate() }
+# Draws the selection (selected files; a selected changelist or other row)
+$tv.Add_DrawNode({
+    param($s, $e)
+    $n = $e.Node
+    $on = (Is-Sel $n) -or ($n -eq $s.SelectedNode -and $n.Tag -and $n.Tag.Type -ne 'file')
+    $cur = ($n -eq $s.SelectedNode)
+    if (-not $on -and -not $cur) { $e.DrawDefault = $true; return }
+    if ($e.Bounds.Width -le 0) { return }
+    $bg = $s.BackColor
+    if ($on) { $bg = $(if ($s.Focused) { $script:Pal.Sel } elseif ($script:Dark) { $script:Pal.Hi } else { [System.Drawing.Color]::FromArgb(217, 217, 217) }) }
+    $b = New-Object System.Drawing.SolidBrush($bg); $e.Graphics.FillRectangle($b, $e.Bounds); $b.Dispose()
+    $fnt = $n.NodeFont; if (-not $fnt) { $fnt = $s.Font }
+    $fc = $n.ForeColor; if ($fc.IsEmpty) { $fc = $s.ForeColor }
+    if ($on -and $s.Focused) { $fc = [System.Drawing.Color]::White }
+    [System.Windows.Forms.TextRenderer]::DrawText($e.Graphics, $n.Text, $fnt, $e.Bounds, $fc, [System.Windows.Forms.TextFormatFlags]'Left, VerticalCenter, NoPrefix, SingleLine')
+    if ($cur -and $s.Focused -and -not $on) { [System.Windows.Forms.ControlPaint]::DrawFocusRectangle($e.Graphics, $e.Bounds) }
+})
 $tv.Add_KeyDown({
     param($s, $e)
     if ($e.Control -and $e.KeyCode -eq 'A') { Check-AllFiles $true; $e.Handled = $true; $e.SuppressKeyPress = $true }
@@ -1822,7 +1871,7 @@ function Run-GuiSelfCheck {
         C 'find: Local and Depot accept drops' ($tvLocal.AllowDrop -and $tvDepot.AllowDrop)
         C 'restart: running version matches disk, restart path known' ($script:RunVersion -eq (Get-LocalVersion) -and $script:SelfPath -and (Test-Path -LiteralPath $script:SelfPath))
         C 'theme: changelist tree lines follow theme (none in dark)' ($tv.ShowLines -eq (-not $script:Dark))
-        C 'theme: unfocused selections drawn dark (trees, commit lists)' (($tv.DrawMode -eq 'OwnerDrawText') -eq $script:Dark -and $vSub.List.OwnerDraw -and $vHist.Files.OwnerDraw)
+        C 'theme: unfocused selections drawn dark (trees, commit lists)' (($tvLocal.DrawMode -eq 'OwnerDrawText') -eq $script:Dark -and $tv.DrawMode -eq 'OwnerDrawText' -and $vSub.List.OwnerDraw -and $vHist.Files.OwnerDraw)
         C 'icons: changelist rows have the changelist icon' (@($tv.Nodes | Where-Object { $_.ImageKey -notin 'cl', 'cldef' }).Count -eq 0)
         C 'layout: path bars present' ($tabLocal.Contains($barLocal.Box) -and $tabDepot.Contains($barDepot.Box))
         C 'toolbar: Get latest + Tools + Locks' ((@($tool.Items | Where-Object { $_.Text -like 'Get latest*' -or $_.Text -in 'Tools', 'Locks' })).Count -eq 3)
@@ -1888,14 +1937,21 @@ function Run-GuiSelfCheck {
         $files = File-Nodes
         if ($files.Count -ge 3) {
             Check-AllFiles $false
+            C 'no tick boxes: Explorer-style selection' (-not $tv.CheckBoxes)
             Select-Click $files[0] ([System.Windows.Forms.Keys]::None)
             Select-Click $files[2] ([System.Windows.Forms.Keys]::Shift)
-            C 'shift-click range checks 3 files' ((@($files | Where-Object { $_.Checked })).Count -eq 3)
+            C 'shift-click selects a range of 3 files' ((@($files | Where-Object { Is-Sel $_ })).Count -eq 3)
             Select-Click $files[1] ([System.Windows.Forms.Keys]::Control)
-            C 'ctrl-click toggles one off' ((@($files | Where-Object { $_.Checked })).Count -eq 2)
-            C 'targets = checked files' ((Target-Items).Count -eq 2)
-            Check-AllFiles $true; C 'select all' ((@($files | Where-Object { $_.Checked })).Count -eq $files.Count)
-            Check-AllFiles $false; C 'clear' ((@($files | Where-Object { $_.Checked })).Count -eq 0)
+            C 'ctrl-click removes one' ((@($files | Where-Object { Is-Sel $_ })).Count -eq 2)
+            C 'targets = selected files' ((Target-Items).Count -eq 2)
+            Select-Click $files[1] ([System.Windows.Forms.Keys]::None)
+            C 'plain click = that file alone' ((@($files | Where-Object { Is-Sel $_ })).Count -eq 1 -and (Is-Sel $files[1]))
+            Build-Tree; $fl = File-Nodes; C 'selection kept across a rebuild' ((@($fl | Where-Object { Is-Sel $_ })).Count -eq 1)
+            $tv.Focus(); $pt = New-Object System.Drawing.Point(5, ($tv.ClientSize.Height - 3))
+            if (-not $tv.GetNodeAt($pt)) { Tree-EmptyClick $pt; C 'click on empty space clears the selection' ($script:Sel.Count -eq 0 -and -not $tv.SelectedNode) } else { [void]$r.Add('SKIP  empty-space test (tree full)') }
+            Select-Click $tv.Nodes[0] ([System.Windows.Forms.Keys]::None); C 'clicking a changelist clears file selection' ($script:Sel.Count -eq 0)
+            Check-AllFiles $true; C 'select all' ((@($files | Where-Object { Is-Sel $_ })).Count -eq $files.Count)
+            Check-AllFiles $false; C 'clear' ($script:Sel.Count -eq 0)
         } else { [void]$r.Add('SKIP  multi-select (needs 3+ pending files)') }
 
         C 'local tree filled' ($tvLocal.Nodes.Count -gt 0) ([string]$tvLocal.Nodes.Count)
