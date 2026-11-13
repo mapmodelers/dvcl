@@ -2,6 +2,10 @@
 
 Versions follow [semver](https://semver.org). Tags: `vX.Y.Z`.
 
+## 0.11.1 - 2026-11-13
+
+- Shelved files can be selected too (click, Ctrl, Shift). Right-click: Unshelve the selected files (local shelves) or all.
+
 ## 0.11.0 - 2026-11-12
 
 - Changelists: no more tick boxes. Select like Explorer: click, Ctrl+click, Shift+click, Ctrl+A, Esc; drag the selection onto a changelist. Clicking a changelist = all its files.

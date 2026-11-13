@@ -217,8 +217,12 @@ function Run-SelfTest {
             T "Diversion shelf list parsed one row per shelf" (@(Read-Shelves @('shelf a_20261111-0101 (dv.shelf.1)', '  Created: today', 'shelf b (dv.shelf.2)')).Count -eq 2)
             Remove-CL 'other_work'; Remove-CL 'my_work'
             Delete-LocalShelf $id2
+            $other = @($ls[0].Files | Where-Object { $_.Path -ne 'Game/Content/A.uasset' } | Select-Object -First 1)[0].Path
+            MkF $other 'changed-other'
+            Apply-LocalShelf $id @('Game/Content/A.uasset')
+            T "local unshelve of selected files only" ([System.IO.File]::ReadAllText((Full-Path 'Game/Content/A.uasset')) -eq 'a2-longer' -and [System.IO.File]::ReadAllText((Full-Path $other)) -eq 'changed-other')
             Apply-LocalShelf $id
-            T "local unshelve restores the shelved content" ([System.IO.File]::ReadAllText((Full-Path 'Game/Content/A.uasset')) -eq 'a2-longer')
+            T "local unshelve restores the shelved content" ([System.IO.File]::ReadAllText((Full-Path 'Game/Content/A.uasset')) -eq 'a2-longer' -and [System.IO.File]::ReadAllText((Full-Path $other)) -ne 'changed-other')
             Delete-LocalShelf $id
             T "local shelf deleted" (@(Get-LocalShelves).Count -eq 0)
             Save-LastHead 'main' 'dv.commit.7'; $h = Read-LastHead

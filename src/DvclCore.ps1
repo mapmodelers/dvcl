@@ -972,7 +972,8 @@ function Get-LocalShelves {
 }
 
 # Copies the shelved files back over the workspace (the shelf is kept)
-function Apply-LocalShelf([string]$id) {
+# $only: restore just these paths (empty = the whole shelf)
+function Apply-LocalShelf([string]$id, [string[]]$only) {
     $dir = [System.IO.Path]::Combine((Dvcl-File 'shelves'), $id)
     $mf = [System.IO.Path]::Combine($dir, 'manifest.json')
     if (-not (Test-Path -LiteralPath $mf)) { Fail ("no local shelf '" + $id + "'") }
@@ -980,6 +981,7 @@ function Apply-LocalShelf([string]$id) {
     $n = 0
     foreach ($it in @($m.items)) {
         if (-not $it.copied) { continue }
+        if ($only -and -not ($only -icontains [string]$it.path)) { continue }
         $src = [System.IO.Path]::Combine([string[]](@($dir, 'files') + @(([string]$it.path).Split('/'))))
         $dst = Full-Path ([string]$it.path)
         [void][System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($dst))

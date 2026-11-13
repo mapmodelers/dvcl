@@ -488,7 +488,7 @@ function Build-Tree {
             foreach ($sf in @($sh.Files)) {
                 $k = Kind-Letter $sf.Kind
                 $fn = New-Object System.Windows.Forms.TreeNode($sf.Path)
-                $fn.Tag = [pscustomobject]@{ Type = 'shelffile'; Path = $sf.Path; Cl = $name }; $fn.NodeFont = $fontUi
+                $fn.Tag = [pscustomobject]@{ Type = 'shelffile'; Path = $sf.Path; Cl = $name; ShelfId = [string]$sh.Id }; $fn.NodeFont = $fontUi
                 $fn.ForeColor = $script:Pal.Muted; Set-Icon $fn ('file-' + $k)
                 [void]$sn.Nodes.Add($fn)
             }
@@ -523,12 +523,15 @@ function Apply-DvShelves($r) {
     Load-Shelves; Build-Tree
 }
 # Unshelve = copy back, then the files go to the shelf's changelist
-function Do-Unshelve($sh, [string]$cl) {
+# $only: paths of the selected shelved files (local shelves; empty = whole shelf)
+function Do-Unshelve($sh, [string]$cl, [string[]]$only) {
     if ($sh.Local) {
-        if (-not (Ask-YesNo ("Unshelve '" + $sh.Id + "' (" + $sh.Count + " file(s)) into '" + $cl + "'?`r`nOverwrites those files in your workspace. Shelf kept. Close Unreal first.") 'Unshelve')) { return }
+        $files = @($sh.Files); if ($only) { $files = @($files | Where-Object { $only -icontains $_.Path }) }
+        if (-not (Ask-YesNo ("Unshelve " + $(if ($only) { $files.Count + " selected file(s) of '" } else { "'" }) + $sh.Id + "'" + $(if ($only) { '' } else { ' (' + $sh.Count + ' file(s))' }) + " into '" + $cl + "'?`r`nOverwrites those files in your workspace. Shelf kept. Close Unreal first.") 'Unshelve')) { return }
+        $script:UnOnly = $only; $script:UnFiles = $files
         Run-Busy {
-            Apply-LocalShelf $sh.Id
-            if ($cl -and $cl -ine 'default') { Move-ToCL $cl @($sh.Files) }
+            Apply-LocalShelf $sh.Id $script:UnOnly
+            if ($cl -and $cl -ine 'default') { Move-ToCL $cl $script:UnFiles }
         } 'Unshelving'
     } else {
         if (-not (Ensure-Online 'Unshelve')) { Back-Offline; return }
@@ -799,7 +802,25 @@ function Selected-CL {
 }
 
 # Target files: selected files, else the selected changelist's files
-function Is-Sel($n) { return ($n -and $n.Tag -and $n.Tag.Type -eq 'file' -and $script:Sel.Contains($n.Tag.Item.Path)) }
+# Selectable rows: pending files and shelved files (key "shelf|<id>|<path>": a file can be both)
+function Node-Key($n) {
+    if (-not $n -or -not $n.Tag) { return $null }
+    if ($n.Tag.Type -eq 'file') { return $n.Tag.Item.Path }
+    if ($n.Tag.Type -eq 'shelffile') { return ('shelf|' + $n.Tag.ShelfId + '|' + $n.Tag.Path) }
+    return $null
+}
+function Is-Sel($n) { $k = Node-Key $n; return ($k -and $script:Sel.Contains($k)) }
+# Rows a Shift+click range runs over, top to bottom (shelved files only when their shelf is open)
+function Sel-Nodes {
+    $l = New-Object System.Collections.ArrayList
+    foreach ($cn in $tv.Nodes) { foreach ($fn in $cn.Nodes) {
+            if ($fn.Tag.Type -eq 'file') { [void]$l.Add($fn) }
+            elseif ($fn.Tag.Type -eq 'shelf' -and $fn.IsExpanded) { foreach ($sf in $fn.Nodes) { [void]$l.Add($sf) } }
+        } }
+    return ,$l
+}
+# Selected shelved files of one shelf
+function Sel-ShelfPaths([string]$shelfId) { return @($script:Sel | Where-Object { $_ -like ('shelf|' + $shelfId + '|*') } | ForEach-Object { $_.Substring(('shelf|' + $shelfId + '|').Length) }) }
 function Target-Items {
     $sel = New-Object System.Collections.ArrayList
     foreach ($fn in (File-Nodes)) { if (Is-Sel $fn) { [void]$sel.Add($fn.Tag.Item) } }
@@ -1641,14 +1662,14 @@ $tv.Add_AfterSelect({
 })
 function Select-Click($node, $mods) {
     $shift = ($mods -band [System.Windows.Forms.Keys]::Shift); $ctrl = ($mods -band [System.Windows.Forms.Keys]::Control)
-    if (-not $node -or -not $node.Tag -or $node.Tag.Type -ne 'file') {
+    $p = Node-Key $node
+    if (-not $p) {
         if (-not $ctrl) { $script:Sel.Clear() }; $script:Anchor = $null; $tv.Invalidate(); return
     }
-    $p = $node.Tag.Item.Path
     if ($shift -and $script:Anchor -and $script:Anchor.TreeView) {
-        $all = File-Nodes; $a = $all.IndexOf($script:Anchor); $b = $all.IndexOf($node)
+        $all = Sel-Nodes; $a = $all.IndexOf($script:Anchor); $b = $all.IndexOf($node)
         if (-not $ctrl) { $script:Sel.Clear() }
-        if ($a -ge 0 -and $b -ge 0) { for ($i = [Math]::Min($a, $b); $i -le [Math]::Max($a, $b); $i++) { [void]$script:Sel.Add($all[$i].Tag.Item.Path) } }
+        if ($a -ge 0 -and $b -ge 0) { for ($i = [Math]::Min($a, $b); $i -le [Math]::Max($a, $b); $i++) { [void]$script:Sel.Add((Node-Key $all[$i])) } }
     } elseif ($ctrl) {
         if (-not $script:Sel.Remove($p)) { [void]$script:Sel.Add($p) }; $script:Anchor = $node
     } else { $script:Sel.Clear(); [void]$script:Sel.Add($p); $script:Anchor = $node }
@@ -1662,7 +1683,7 @@ function Check-AllFiles([bool]$on) { $script:Sel.Clear(); if ($on) { foreach ($n
 $tv.Add_DrawNode({
     param($s, $e)
     $n = $e.Node
-    $on = (Is-Sel $n) -or ($n -eq $s.SelectedNode -and $n.Tag -and $n.Tag.Type -ne 'file')
+    $on = (Is-Sel $n) -or ($n -eq $s.SelectedNode -and $n.Tag -and -not (Node-Key $n))
     $cur = ($n -eq $s.SelectedNode)
     if (-not $on -and -not $cur) { $e.DrawDefault = $true; return }
     if ($e.Bounds.Width -le 0) { return }
@@ -1698,7 +1719,11 @@ $tv.Add_NodeMouseClick({
     if ($e.Node.Tag.Type -in 'shelf', 'shelffile') {
         $script:MenuShelf = $e.Node.Tag; if ($e.Node.Tag.Type -eq 'shelffile') { $script:MenuShelf = $e.Node.Parent.Tag }
         $script:MenuShelfPath = $(if ($e.Node.Tag.Type -eq 'shelffile') { $e.Node.Tag.Path } else { '' })
-        [void](Add-MenuItem $menu ("Unshelve into '" + $script:MenuShelf.Cl + "'...") { Do-Unshelve $script:MenuShelf.Shelf $script:MenuShelf.Cl })
+        $script:MenuShelfSel = @(Sel-ShelfPaths ([string]$script:MenuShelf.Shelf.Id))
+        if ($script:MenuShelf.Shelf.Local -and $script:MenuShelfSel.Count -gt 0 -and $script:MenuShelfSel.Count -lt @($script:MenuShelf.Shelf.Files).Count) {
+            [void](Add-MenuItem $menu ("Unshelve " + $script:MenuShelfSel.Count + " selected file(s) into '" + $script:MenuShelf.Cl + "'...") { Do-Unshelve $script:MenuShelf.Shelf $script:MenuShelf.Cl $script:MenuShelfSel })
+        }
+        [void](Add-MenuItem $menu ("Unshelve " + $(if ($script:MenuShelf.Shelf.Local) { 'all' } else { 'whole shelf' }) + " into '" + $script:MenuShelf.Cl + "'...") { Do-Unshelve $script:MenuShelf.Shelf $script:MenuShelf.Cl })
         # shelved files still pending elsewhere (e.g. in default): bring them into this changelist
         $script:MenuShelfPending = @(@($script:MenuShelf.Shelf.Files) | ForEach-Object { $script:PendingByPath[$_.Path] } | Where-Object { $_ -and -not ((Owner-Of $_.Path) -and (Owner-Of $_.Path).name -ieq $script:MenuShelf.Cl) })
         [void](Add-MenuItem $menu ("Move its " + $script:MenuShelfPending.Count + " pending file(s) into '" + $script:MenuShelf.Cl + "'") { Do-Move $script:MenuShelf.Cl $script:MenuShelfPending } ($script:MenuShelfPending.Count -gt 0 -and $script:MenuShelf.Cl -ine 'default'))
@@ -1950,6 +1975,11 @@ function Run-GuiSelfCheck {
             $tv.Focus(); $pt = New-Object System.Drawing.Point(5, ($tv.ClientSize.Height - 3))
             if (-not $tv.GetNodeAt($pt)) { Tree-EmptyClick $pt; C 'click on empty space clears the selection' ($script:Sel.Count -eq 0 -and -not $tv.SelectedNode) } else { [void]$r.Add('SKIP  empty-space test (tree full)') }
             Select-Click $tv.Nodes[0] ([System.Windows.Forms.Keys]::None); C 'clicking a changelist clears file selection' ($script:Sel.Count -eq 0)
+            $shn = @($tv.Nodes | ForEach-Object { $_.Nodes } | Where-Object { $_.Tag.Type -eq 'shelf' -and $_.Nodes.Count -ge 2 } | Select-Object -First 1)
+            if ($shn.Count) {
+                $shn[0].Expand(); Select-Click $shn[0].Nodes[0] ([System.Windows.Forms.Keys]::None); Select-Click $shn[0].Nodes[1] ([System.Windows.Forms.Keys]::Control)
+                C 'shelved files: multi-select (ctrl-click 2)' ((Is-Sel $shn[0].Nodes[0]) -and (Is-Sel $shn[0].Nodes[1]) -and @(Sel-ShelfPaths ([string]$shn[0].Tag.Shelf.Id)).Count -eq 2)
+            } else { [void]$r.Add('SKIP  shelved-file test (no shelf with 2+ files)') }
             Check-AllFiles $true; C 'select all' ((@($files | Where-Object { Is-Sel $_ })).Count -eq $files.Count)
             Check-AllFiles $false; C 'clear' ($script:Sel.Count -eq 0)
         } else { [void]$r.Add('SKIP  multi-select (needs 3+ pending files)') }
