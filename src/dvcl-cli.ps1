@@ -54,6 +54,7 @@ Run inside a Diversion workspace (any subfolder).
   dvcl folder on|off <folder>   download / stop downloading a folder on this PC (no pending files allowed)
   dvcl report                   copy the last 200 log lines to the clipboard
   dvcl selftest                 offline test of parser / matcher / store (no dv calls)
+  dvcl args <anything>          show the arguments as dvcl receives them (script / shell quoting check)
 
   spec = #number or range from the listing (4, 5-9), a file, a folder, or a wildcard
          (Content/Maps/*). Paths may omit the top folder (MyGame/).
@@ -113,6 +114,18 @@ function Run-SelfTest {
         $c3 = Get-DepotChildren $dl 'MyGame'
         T "dv ls: MyGame = 1 folder + 1 file" ($c3.Dirs.Count -eq 1 -and $c3.Files.Count -eq 1 -and $c3.Dirs[0] -eq 'My Maps')
         T "commit list: rename gives 2 paths" ((Files-For-Commit @($p[7])).Count -eq 2)
+        $big = @(1..900 | ForEach-Object { [pscustomobject]@{ Path = ('Game/Content/Very/Long/Folder/Name/For/Testing/Asset_' + $_ + '.uasset'); Kind = 'M'; Old = $null } })
+        $big += [pscustomobject]@{ Path = 'Game/new.txt'; Kind = 'R'; Old = 'Game/old.txt' }
+        $pl = Commit-Plan $big $null
+        $flat = @($pl.Batches | ForEach-Object { $_.Files }); $lens = @($pl.Batches | ForEach-Object { ($_.Files | ForEach-Object { $_.Length + 3 } | Measure-Object -Sum).Sum })
+        T "big submit: split under the command-line limit, nothing lost, rename kept whole" (-not $pl.All -and @($pl.Batches).Count -ge 3 -and $flat.Count -eq 902 -and @($lens | Where-Object { $_ -gt 24000 }).Count -eq 0 -and @($pl.Batches | Where-Object { $_.Files -contains 'Game/old.txt' -and $_.Files -contains 'Game/new.txt' }).Count -eq 1)
+        T "big submit: all pending files = one dv commit -a" ((Commit-Plan $big $big).All -and -not (Commit-Plan @($big | Select-Object -First 5) $big).All)
+        $cl = @(Split-CmdLine 'desc silo_work Silo pass 2 (Sam): scan - tower, cornice; (LiDAR mirrors LAS Y). Config: on')
+        T "args: unquoted text with ( ) : ; , - kept" ($cl.Count -eq 16 -and $cl[0] -eq 'desc' -and (($cl | Select-Object -Skip 2) -join ' ') -eq 'Silo pass 2 (Sam): scan - tower, cornice; (LiDAR mirrors LAS Y). Config: on')
+        $cq = @(Split-CmdLine 'submit default "Silo pass 3 (Sam, photos): roof + lantern & dock, ""quoted""" -y')
+        T "args: quoted text with & , quotes; -y separate" ($cq.Count -eq 4 -and $cq[2] -eq 'Silo pass 3 (Sam, photos): roof + lantern & dock, "quoted"' -and $cq[3] -eq '-y')
+        $cb = @(Split-CmdLine 'a "D:\x y\\" b\"c')
+        T "args: Windows backslash rules" ($cb[1] -eq 'D:\x y\' -and $cb[2] -eq 'b"c')
         $fr = Finish-Dv @('status') (@('Sync in progress {{spinner}}') + $sample) 0 $true $false 5
         T "dv output: sync progress detected and filtered" ($fr.SyncBusy -and $fr.Lines.Count -eq $sample.Count)
         $st = Read-Status $fr
@@ -204,6 +217,8 @@ function Run-SelfTest {
             T "offline: no baseline -> one is taken, flagged as fresh" ($script:BaselineFresh -and (Test-Path -LiteralPath (Dvcl-File 'baseline.tsv')))
             Set-OfflineFlag $true; $f1 = Test-OfflineFlag; Set-OfflineFlag $false
             T "offline flag set / cleared" ($f1 -and -not (Test-OfflineFlag))
+            Set-OfflineFlag $true; $cp = Current-Pending; $wild = Select-Pending $cp.Files @('Content/*.uasset'); Set-OfflineFlag $false
+            T "offline: add with a wildcard matches from the folder scan" ($cp.Paused -and @($wild).Count -ge 1 -and @($wild).Count -eq @($cp.Files | Where-Object { $_.Path -like '*.uasset' }).Count -and @($wild | Where-Object { $_.Path -notlike 'Game/Content/*.uasset' }).Count -eq 0) ("" + @($wild).Count + " of " + @($cp.Files).Count + " | " + (@($cp.Files | % { $_.Path }) -join ","))
             $id = Shelve-Local 'my work' @($off | Where-Object { $_.Path -like '*.uasset' })
             MkF 'Game/Content/A.uasset' 'changed-after-shelve'
             $ls = @(Get-LocalShelves)
@@ -242,10 +257,23 @@ function Run-SelfTest {
     if ($script:ko -eq 0) { Write-Host $msg -ForegroundColor Green } else { Write-Host $msg -ForegroundColor Red; exit 1 }
 }
 
+# Pending files now: offline (sync paused or offline flag) = dvcl's folder scan, as in the window
+function Current-Pending {
+    if (Test-OfflineFlag) { return [pscustomobject]@{ Files = (Get-OfflinePending); Branch = ''; Commit = ''; Paused = $true; Syncing = $false } }
+    $st = Get-Pending
+    if ($st.Paused) { $st.Files = Get-OfflinePending }
+    return $st
+}
+
 # ---------------------------------------------------------------- main
+# dvcl.cmd passes its whole command line in DVCL_LINE (any characters survive); direct runs use $args
 $argv = @($args)
+$rawLine = $env:DVCL_LINE
+if ($null -ne $rawLine) { Remove-Item env:DVCL_LINE; $argv = @(Split-CmdLine $rawLine) }
 $cmd = 'status'
 if ($argv.Count -gt 0) { $cmd = $argv[0].ToLowerInvariant(); $argv = @($argv | Select-Object -Skip 1) }
+# dvcl args ... : prints the arguments as dvcl received them (checks what a script or shell passes)
+if ($cmd -eq 'args') { Write-Output ('ARGS ' + $argv.Count + ' :: ' + ($argv -join ' | ')); exit 0 }
 $yes = $false
 if ($argv -contains '-y') { $yes = $true; $argv = @($argv | Where-Object { $_ -ne '-y' }) }
 
@@ -292,7 +320,7 @@ try {
         { $_ -in 'add', 'move', 'mv' } {
             $name = $argv[0]; Check-Name $name
             $specs = @($argv | Select-Object -Skip 1); if ($specs.Count -eq 0) { Fail "nothing to add: give #numbers, files, folders or wildcards" }
-            $st = Get-Pending
+            $st = Current-Pending
             $sel = Select-Pending $st.Files $specs
             foreach ($p in $sel) { Say ("   -> " + $name + " : " + $p.Path) }
             Move-ToCL $name $sel
@@ -300,7 +328,7 @@ try {
 
         { $_ -in 'remove', 'rm' } {
             if ($argv.Count -eq 0) { Fail "nothing to remove" }
-            $st = Get-Pending
+            $st = Current-Pending
             $sel = Select-Pending $st.Files $argv
             Move-ToCL 'default' $sel
         }

@@ -2,6 +2,12 @@
 
 Versions follow [semver](https://semver.org). Tags: `vX.Y.Z`.
 
+## 0.12.0 - 2026-11-13
+
+- Submit of any size: all pending files = one Diversion commit; otherwise, beyond the command-line limit, several commits "(part i/n)", said in the output. No more "command line too long".
+- Offline (sync off), add / remove match against dvcl's folder scan: wildcards work as online.
+- Any text in arguments: dvcl.cmd hands its whole line to dvcl, so ( ) & , ; : - and quotes arrive as typed. `dvcl args ...` shows what dvcl received.
+
 ## 0.11.1 - 2026-11-13
 
 - Shelved files can be selected too (click, Ctrl, Shift). Right-click: Unshelve the selected files (local shelves) or all.

@@ -513,8 +513,69 @@ function Files-For-Commit($items) {
         [void]$list.Add($p.Path)
     }
     $len = 0; foreach ($f in $list) { $len += $f.Length + 3 }
-    if ($len -gt 28000) { Fail ("command line too long (" + $len + " chars, " + $list.Count + " paths). Split this changelist in two.") }
+    if ($len -gt 28000) { Fail ("command line too long (" + $len + " chars, " + $list.Count + " paths): shelve fewer files at once.") }
     return ,$list.ToArray()
+}
+
+# How a submit goes to Diversion. All pending files at once: one "dv commit -a".
+# Otherwise batches of paths under the Windows command-line limit (a rename's two paths stay
+# together); more than one batch = more than one Diversion commit ("part i/n").
+$script:CommitChars = 24000
+function Commit-Plan($items, $pending) {
+    $items = @($items)
+    if ($null -ne $pending) {
+        $pp = @($pending | ForEach-Object { $_.Path })
+        $ip = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+        foreach ($p in $items) { [void]$ip.Add($p.Path) }
+        $allIn = ($pp.Count -gt 0 -and $pp.Count -eq $ip.Count)
+        if ($allIn) { foreach ($x in $pp) { if (-not $ip.Contains($x)) { $allIn = $false; break } } }
+        if ($allIn) { return [pscustomobject]@{ All = $true; Batches = @([pscustomobject]@{ Items = $items; Files = @() }) } }
+    }
+    $batches = New-Object System.Collections.ArrayList
+    $cur = New-Object System.Collections.ArrayList; $curF = New-Object System.Collections.ArrayList; $len = 0
+    foreach ($p in $items) {
+        $f = @(); if ($p.Old) { $f += $p.Old }; $f += $p.Path
+        $add = 0; foreach ($x in $f) { $add += $x.Length + 3 }
+        if ($cur.Count -gt 0 -and $len + $add -gt $script:CommitChars) {
+            [void]$batches.Add([pscustomobject]@{ Items = $cur.ToArray(); Files = [string[]]$curF.ToArray() })
+            $cur = New-Object System.Collections.ArrayList; $curF = New-Object System.Collections.ArrayList; $len = 0
+        }
+        [void]$cur.Add($p); foreach ($x in $f) { [void]$curF.Add($x) }; $len += $add
+    }
+    if ($cur.Count -gt 0) { [void]$batches.Add([pscustomobject]@{ Items = $cur.ToArray(); Files = [string[]]$curF.ToArray() }) }
+    return [pscustomobject]@{ All = $false; Batches = $batches.ToArray() }
+}
+
+# One command line -> arguments, Windows rules: spaces split, "..." groups (quotes removed),
+# \" = a quote, "" inside quotes = a quote. dvcl.cmd hands its arguments over this way so that
+# any text (parentheses, & ; , : - quotes) reaches dvcl unchanged.
+function Split-CmdLine([string]$line) {
+    $out = New-Object System.Collections.ArrayList
+    $sb = New-Object System.Text.StringBuilder
+    $inq = $false; $has = $false; $i = 0; $n = $line.Length
+    $bs = [char]92; $dq = [char]34
+    while ($i -lt $n) {
+        $ch = $line[$i]
+        if ($ch -eq $bs) {
+            $k = 0; while ($i -lt $n -and $line[$i] -eq $bs) { $k++; $i++ }
+            if ($i -lt $n -and $line[$i] -eq $dq) {
+                [void]$sb.Append([string]::new($bs, [int][Math]::Floor($k / 2)))
+                if ($k % 2 -eq 1) { [void]$sb.Append($dq); $i++ }
+            } else { [void]$sb.Append([string]::new($bs, $k)) }
+            $has = $true; continue
+        }
+        if ($ch -eq $dq) {
+            if ($inq -and $i + 1 -lt $n -and $line[$i + 1] -eq $dq) { [void]$sb.Append($dq); $i += 2; continue }
+            $inq = -not $inq; $has = $true; $i++; continue
+        }
+        if (-not $inq -and ($ch -eq [char]' ' -or $ch -eq [char]9)) {
+            if ($has) { [void]$out.Add($sb.ToString()); [void]$sb.Clear(); $has = $false }
+            $i++; continue
+        }
+        [void]$sb.Append($ch); $has = $true; $i++
+    }
+    if ($has) { [void]$out.Add($sb.ToString()) }
+    return [string[]]$out.ToArray()   # streamed: callers wrap in @()
 }
 
 # ---------------------------------------------------------------- operations (shared by CLI and GUI)
@@ -567,11 +628,24 @@ function Submit-Items([string]$clName, $items, [string]$desc, $pending = $null) 
     $desc = ([string]$desc).Trim()
     if (-not $desc) { Fail "a description is required to submit" }
     if (@($items).Count -eq 0) { Fail "nothing to submit" }
-    $files = Files-For-Commit $items
-    $r = Invoke-Dv (@('commit') + $files + @('-m', $desc))
-    if ($r.Code -ne 0) { Fail ("dv commit failed (exit " + $r.Code + "): " + ($r.Lines -join ' ')) }
+    $plan = Commit-Plan $items $pending
+    $nb = @($plan.Batches).Count
+    if ($nb -gt 1) { Say ([string]@($items).Count + ' paths: too many for one command line, submitted as ' + $nb + ' Diversion commits (part i/' + $nb + ').') 'Yellow' }
+    $i = 0
+    foreach ($b in @($plan.Batches)) {
+        $i++
+        $m = $desc; if ($nb -gt 1) { $m = $desc + ' (part ' + $i + '/' + $nb + ')' }
+        if ($plan.All) { $r = Invoke-Dv @('commit', '-a', '-m', $m) } else { $r = Invoke-Dv (@('commit') + $b.Files + @('-m', $m)) }
+        if ($r.Code -ne 0) {
+            $done = $(if ($i -gt 1) { ' Parts 1-' + ($i - 1) + ' were submitted; the rest stays in the changelist.' } else { '' })
+            Fail ("dv commit failed (exit " + $r.Code + "): " + ($r.Lines -join ' ') + $done)
+        }
+        # each part leaves the changelist once committed (a later failure keeps only the rest)
+        Load-Db
+        foreach ($p in @($b.Items)) { Detach $p.Path }
+        Save-Db
+    }
     Load-Db
-    foreach ($p in $items) { Detach $p.Path }
     $c = Find-CL $clName
     if ($c) {
         $left = $c.files.Count
