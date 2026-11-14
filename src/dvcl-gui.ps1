@@ -560,10 +560,44 @@ function Stop-IfLocked([string[]]$paths, [string]$what) {
     return $true
 }
 
+# Before writing $paths: files Unreal holds are released through the dvcl link (no restart), unless
+# one has unsaved changes in Unreal (then nothing happens). $true = go on. $script:UeUsed = reload after.
+$script:UeUsed = $false
+function Ue-Prepare([string[]]$paths, [string]$what) {
+    $script:UeUsed = $false
+    $paths = @($paths | Where-Object { $_ })
+    $script:UeEditor = [bool](Find-UeEngine)
+    $locked = @($paths | Where-Object { Test-Locked $_ })
+    if ($locked.Count -eq 0) { $script:UeUsed = $script:UeEditor; return $true }
+    if (-not $script:UeEditor) { return (-not (Stop-IfLocked $locked $what)) }
+    $script:UeRel = $null
+    Run-Busy { $script:UeRel = Ue-Release $locked } 'Asking Unreal to release the files'
+    $r = $script:UeRel
+    if (-not $r) { return $false }
+    if ($r.Unsaved.Count) {
+        $list = ($r.Unsaved | Select-Object -First 12) -join "`r`n"
+        [void][System.Windows.Forms.MessageBox]::Show($form, ($what + " not done, nothing was changed.`r`n`r`nThese assets have unsaved changes in Unreal. Save them (or revert them there), then try again:`r`n`r`n" + $list), $what, 'OK', 'Warning')
+        return $false
+    }
+    if ($r.State -eq 'nolink') { & $script:OnSay 'Unreal holds these files and the dvcl link is not installed (ue\install.cmd, then restart Unreal once).' 'Yellow' }
+    elseif ($r.State -ne 'ok') { & $script:OnSay ('Unreal link: ' + $r.State + ' (see dvcl.log)') 'Yellow' }
+    $script:UeUsed = ($r.State -eq 'ok')
+    # whatever is still held (no link, another program): stop here
+    if (Stop-IfLocked $locked $what) { $script:UeUsed = $false; return $false }
+    return $true
+}
+# After writing: the editor reloads what it had loaded and rescans the files
+function Ue-Finish([string[]]$paths) {
+    if (-not $script:UeUsed) { return }
+    $script:UeUsed = $false; $script:UePaths = @($paths)
+    Run-Busy { Ue-Reload $script:UePaths } 'Unreal reloading the assets'
+}
+
 function Do-Unshelve($sh, [string]$cl, [string[]]$only) {
     if (-not $cl) { $cl = 'default' }
     # a Diversion shelf is applied whole (the others are put back after): all its files get written
-    if (Stop-IfLocked @(@($sh.Files) | ForEach-Object { $_.Path } | Where-Object { $sh.Local -eq $false -or -not $only -or $only -icontains $_ }) 'Unshelve') { return }
+    $writes = @(@($sh.Files) | ForEach-Object { $_.Path } | Where-Object { $sh.Local -eq $false -or -not $only -or $only -icontains $_ })
+    if (-not (Ue-Prepare $writes 'Unshelve')) { return }
     $files = @($sh.Files); if ($only) { $files = @($files | Where-Object { $only -icontains $_.Path }) }
     $mine = @($files | Where-Object { $script:PendingByPath.ContainsKey($_.Path) } | ForEach-Object { $_.Path })
     if ($mine.Count) {
@@ -571,12 +605,14 @@ function Do-Unshelve($sh, [string]$cl, [string[]]$only) {
         if (-not (Ask-YesNo ("These " + $mine.Count + " file(s) have your own changes; unshelving overwrites them:`r`n`r`n" + $list) 'Unshelve')) { return }
     }
     $script:UnSh = $sh; $script:UnOnly = $only; $script:UnCl = $cl; $script:UnDone = $null
-    if ($sh.Local) {
-        Run-Busy { Apply-LocalShelf $script:UnSh.Id $script:UnOnly; $script:UnDone = $files } 'Unshelving'
-    } else {
-        if (-not (Ensure-Online 'Unshelve')) { Back-Offline; return }
-        try { Run-Busy { $script:UnDone = Apply-DvShelf $script:UnSh $script:UnOnly } 'Unshelving' } finally { Back-Offline }
-    }
+    try {
+        if ($sh.Local) {
+            Run-Busy { Apply-LocalShelf $script:UnSh.Id $script:UnOnly; $script:UnDone = $files } 'Unshelving'
+        } else {
+            if (-not (Ensure-Online 'Unshelve')) { Back-Offline; return }
+            try { Run-Busy { $script:UnDone = Apply-DvShelf $script:UnSh $script:UnOnly } 'Unshelving' } finally { Back-Offline }
+        }
+    } finally { Ue-Finish $writes }
     if ($script:UnDone -and $cl -ine 'default') { Run-Busy { Move-ToCL $script:UnCl @($script:UnDone) } }
     Refresh-All
 }
@@ -936,7 +972,8 @@ function Do-Revert {
     if ($items.Count -gt 15) { $list += "`r`n... and " + ($items.Count - 15) + " more" }
     $q = "Discard local changes of " + $items.Count + " path(s)?`r`n(Your versions are copied to .dvcl\revert-backup on this PC; new files are skipped.)`r`n`r`n" + $list
     if (-not (Ask-YesNo $q 'Revert')) { return }
-    if (Stop-IfLocked @($items | Where-Object { (Kind-Letter $_.Kind) -ne 'A' } | ForEach-Object { $_.Path }) 'Revert') { return }
+    $writes = @($items | Where-Object { (Kind-Letter $_.Kind) -ne 'A' } | ForEach-Object { $_.Path })
+    if (-not (Ue-Prepare $writes 'Revert')) { return }
     $prefix = Selected-CL
     if (-not (Ensure-Online 'Revert')) { Back-Offline; return }
     try {
@@ -946,7 +983,7 @@ function Do-Revert {
             $still = @($items | Where-Object { $now.ContainsKey($_.Path.ToLowerInvariant()) })
             [void](Revert-Items $prefix $still)
         }
-    } finally { Back-Offline }
+    } finally { Back-Offline; Ue-Finish $writes }
     Refresh-All
 }
 
@@ -1078,10 +1115,16 @@ function Ensure-Online([string]$what) {
     return $true
 }
 
+# Get latest: the files of the newer commits are released in Unreal first and reloaded after
 function Do-GetLatest {
     if (-not (Ensure-Online 'Get latest')) { Back-Offline; return }
+    $script:Incoming = @()
     try {
-        Run-Busy { Get-Latest; Say "Your pending changes were kept. Unreal may need to reload changed assets." 'Gray' } 'Getting latest'
+        Run-Busy { $script:Incoming = @(Incoming-Files $script:WsCommit) } 'Listing the incoming files'
+        if (-not (Ue-Prepare $script:Incoming 'Get latest')) { return }
+        try {
+            Run-Busy { Get-Latest; Say ("Got " + $script:Incoming.Count + " changed file(s). Your pending changes were kept.") 'Gray' } 'Getting latest'
+        } finally { Ue-Finish $script:Incoming }
     } finally { Back-Offline }
     Refresh-All
 }
@@ -1784,9 +1827,24 @@ $tv.Add_NodeMouseClick({
             $mi = Add-MenuItem $un (CL-MenuText $t) $null; $mi.Tag = $t
             $mi.Add_Click({ param($src, $ev) Do-Unshelve $script:MenuShelf.Shelf ([string]$src.Tag) $script:MenuUnOnly })
         }
-        # shelved files still pending elsewhere (e.g. in default): bring them into this changelist
-        $script:MenuShelfPending = @(@($script:MenuShelf.Shelf.Files) | ForEach-Object { $script:PendingByPath[$_.Path] } | Where-Object { $_ -and -not ((Owner-Of $_.Path) -and (Owner-Of $_.Path).name -ieq $script:MenuShelf.Cl) })
-        [void](Add-MenuItem $menu ("Move its " + $script:MenuShelfPending.Count + " pending file(s) into '" + $script:MenuShelf.Cl + "'") { Do-Move $script:MenuShelf.Cl $script:MenuShelfPending } ($script:MenuShelfPending.Count -gt 0 -and $script:MenuShelf.Cl -ine 'default'))
+        # these shelved files are also checked out in another changelist: move them to this shelf's one
+        # (no file is touched). One item per changelist they are in. Scope: the selected / clicked
+        # shelved files, else the whole shelf.
+        $scope = @($script:MenuShelf.Shelf.Files | ForEach-Object { $_.Path })
+        if ($script:MenuShelfSel.Count) { $scope = @($script:MenuShelfSel) } elseif ($script:MenuShelfPath) { $scope = @($script:MenuShelfPath) }
+        $groups = [ordered]@{}
+        foreach ($sp in $scope) {
+            $pi = $script:PendingByPath[$sp]; if (-not $pi) { continue }
+            $o = Owner-Of $sp; $on = $(if ($o) { $o.name } else { 'default' })
+            if ($on -ieq $script:MenuShelf.Cl) { continue }
+            if (-not $groups.Contains($on)) { $groups[$on] = New-Object System.Collections.ArrayList }
+            [void]$groups[$on].Add($pi)
+        }
+        foreach ($gk in @($groups.Keys)) {
+            $mi = Add-MenuItem $menu ("Move " + $groups[$gk].Count + " checked-out file(s) from " + (CL-MenuText $gk) + " to " + (CL-MenuText $script:MenuShelf.Cl)) $null
+            $mi.Tag = @($groups[$gk].ToArray())
+            $mi.Add_Click({ param($src, $ev) Do-Move $script:MenuShelf.Cl @($src.Tag) })
+        }
         [void](Add-MenuItem $menu 'Delete shelf...' { Do-DeleteShelf $script:MenuShelf.Shelf })
         if ($script:MenuShelf.Shelf.Local) { [void](Add-MenuItem $menu 'Open shelf folder' { Open-InExplorer ([System.IO.Path]::Combine((Dvcl-File 'shelves'), $script:MenuShelf.Shelf.Id)) }) }
         if ($script:MenuShelfPath) {
@@ -1954,6 +2012,7 @@ function Run-GuiSelfCheck {
         C 'icons: image list set on the three trees' ((@($tv, $tvLocal, $tvDepot) | Where-Object { $_.ImageList -and $_.ImageList.Images.ContainsKey('file-A') }).Count -eq 3 -and $icons.Images.Count -ge 18) ([string]$icons.Images.Count)
         C 'numbers: changelist rows start with #id' (@($tv.Nodes | Where-Object { $_.Tag.Name -ne 'default' -and $_.Text -notmatch '^#\d+  ' }).Count -eq 0)
         C 'find: Local and Depot accept drops' ($tvLocal.AllowDrop -and $tvDepot.AllowDrop)
+        if (Find-UeEngine) { $uv = Invoke-Ue "import unreal`nprint(unreal.DvclLinkLibrary.version() if hasattr(unreal, 'DvclLinkLibrary') else 'DVCL nolink')"; [void]$r.Add('INFO  unreal link: ' + $uv.State + ' ' + (($uv.Lines | Select-Object -First 3) -join ' / ')) } else { [void]$r.Add('INFO  unreal link: no editor running') }
         C 'restart: running version matches disk, restart path known' ($script:RunVersion -eq (Get-LocalVersion) -and $script:SelfPath -and (Test-Path -LiteralPath $script:SelfPath))
         C 'theme: changelist tree lines follow theme (none in dark)' ($tv.ShowLines -eq (-not $script:Dark))
         C 'theme: unfocused selections drawn dark (trees, commit lists)' (($tvLocal.DrawMode -eq 'OwnerDrawText') -eq $script:Dark -and $tv.DrawMode -eq 'OwnerDrawText' -and $vSub.List.OwnerDraw -and $vHist.Files.OwnerDraw)

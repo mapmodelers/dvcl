@@ -725,6 +725,68 @@ function Revert-Items([string]$prefix, $items) {
     return $dir
 }
 
+# ---- Unreal link: the open editor of this workspace releases the files dvcl is about to write and
+# reloads them after (the dvcl link plugin, ue\install.cmd; reached by Python remote execution).
+function Find-UeEngine {
+    $p = @(Get-Process UnrealEditor -ErrorAction SilentlyContinue | Where-Object { $_.Path })
+    if ($p.Count -eq 0) { return $null }
+    return (Split-Path (Split-Path (Split-Path (Split-Path $p[0].Path))))
+}
+$script:PyCmd = $null
+function Find-Python {
+    if ($script:PyCmd) { return $script:PyCmd }
+    foreach ($c in @(@('py', '-3'), @('python'))) {
+        try { $null = & $c[0] @($c | Select-Object -Skip 1) --version 2>&1; if ($LASTEXITCODE -eq 0) { $script:PyCmd = $c; return $c } } catch {}
+    }
+    return $null
+}
+# Runs Python in the editor. State: ok, noeditor, nopython, nolink (plugin missing), fail
+function Invoke-Ue([string]$code) {
+    $eng = Find-UeEngine
+    if (-not $eng) { return [pscustomobject]@{ Ok = $false; State = 'noeditor'; Lines = @() } }
+    $py = Find-Python
+    if (-not $py) { return [pscustomobject]@{ Ok = $false; State = 'nopython'; Lines = @() } }
+    $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ('dvcl-ue-' + [guid]::NewGuid().ToString('N') + '.py')
+    [System.IO.File]::WriteAllText($tmp, $code, $script:Utf8)
+    try { $o = @(& $py[0] @($py | Select-Object -Skip 1) (Join-Path $PSScriptRoot 'dvcl_ue.py') $eng $script:Root $tmp 6 2>&1 | ForEach-Object { [string]$_ }); $code2 = $LASTEXITCODE }
+    finally { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
+    foreach ($l in $o) { Write-Log ('  ue | ' + $l) }
+    $st = $(if ($code2 -eq 0) { 'ok' } elseif ($code2 -eq 2) { 'noeditor' } else { 'fail' })
+    if ($o -contains 'DVCL nolink') { $st = 'nolink' }
+    return [pscustomobject]@{ Ok = ($st -eq 'ok'); State = $st; Lines = $o }
+}
+# Python for one dvcl link call on these workspace files (full paths, JSON = valid Python literals)
+function Ue-Code([string]$fn, [string[]]$rels) {
+    $abs = @($rels | ForEach-Object { (Full-Path $_) -replace '\\', '/' })
+    $list = ConvertTo-Json -Compress -InputObject ([string[]]$abs)
+    return ("import unreal`nif not hasattr(unreal, 'DvclLinkLibrary'):`n    print('DVCL nolink')`nelse:`n    print(unreal.DvclLinkLibrary." + $fn + "(" + $list + "))")
+}
+# Before writing files: the editor lets go of them. Unsaved = assets with unsaved changes in Unreal
+# (then nothing was released). Released = files it let go of.
+function Ue-Release([string[]]$rels) {
+    $r = Invoke-Ue (Ue-Code 'release_files' $rels)
+    $uns = @(); $rel = @()
+    foreach ($l in $r.Lines) {
+        if ($l -match '^unsaved (.+)$') { $uns += (Norm $Matches[1]) }
+        elseif ($l -match '^released (.+)$') { $rel += (Norm $Matches[1]) }
+    }
+    return [pscustomobject]@{ State = $r.State; Unsaved = $uns; Released = $rel }
+}
+function Ue-Reload([string[]]$rels) { if (@($rels).Count) { [void](Invoke-Ue (Ue-Code 'reload_files' $rels)) } }
+
+# Files changed in the commits newer than the workspace's (what Get latest will write)
+function Incoming-Files([string]$wsCommit) {
+    $ws = Commit-Num $wsCommit
+    if ($ws -le 0) { return @() }
+    $r = Invoke-Dv @('log', '-n', '200', '--date', 'iso') $true
+    $h = @{}
+    foreach ($c in @(Parse-Log $r.Lines | Where-Object { $_.Num -gt $ws })) {
+        $s = Invoke-Dv @('show', $c.Id, '--name-status', '--color', 'never') $true
+        foreach ($f in @(Parse-ShowFiles $s.Lines)) { $h[$f.Path.ToLowerInvariant()] = $f.Path }
+    }
+    return @($h.Values)
+}
+
 # ---- Diversion shelf contents: `dv shelf show` (works with sync paused), kept per shelf in
 # .dvcl\dv-shelf-files\<id>.tsv (a shelf never changes)
 function Shelf-FilesFile([string]$id) { return [System.IO.Path]::Combine($script:Root, '.dvcl', 'dv-shelf-files', (($id -replace '[^\w.-]', '_') + '.tsv')) }

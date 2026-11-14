@@ -242,6 +242,17 @@ function Run-SelfTest {
             T "local unshelve restores the shelved content" ([System.IO.File]::ReadAllText((Full-Path 'Game/Content/A.uasset')) -eq 'a2-longer' -and [System.IO.File]::ReadAllText((Full-Path $other)) -ne 'changed-other')
             Delete-LocalShelf $id
             T "local shelf deleted" (@(Get-LocalShelves).Count -eq 0)
+            # ---- Unreal link: the Python sent to the editor, the files Get latest will write
+            $uc = Ue-Code 'release_files' @('Game/Content/A b.uasset', "Game/Content/q'x.umap")
+            T "unreal link: Python call with full paths (/, quotes safe)" ($uc -like "*unreal.DvclLinkLibrary.release_files(*" -and $uc -like ('*' + ((Full-Path 'Game/Content/A b.uasset') -replace '\\', '/') + '*') -and ($uc -like "*q'x.umap*" -or $uc -like '*q\u0027x.umap*'))
+            $origDv = ${function:Invoke-Dv}
+            Set-Item function:script:Invoke-Dv { param([string[]]$a, [bool]$q)
+                if ($a[0] -eq 'log') { return [pscustomobject]@{ Code = 0; Lines = @('commit dv.commit.9', 'Author: s', 'Date: 2026-11-12T08:00:00Z', '', "`tnine", 'commit dv.commit.8', 'Author: s', '', "`teight", 'commit dv.commit.7', 'Author: s', '', "`tseven") } }
+                if ($a[1] -eq 'dv.commit.9') { return [pscustomobject]@{ Code = 0; Lines = @('commit dv.commit.9', "M`tGame/X.uasset", "A`tGame/Y.umap") } }
+                if ($a[1] -eq 'dv.commit.8') { return [pscustomobject]@{ Code = 0; Lines = @('commit dv.commit.8', "M`tGame/x.uasset", "D`tGame/Z.uasset") } }
+                return [pscustomobject]@{ Code = 0; Lines = @("M`tGame/OLD.uasset") } }
+            try { $inc = @(Incoming-Files 'dv.commit.7') } finally { Set-Item function:script:Invoke-Dv $origDv }
+            T "get latest: files of the newer commits only, once each" ($inc.Count -eq 3 -and @($inc | Where-Object { $_ -ieq 'Game/OLD.uasset' }).Count -eq 0 -and @($inc | Where-Object { $_ -ieq 'Game/X.uasset' }).Count -eq 1)
             # ---- Diversion shelves, revert (dv simulated)
             T "kinds: letters kept" ((Kind-Letter 'M') -eq 'M' -and (Kind-Letter 'a') -eq 'A' -and (Kind-Letter 'Modified') -eq 'M' -and (Kind-Letter 'New') -eq 'A')
             $sfl = Parse-Status @('Shelf mansion_20261108-0755 contains 3 change(s):', '', 'Modified:', "`t Game/S/a.uasset", "`t Game/S/b.uasset", 'New:', "`t Game/S/n.uasset")

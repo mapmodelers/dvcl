@@ -2,6 +2,11 @@
 
 Versions follow [semver](https://semver.org). Tags: `vX.Y.Z`.
 
+## 0.14.0 - 2026-11-14
+
+- Unreal link: revert, unshelve and get latest no longer need Unreal closed or restarted. dvcl asks the open editor to let go of the files, writes them, then the editor reloads them (as Unreal's own revision control does). Assets with unsaved changes in Unreal stop the action, nothing changed. Needs the dvcl link plugin once: ue\install.cmd (builds it for your engine), then restart Unreal once.
+- Shelf menu: "Move N checked-out file(s) from #X to #Y" when shelved files are checked out in another changelist (the clicked / selected shelved files, else the whole shelf; one line per changelist).
+
 ## 0.13.1 - 2026-11-14
 
 - Revert / unshelve check first whether Unreal (or any program) holds a file open: if so they stop at once with the list, without going online.

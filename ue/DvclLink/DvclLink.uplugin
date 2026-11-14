@@ -1,0 +1,20 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "1.0",
+	"FriendlyName": "dvcl link",
+	"Description": "Lets dvcl release, rewrite and reload assets in the open editor: revert, unshelve and get latest without restarting.",
+	"Category": "Editor",
+	"CreatedBy": "MapModelers",
+	"CreatedByURL": "https://github.com/mapmodelers/dvcl",
+	"EnabledByDefault": true,
+	"CanContainContent": false,
+	"Installed": true,
+	"Modules": [
+		{
+			"Name": "DvclLink",
+			"Type": "Editor",
+			"LoadingPhase": "Default"
+		}
+	]
+}
