@@ -30,8 +30,16 @@ function Save-Settings {
         # self-check runs keep the user's layout
         $lay = $settings.layout; if (-not $SelfCheck -and $script:LayoutReady) { $lay = Get-Layout }
         $last = [string]$script:Root; if ($SelfCheck -and $settings.lastRepo) { $last = [string]$settings.lastRepo }
-        [pscustomobject]@{ lastRepo = $last; w = $form.Width; h = $form.Height; ui = $(if ($script:Dark) { 'dark' } else { 'light' }); layout = $lay } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $script:SettingsFile -Encoding UTF8
+        $j = Settings-Json $last $lay
+        if ($j -ne $script:LastSettingsJson) { Set-Content -LiteralPath $script:SettingsFile -Value $j -Encoding UTF8; $script:LastSettingsJson = $j }
     } catch {}
+}
+# Window size / place / maximized, theme, panels, open shelves and closed changelists
+function Settings-Json([string]$last, $lay) {
+    $b = $(if ($form.WindowState -eq 'Normal') { $form.Bounds } else { $form.RestoreBounds })
+    return ([pscustomobject]@{ lastRepo = $last; w = $b.Width; h = $b.Height; x = $b.X; y = $b.Y; max = ($form.WindowState -eq 'Maximized')
+        ui = $(if ($script:Dark) { 'dark' } else { 'light' }); layout = $lay
+        openShelves = @($script:OpenShelves); closedCls = @($script:ClosedCLs) } | ConvertTo-Json -Depth 8)
 }
 $settings = Load-Settings
 
@@ -87,6 +95,11 @@ $form.Text = 'dvcl'
 $form.Font = $fontUi
 $form.StartPosition = 'CenterScreen'
 $form.Width = [int]$settings.w; $form.Height = [int]$settings.h
+# where it was last, if that place is still on a screen
+if ($null -ne $settings.x -and $null -ne $settings.y -and -not $SelfCheck -and -not $Shot) {
+    $r0 = New-Object System.Drawing.Rectangle([int]$settings.x, [int]$settings.y, [int]$settings.w, [int]$settings.h)
+    if (@([System.Windows.Forms.Screen]::AllScreens | Where-Object { $_.WorkingArea.IntersectsWith($r0) }).Count) { $form.StartPosition = 'Manual'; $form.Location = $r0.Location }
+}
 $form.MinimumSize = New-Object System.Drawing.Size(760, 440)
 $form.KeyPreview = $true
 $ico = Join-Path $script:ToolDir 'dvcl.ico'
@@ -317,7 +330,8 @@ function Begin-Busy([string]$what) {
     if (-not $what) { $what = 'Working...' }
     $busyLbl.Text = $what; $busyBar.Visible = $true; $busyLbl.Visible = $true
     if ($script:OpDepth -gt 0) { Op-Step $what }
-    $tool.Enabled = $false; $split.Enabled = $false; $btnMode.Enabled = $false; Set-FloatsEnabled $false
+    # actions locked; trees, panels and log stay usable (each action also refuses while one runs)
+    $tool.Enabled = $false; $btnMode.Enabled = $false
     $form.UseWaitCursor = $true
     [System.Windows.Forms.Application]::DoEvents()
 }
@@ -325,7 +339,7 @@ function End-Busy {
     if ($script:BusyDepth -gt 0) { $script:BusyDepth-- }
     if ($script:BusyDepth -gt 0) { return }
     $busyBar.Visible = $false; $busyLbl.Visible = $false
-    $tool.Enabled = $true; $split.Enabled = $true; $btnMode.Enabled = $true; Set-FloatsEnabled $true
+    $tool.Enabled = $true; $btnMode.Enabled = $true
     $form.UseWaitCursor = $false
 }
 
@@ -342,63 +356,41 @@ function Run-Busy([scriptblock]$sb, [string]$what = 'Working...') {
     finally { End-Busy; $script:Busy = $false }
 }
 
-# ---------------------------------------------------------------- action card
-# One action (unshelve, revert, shelve, submit, get latest, online / offline) = one small popup over
-# the window, which stays visible behind it but locked (no misclick, no second action); the changelist
-# tree is not redrawn until the action is done, then drawn once. The popup lists the steps as they run.
+# ---------------------------------------------------------------- actions
+# One action at a time (unshelve, revert, shelve, submit, get latest, online / offline): the state bar
+# shows it and its current step, the log lists the steps. Meanwhile other actions are refused (toolbar
+# off, menus and drops say wait); trees, panels and log stay usable. The changelist tree is not
+# redrawn until the action is done, then drawn once.
 $script:OpDepth = 0; $script:TreeDirty = $false; $script:BuildCount = 0
-$script:OpSteps = New-Object System.Collections.ArrayList; $script:OpCurrent = ''; $script:OpLater = @{}
-$opPanel = New-Object System.Windows.Forms.Form
-$opPanel.FormBorderStyle = 'None'; $opPanel.ShowInTaskbar = $false; $opPanel.StartPosition = 'Manual'; $opPanel.Width = 460; $opPanel.Height = 236
-$opCard = New-Object System.Windows.Forms.Panel; $opCard.Dock = 'Fill'; $opCard.BorderStyle = 'FixedSingle'
-$opTitle = New-Object System.Windows.Forms.Label; $opTitle.Left = 20; $opTitle.Top = 16; $opTitle.Width = 420; $opTitle.Height = 26; $opTitle.AutoEllipsis = $true
-$opTitle.Font = New-Object System.Drawing.Font('Segoe UI', 11, [System.Drawing.FontStyle]::Bold)
-$opBar = New-Object System.Windows.Forms.ProgressBar; $opBar.Style = 'Marquee'; $opBar.MarqueeAnimationSpeed = 30; $opBar.Left = 20; $opBar.Top = 50; $opBar.Width = 420; $opBar.Height = 10
-$opNow = New-Object System.Windows.Forms.Label; $opNow.Left = 20; $opNow.Top = 70; $opNow.Width = 420; $opNow.Height = 20; $opNow.AutoEllipsis = $true
-$opNow.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
-$opDone = New-Object System.Windows.Forms.Label; $opDone.Left = 20; $opDone.Top = 94; $opDone.Width = 420; $opDone.Height = 110
-$opHint = New-Object System.Windows.Forms.Label; $opHint.Left = 20; $opHint.Top = 208; $opHint.Width = 420; $opHint.Height = 18
-$opHint.Text = 'dvcl is locked until this is done.'
-$opCard.Controls.AddRange(@($opTitle, $opBar, $opNow, $opDone, $opHint))
-$opPanel.Controls.Add($opCard)
-function Place-Op {
-    $opPanel.Left = $form.Left + [Math]::Max(0, [int](($form.Width - $opPanel.Width) / 2))
-    $opPanel.Top = $form.Top + [Math]::Max(0, [int](($form.Height - $opPanel.Height) / 2.6))
-}
-$form.Add_Resize({ if ($opPanel.Visible) { Place-Op } })
-$form.Add_Move({ if ($opPanel.Visible) { Place-Op } })
-function Show-OpSteps {
-    $ok = [string][char]0x2713
-    $d = @($script:OpSteps | Select-Object -Last 6 | ForEach-Object { $ok + '  ' + $_ })
-    $opDone.Text = $d -join "`r`n"
-}
+$script:OpCurrent = ''; $script:OpLater = @{}; $script:OpTitle = ''
 function Begin-Op([string]$title) {
     $script:OpDepth++
     if ($script:OpDepth -gt 1) { return }
-    $script:OpSteps.Clear(); $script:OpCurrent = ''; $script:TreeDirty = $false
-    $opTitle.Text = $title; $opNow.Text = 'Starting'; $opDone.Text = ''
-    $opCard.BackColor = $tv.BackColor
-    foreach ($c in @($opTitle, $opNow)) { $c.ForeColor = $tv.ForeColor }
-    foreach ($c in @($opDone, $opHint)) { $c.ForeColor = $script:Pal.Muted }
-    Place-Op; $opPanel.Owner = $form; $opPanel.Show()
-    # locked, still visible: the popup is shown first so focus stays in dvcl
-    $form.Enabled = $false
-    Set-FloatsEnabled $false
-    $form.UseWaitCursor = $true
+    $script:OpTitle = $title; $script:OpCurrent = ''; $script:TreeDirty = $false
+    $script:OpClock = [Diagnostics.Stopwatch]::StartNew()
+    Write-Log ('ACTION ' + $title)
+    Begin-Busy $title
+}
+# a step of the action (each busy text): state bar "action: step", log line
+function Op-Step([string]$what) {
+    if ($script:OpDepth -eq 0 -or -not $what -or $what -eq $script:OpCurrent -or $what -eq $script:OpTitle) { return }
+    $script:OpCurrent = $what
+    $busyLbl.Text = $script:OpTitle + ':  ' + $what + '...'
+    Write-Log ('  step ' + $what)
     [System.Windows.Forms.Application]::DoEvents()
 }
-# a step of the action (each busy text): the previous one is ticked
-function Op-Step([string]$what) {
-    if ($script:OpDepth -eq 0 -or -not $what -or $what -eq $script:OpCurrent) { return }
-    if ($script:OpCurrent -and -not $script:OpSteps.Contains($script:OpCurrent)) { [void]$script:OpSteps.Add($script:OpCurrent) }
-    $script:OpCurrent = $what; $opNow.Text = $what + '...'
-    Show-OpSteps
-    [System.Windows.Forms.Application]::DoEvents()
+# another action while one runs: refused, said in the log
+function Op-Busy {
+    if ($script:OpDepth -gt 0 -or $script:BusyDepth -gt 0) {
+        & $script:OnSay ('Wait: ' + $(if ($script:OpTitle -and $script:OpDepth -gt 0) { $script:OpTitle } else { 'dvcl' }) + ' is still running.') 'Yellow'
+        return $true
+    }
+    return $false
 }
 function End-Op {
     if ($script:OpDepth -gt 1) { $script:OpDepth--; return }
     if ($script:OpDepth -eq 0) { return }
-    # the refresh that ends the action (status / folder scan) finishes behind the card
+    # the refresh that ends the action (status / folder scan) finishes first
     Op-Step 'Updating the view'
     $sw = [Diagnostics.Stopwatch]::StartNew()
     while (($script:StatusRunning -or @($script:Jobs | Where-Object { $_.Busy }).Count) -and $sw.ElapsedMilliseconds -lt 20000) {
@@ -406,9 +398,8 @@ function End-Op {
     }
     $script:OpDepth = 0
     if ($script:TreeDirty) { $script:TreeDirty = $false; Build-Tree }
-    $form.Enabled = $true; $opPanel.Hide(); $form.Activate()
-    Set-FloatsEnabled $true
-    $form.UseWaitCursor = $false
+    if ($script:OpClock) { Write-Timing ('action ' + $script:OpTitle) $script:OpClock.Elapsed.TotalMilliseconds }
+    End-Busy
     # shelf list / branch head skipped during the action: read once now, in the background
     if ($script:OpLater['shelf']) { Start-DvAsync @('shelf') 'Apply-DvShelves' $true $true '' }
     if ($script:OpLater['head']) { Start-DvAsync @('show', [string]$script:OpLater['head']) 'Apply-Head' $true $true }
@@ -574,6 +565,7 @@ function Build-Tree {
     }
     $tv.ExpandAll()
     foreach ($cn in $tv.Nodes) {
+        if ($script:ClosedCLs.Contains([string]$cn.Tag.Name)) { $cn.Collapse() }
         if ($keepSel -eq ('cl|' + $cn.Tag.Name)) { $tv.SelectedNode = $cn }
         foreach ($x in $cn.Nodes) {
             if ($x.Tag.Type -eq 'shelf') { if ($script:OpenShelves.Contains([string]$x.Tag.Shelf.Id)) { $x.Expand() } else { $x.Collapse() } }
@@ -587,7 +579,10 @@ function Build-Tree {
 }
 
 $script:Shelves = @(); $script:ShelfMap = @{}
-$script:OpenShelves = New-Object 'System.Collections.Generic.HashSet[string]' 
+$script:OpenShelves = New-Object 'System.Collections.Generic.HashSet[string]'
+$script:ClosedCLs = New-Object 'System.Collections.Generic.HashSet[string]'
+foreach ($x in @($settings.openShelves)) { if ($x) { [void]$script:OpenShelves.Add([string]$x) } }
+foreach ($x in @($settings.closedCls)) { if ($x) { [void]$script:ClosedCLs.Add([string]$x) } }
 # Local shelves + last known Diversion shelves, grouped by changelist (creates missing changelists)
 function Load-Shelves {
     $script:Shelves = @(@(Get-LocalShelves) + @(Read-DvShelfCache))
@@ -689,6 +684,7 @@ function Ue-Finish([string[]]$paths) {
 }
 
 function Do-Unshelve($sh, [string]$cl, [string[]]$only) {
+    if (Op-Busy) { return }
     if (-not $cl) { $cl = 'default' }
     # a Diversion shelf is applied whole (the others are put back after): all its files get written
     $writes = @(@($sh.Files) | ForEach-Object { $_.Path } | Where-Object { $sh.Local -eq $false -or -not $only -or $only -icontains $_ })
@@ -718,6 +714,7 @@ function Do-Unshelve($sh, [string]$cl, [string[]]$only) {
     } finally { End-Op }
 }
 function Do-DeleteShelf($sh) {
+    if (Op-Busy) { return }
     $label = $(if ($sh.Local) { $sh.Id } else { $sh.Name })
     if (-not (Ask-YesNo ("Delete shelf '" + $label + "'? Cannot be undone.") 'Delete shelf')) { return }
     Begin-Op ('Deleting shelf ' + $label)
@@ -1035,6 +1032,7 @@ function File-Nodes { $l = New-Object System.Collections.ArrayList; foreach ($cn
 
 # ---------------------------------------------------------------- actions
 function Do-NewCL([object[]]$moveItems) {
+    if (Op-Busy) { return }
     # Only a description. The internal name is derived from it (ply file -> ply_file).
     $r = Show-Dialog 'New changelist' $null $null 'Description:' ''
     if (-not $r -or -not $r.Text) { return $null }
@@ -1049,11 +1047,13 @@ function Do-NewCL([object[]]$moveItems) {
 }
 
 function Do-Move([string]$to, $items) {
+    if (Op-Busy) { return }
     if (-not $items -or $items.Count -eq 0) { return }
     Run-Busy { Move-ToCL $to $items; Build-Tree }
 }
 
 function Do-Submit {
+    if (Op-Busy) { return }
     $name = Selected-CL
     Begin-Op ('Submitting ' + $name)
     try {
@@ -1077,6 +1077,7 @@ function Do-Submit {
 # Shelve = a Diversion shelf (team-visible) attached to the changelist: the selected files, else the
 # changelist's files. Goes online for this only, then back offline.
 function Do-Shelve {
+    if (Op-Busy) { return }
     $name = Selected-CL
     $paths = @(Target-Items | ForEach-Object { $_.Path })
     if ($paths.Count -eq 0) { [void][System.Windows.Forms.MessageBox]::Show($form, "Changelist '" + $name + "' has no pending file.", 'Shelve'); return }
@@ -1095,6 +1096,7 @@ function Do-Shelve {
 }
 
 function Do-Revert {
+    if (Op-Busy) { return }
     $items = Target-Items
     if ($items.Count -eq 0) { return }
     $list = (@($items | Select-Object -First 15 | ForEach-Object { (Kind-Letter $_.Kind) + '  ' + $_.Path }) -join "`r`n")
@@ -1120,6 +1122,7 @@ function Do-Revert {
 }
 
 function Do-EditDesc {
+    if (Op-Busy) { return }
     $name = Selected-CL
     if ($name -eq 'default') { return }
     $c = Find-CL $name
@@ -1129,6 +1132,7 @@ function Do-EditDesc {
 }
 
 function Do-DeleteCL {
+    if (Op-Busy) { return }
     $name = Selected-CL
     if ($name -eq 'default') { return }
     if ($script:ShelfMap.ContainsKey($name.ToLowerInvariant())) { [void][System.Windows.Forms.MessageBox]::Show($form, "'" + $name + "' has shelves. Delete them first.", 'Delete changelist', 'OK', 'Information'); return }
@@ -1137,6 +1141,7 @@ function Do-DeleteCL {
 }
 
 function Do-Shelves {
+    if (Op-Busy) { return }
     $d = New-Object System.Windows.Forms.Form
     $d.Text = 'Shelves'; $d.Font = $fontUi; $d.StartPosition = 'CenterParent'; $d.Width = 560; $d.Height = 380; $d.ShowInTaskbar = $false
     $lv = New-Object System.Windows.Forms.ListView
@@ -1185,6 +1190,7 @@ function Do-Shelves {
 }
 
 function Do-ChangeRepo {
+    if (Op-Busy) { return }
     $fb = New-Object System.Windows.Forms.FolderBrowserDialog
     $fb.Description = 'Pick a folder inside a Diversion workspace'
     if ($script:Root) { $fb.SelectedPath = $script:Root }
@@ -1214,6 +1220,7 @@ function Selected-Rel {
 
 # State bar button. Going offline waits until Diversion has synced, then records the folder.
 function Do-Sync([bool]$on) {
+    if (Op-Busy) { return }
     Begin-Op $(if ($on) { 'Going online' } else { 'Going offline' })
     try {
         Set-Mode 'busy' ''
@@ -1253,6 +1260,7 @@ function Ensure-Online([string]$what) {
 
 # Get latest: the files of the newer commits are released in Unreal first and reloaded after
 function Do-GetLatest {
+    if (Op-Busy) { return }
     Begin-Op 'Getting latest'
     try {
     if (-not (Ensure-Online 'Get latest')) { Back-Offline; return }
@@ -1272,6 +1280,7 @@ function Do-History([string]$rel) { Show-History $rel }
 
 # Not-pending entries: one changelist ($name) or all ('')
 function Do-CleanStale([string]$name) {
+    if (Op-Busy) { return }
     $n = 0; foreach ($c in $script:CLs) { if (-not $name -or $c.name -ieq $name) { $n += (Stale-Of $script:Pending $c).Count } }
     if ($n -eq 0) { return }
     if (-not (Ask-YesNo ("Remove " + $n + " entr" + $(if ($n -eq 1) { 'y' } else { 'ies' }) + " that are no longer pending (already submitted or reverted)?`r`nFiles are not touched.") 'Remove not-pending entries')) { return }
@@ -1279,11 +1288,13 @@ function Do-CleanStale([string]$name) {
 }
 
 function Do-RemoveEntry([string]$rel) {
+    if (Op-Busy) { return }
     if (-not $rel) { return }
     Run-Busy { Detach $rel; Save-Db; Say ("Removed from its changelist: " + $rel) 'Green'; Build-Tree }
 }
 
 function Do-Lock([string[]]$paths, [bool]$on) {
+    if (Op-Busy) { return }
     $paths = @($paths | Where-Object { $_ })
     if ($paths.Count -eq 0) { return }
     if (-not (Ensure-Online 'Locking')) { Back-Offline; return }
@@ -1301,6 +1312,7 @@ function Do-ShowLocks {
 
 # Selective sync of one folder on this PC
 function Do-FolderSync([string]$rel, [bool]$on) {
+    if (Op-Busy) { return }
     if (-not $rel) { return }
     if (-not $on -and -not (Ask-YesNo ("Stop downloading '" + $rel + "' on this PC?`r`nDiversion stops syncing it here; its local files may be removed from this PC. It stays in Diversion, and you can download it again from the Depot tree.`r`nDiversion refuses this while you have pending files.") 'Stop downloading folder')) { return }
     Run-Busy { Set-FolderSync $rel $on }
@@ -1308,6 +1320,7 @@ function Do-FolderSync([string]$rel, [bool]$on) {
 }
 
 function Do-Recover {
+    if (Op-Busy) { return }
     Run-Busy {
         if ($script:Paused) { Fail "Sync is paused: resume sync first, then recover." }
         [void](Recover-Pruned $script:Pending); Build-Tree
@@ -1589,6 +1602,7 @@ $tvDepot.Add_NodeMouseClick($treeMenu)
 
 # ---------------------------------------------------------------- update / bug report (GitHub)
 function Do-Update {
+    if (Op-Busy) { return }
     $script:Restart = $false
     Run-Busy {
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
@@ -1780,6 +1794,10 @@ function Get-Stamps {
     try { $sd = Dvcl-File 'shelves'; if (Test-Path -LiteralPath $sd) { $b = (Get-Item -LiteralPath $sd).LastWriteTimeUtc.Ticks } } catch {}
     return @($a, $b)
 }
+# settings saved within 3 s of any change (a killed or updated window keeps its layout)
+$saveTimer = New-Object System.Windows.Forms.Timer
+$saveTimer.Interval = 3000
+$saveTimer.Add_Tick({ if ($script:Root -and $script:LayoutReady) { Save-Layout; Save-Settings } })
 $watchTimer = New-Object System.Windows.Forms.Timer
 $watchTimer.Interval = 2000
 $watchTimer.Add_Tick({
@@ -1832,8 +1850,8 @@ function Target-Items-IfChecked {
 $tv.Add_NodeMouseDoubleClick({ param($s, $e) if ($e.Node.Tag.Type -eq 'file') { $tv.SelectedNode = $e.Node; Do-ShowInExplorer } elseif ($e.Node.Tag.Type -eq 'cl') { $tv.SelectedNode = $e.Node; Do-EditDesc } })
 
 # Drag files onto a changelist (or onto a file of it)
-$tv.Add_AfterExpand({ param($s, $e) if (-not $script:InBuild -and $e.Node.Tag.Type -eq 'shelf') { [void]$script:OpenShelves.Add([string]$e.Node.Tag.Shelf.Id) } })
-$tv.Add_AfterCollapse({ param($s, $e) if (-not $script:InBuild -and $e.Node.Tag.Type -eq 'shelf') { [void]$script:OpenShelves.Remove([string]$e.Node.Tag.Shelf.Id) } })
+$tv.Add_AfterExpand({ param($s, $e) if ($script:InBuild) { return }; if ($e.Node.Tag.Type -eq 'shelf') { [void]$script:OpenShelves.Add([string]$e.Node.Tag.Shelf.Id) } elseif ($e.Node.Tag.Type -eq 'cl') { [void]$script:ClosedCLs.Remove([string]$e.Node.Tag.Name) } })
+$tv.Add_AfterCollapse({ param($s, $e) if ($script:InBuild) { return }; if ($e.Node.Tag.Type -eq 'shelf') { [void]$script:OpenShelves.Remove([string]$e.Node.Tag.Shelf.Id) } elseif ($e.Node.Tag.Type -eq 'cl') { [void]$script:ClosedCLs.Add([string]$e.Node.Tag.Name) } })
 $script:DragShelf = $null
 $tv.Add_ItemDrag({
     param($s, $e)
@@ -2061,6 +2079,10 @@ $form.Add_Shown({
     if ($StartDir) { $root = Find-DvRoot $StartDir }
     if (-not $root -and $settings.lastRepo) { $root = Find-DvRoot $settings.lastRepo }
     $script:SyncMode = [bool]$SelfCheck -or [bool]$Shot
+    if ($settings.max -and -not $SelfCheck -and -not $Shot) { $form.WindowState = 'Maximized' }
+    # dv / Unreal calls keep the window working (repaint, scroll, browse) while they run
+    if (-not $script:SyncMode) { $script:PumpUi = { [System.Windows.Forms.Application]::DoEvents() } }
+    if (-not $SelfCheck -and -not $Shot) { $saveTimer.Start() }
     if ($Shot -or $settings.ui -ne 'light') { Apply-Theme $true $false }   # dark unless chosen light (screenshot: dark)
     if (-not $SelfCheck -and -not $Shot) { $watchTimer.Start() }
     if ($root) {
@@ -2176,7 +2198,7 @@ function Run-GuiSelfCheck {
         $script:SyncMode = $false; $script:scAsync = $null; $ticks = 0
         $swA = [Diagnostics.Stopwatch]::StartNew()
         Start-DvAsync (Status-Args $false) 'Selfcheck-AsyncDone' $true $true 'Selfcheck: reading status...'
-        C 'window locked while loading (greyed, progress shown)' (-not $tool.Enabled -and -not $split.Enabled -and $busyBar.Visible -and $busyLbl.Text -like 'Selfcheck*')
+        C 'actions locked while loading, panels usable, progress shown' (-not $tool.Enabled -and $split.Enabled -and $busyBar.Visible -and $busyLbl.Text -like 'Selfcheck*')
         while ($null -eq $script:scAsync -and $swA.Elapsed.TotalSeconds -lt 90) { [System.Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 30; $ticks++ }
         $script:SyncMode = $true
         C 'window unlocked again after loading' ($script:BusyDepth -eq 0 -and $tool.Enabled -and $split.Enabled)
@@ -2286,18 +2308,24 @@ function Run-GuiSelfCheck {
         C 'depot list kept for the same commit (no reload on refresh)' ($script:DepotCommit -eq $script:WsCommit)
         C 'Ctrl+Shift+S target follows the last tree used' ($null -ne $script:LastTree)
 
-        # action card: covers and locks the window, lists the steps, tree drawn once at the end
+        # action: state bar shows it, other actions refused, panels usable, tree drawn once at the end
         $bt0 = $script:BuildCount
         Begin-Op 'Test action'
-        Begin-Busy 'Step one'; End-Busy; Begin-Busy 'Step two'; End-Busy
+        Begin-Busy 'Step one'; $lbl1 = $busyLbl.Text; End-Busy
         Build-Tree; Build-Tree
-        $cov = $opPanel.Visible -and -not $form.Enabled -and $opPanel.Owner -eq $form -and $form.Bounds.Contains($opPanel.Bounds) -and $script:BuildCount -eq $bt0
-        $stp = $opDone.Text
-        Begin-Op 'nested'; End-Op; $still = $opPanel.Visible -and $script:OpDepth -eq 1
+        $blocked = Op-Busy
+        $cov = $busyBar.Visible -and -not $tool.Enabled -and $split.Enabled -and $form.Enabled -and $blocked -and $script:BuildCount -eq $bt0
+        Begin-Op 'nested'; End-Op; $still = $busyBar.Visible -and $script:OpDepth -eq 1
         End-Op
-        C 'action popup: over the window, window locked, steps listed, nothing redrawn during the action' ($cov -and $stp -like '*Step one*' -and $still) ($stp)
-        C 'action popup: gone after, window unlocked, tree drawn once' (-not $opPanel.Visible -and $form.Enabled -and $script:OpDepth -eq 0 -and $script:BuildCount -eq ($bt0 + 1)) ([string]($script:BuildCount - $bt0))
-
+        C 'action: shown in the state bar with its step, other actions refused, panels usable, nothing redrawn' ($cov -and $still -and $lbl1 -like 'Test action:*Step one*') ($lbl1)
+        C 'action: done, actions back, tree drawn once' (-not $busyBar.Visible -and $tool.Enabled -and $script:OpDepth -eq 0 -and $script:BuildCount -eq ($bt0 + 1) -and -not (Op-Busy)) ([string]($script:BuildCount - $bt0))
+        # dv run while the window keeps working: same answer as the normal call
+        $sv = $script:PumpUi; $script:PumpUi = { [System.Windows.Forms.Application]::DoEvents() }
+        try { $pa = Invoke-Dv (Status-Args $false) $true } finally { $script:PumpUi = $sv }
+        $pb = Invoke-Dv (Status-Args $false) $true
+        C 'dv run with the window working: same answer as the normal call' ([bool](Dv-Exe) -and $pa.Code -eq $pb.Code -and (($pa.Lines -join "`n") -ceq ($pb.Lines -join "`n"))) ('' + $pa.Code + '/' + $pb.Code + ' ' + @($pa.Lines).Count + '/' + @($pb.Lines).Count + ' ' + (Dv-Exe))
+        $sj = (Settings-Json 'x' $null) | ConvertFrom-Json
+        C 'settings: place, maximized, open shelves and closed changelists kept' ($null -ne $sj.x -and $null -ne $sj.y -and $null -ne $sj.max -and $null -ne $sj.PSObject.Properties['openShelves'] -and $null -ne $sj.PSObject.Properties['closedCls'])
         $pl = @(Pending-FromLast @([pscustomobject]@{ Kind = 'A'; Path = 'dvcl-no-such/x.uasset' }, [pscustomobject]@{ Kind = 'D'; Path = 'dvcl-no-such/y.uasset' }))
         C 'after pause: pending taken from Diversion list (new gone = dropped, deleted kept)' ($pl.Count -eq 1 -and $pl[0].Kind -eq 'Deleted' -and $pl[0].Path -eq 'dvcl-no-such/y.uasset') ([string]$pl.Count)
         C 'unreal: file stamp of a missing file' ((File-Stamp 'dvcl-no-such/z.uasset') -eq 'none')
@@ -2367,7 +2395,7 @@ $form.Add_FormClosing({
         return
     }
     Save-Settings
-    $jobTimer.Stop(); $pollTimer.Stop(); $watchTimer.Stop(); $instTimer.Stop()
+    $jobTimer.Stop(); $pollTimer.Stop(); $watchTimer.Stop(); $instTimer.Stop(); $saveTimer.Stop()
     foreach ($j in @($script:Jobs)) { try { $j.PS.Stop(); $j.PS.Dispose() } catch {} }
     $notify.Visible = $false; $notify.Dispose()
     if ($script:InstMutex) { try { $script:InstMutex.ReleaseMutex() } catch {}; $script:InstMutex.Dispose(); $script:InstMutex = $null }

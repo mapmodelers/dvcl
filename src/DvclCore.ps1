@@ -72,6 +72,50 @@ function Norm([string]$p) {
 }
 
 # Runs dv in the repo. $quiet: output goes to the log file only, not to the window.
+# One argument quoted for a Windows command line (the rules programs use to split it back)
+function Quote-Arg([string]$a) {
+    if ($a -ne '' -and $a -notmatch '[\s"]') { return $a }
+    $bs = [char]92; $sb = New-Object System.Text.StringBuilder; [void]$sb.Append('"'); $k = 0
+    foreach ($ch in $a.ToCharArray()) {
+        if ($ch -eq $bs) { $k++; continue }
+        if ($ch -eq [char]34) { [void]$sb.Append($bs, 2 * $k + 1); [void]$sb.Append([char]34); $k = 0; continue }
+        if ($k) { [void]$sb.Append($bs, $k); $k = 0 }
+        [void]$sb.Append($ch)
+    }
+    [void]$sb.Append($bs, 2 * $k); [void]$sb.Append('"')
+    return $sb.ToString()
+}
+# Runs a program while the window keeps working ($script:PumpUi: repaint, scroll, browse) instead of
+# freezing until it ends. Output: stdout then stderr lines. Returns @{ Lines; Code }.
+function Invoke-Pumped([string]$exe, [string[]]$a, [string]$cwd) {
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $exe; $psi.Arguments = (@($a | ForEach-Object { Quote-Arg ([string]$_) }) -join ' ')
+    $psi.WorkingDirectory = $cwd; $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true
+    $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
+    try { $psi.StandardOutputEncoding = [Console]::OutputEncoding; $psi.StandardErrorEncoding = [Console]::OutputEncoding } catch {}
+    $p = [System.Diagnostics.Process]::Start($psi)
+    $o = $p.StandardOutput.ReadToEndAsync(); $e = $p.StandardError.ReadToEndAsync()
+    while (-not $p.WaitForExit(25)) { if ($script:PumpUi) { & $script:PumpUi } }
+    $p.WaitForExit()
+    $lines = New-Object System.Collections.ArrayList
+    foreach ($t in @($o.Result, $e.Result)) {
+        if (-not $t) { continue }
+        $ls = $t -split "`r?`n"; if ($ls.Count -and $ls[-1] -eq '') { $ls = @($ls | Select-Object -SkipLast 1) }
+        foreach ($l in $ls) { [void]$lines.Add([string]$l) }
+    }
+    $code = $p.ExitCode; $p.Dispose()
+    return [pscustomobject]@{ Lines = @($lines); Code = $code }
+}
+# dv's own .exe (pumped runs need it; a dv.cmd / script falls back to the normal call)
+function Dv-Exe {
+    if ($null -eq $script:DvExe) {
+        $script:DvExe = ''
+        $g = @(Get-Command dv -CommandType Application -ErrorAction SilentlyContinue | Where-Object { $_.Source -like '*.exe' }) | Select-Object -First 1
+        if ($g) { $script:DvExe = $g.Source }
+    }
+    return $script:DvExe
+}
+
 function Invoke-Dv([string[]]$a, [bool]$quiet = $false) {
     if (-not $script:Root) { Fail "no Diversion repo selected" }
     Write-Log ("RUN dv " + ($a -join ' '))
@@ -80,8 +124,11 @@ function Invoke-Dv([string[]]$a, [bool]$quiet = $false) {
     $ErrorActionPreference = 'Continue'
     Push-Location -LiteralPath $script:Root
     try {
-        $out  = @(& dv @a 2>&1 | ForEach-Object { "$_" })
-        $code = $LASTEXITCODE
+        if ($script:PumpUi -and (Dv-Exe)) { $pr = Invoke-Pumped (Dv-Exe) $a $script:Root; $out = @($pr.Lines); $code = $pr.Code }
+        else {
+            $out  = @(& dv @a 2>&1 | ForEach-Object { "$_" })
+            $code = $LASTEXITCODE
+        }
     } catch {
         $out = @("dv could not be started: " + $_.Exception.Message + " (is Diversion installed and dv in PATH?)"); $code = 9009
     } finally {
@@ -751,7 +798,12 @@ function Invoke-Ue([string]$code) {
     if (-not $py) { return [pscustomobject]@{ Ok = $false; State = 'nopython'; Lines = @() } }
     $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ('dvcl-ue-' + [guid]::NewGuid().ToString('N') + '.py')
     [System.IO.File]::WriteAllText($tmp, $code, $script:Utf8)
-    try { $o = @(& $py[0] @($py | Select-Object -Skip 1) (Join-Path $PSScriptRoot 'dvcl_ue.py') $eng $script:Root $tmp 6 2>&1 | ForEach-Object { [string]$_ }); $code2 = $LASTEXITCODE }
+    $pyArgs = @(@($py | Select-Object -Skip 1) + @((Join-Path $PSScriptRoot 'dvcl_ue.py'), $eng, $script:Root, $tmp, '6'))
+    $pyExe = $(if ($script:PumpUi) { @(Get-Command $py[0] -CommandType Application -ErrorAction SilentlyContinue | Where-Object { $_.Source -like '*.exe' } | Select-Object -First 1) } else { @() })
+    try {
+        if ($pyExe.Count) { $pr = Invoke-Pumped $pyExe[0].Source $pyArgs $script:Root; $o = @($pr.Lines | Where-Object { $_ -ne '' }); $code2 = $pr.Code }
+        else { $o = @(& $py[0] @pyArgs 2>&1 | ForEach-Object { [string]$_ }); $code2 = $LASTEXITCODE }
+    }
     finally { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
     foreach ($l in $o) { Write-Log ('  ue | ' + $l) }
     $st = $(if ($code2 -eq 0) { 'ok' } elseif ($code2 -eq 2) { 'noeditor' } else { 'fail' })

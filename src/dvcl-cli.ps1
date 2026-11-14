@@ -126,6 +126,12 @@ function Run-SelfTest {
         T "args: unquoted text with ( ) : ; , - kept" ($cl.Count -eq 16 -and $cl[0] -eq 'desc' -and (($cl | Select-Object -Skip 2) -join ' ') -eq 'Silo pass 2 (Sam): scan - tower, cornice; (LiDAR mirrors LAS Y). Config: on')
         $cq = @(Split-CmdLine 'submit default "Silo pass 3 (Sam, photos): roof + lantern & dock, ""quoted""" -y')
         T "args: quoted text with & , quotes; -y separate" ($cq.Count -eq 4 -and $cq[2] -eq 'Silo pass 3 (Sam, photos): roof + lantern & dock, "quoted"' -and $cq[3] -eq '-y')
+        $qa = @('plain', 'with space', 'D:\x y\', 'say "hi"', 'a\\"b', '', 'tab	in')
+        $qr = @(Split-CmdLine ((@($qa | ForEach-Object { Quote-Arg $_ })) -join ' '))
+        T "args: quoted for a pumped run, split back the same" ($qr.Count -eq $qa.Count -and (@(0..($qa.Count - 1) | Where-Object { $qr[$_] -cne $qa[$_] })).Count -eq 0)
+        $cmdExe = Join-Path $env:SystemRoot 'System32\cmd.exe'
+        $pe = Invoke-Pumped $cmdExe @('/c', 'echo', 'pumped') $env:TEMP; $px = Invoke-Pumped $cmdExe @('/c', 'exit', '3') $env:TEMP
+        T "pumped run: output and exit code" (@($pe.Lines).Count -eq 1 -and $pe.Lines[0] -eq 'pumped' -and $pe.Code -eq 0 -and $px.Code -eq 3)
         $cb = @(Split-CmdLine 'a "D:\x y\\" b\"c')
         T "args: Windows backslash rules" ($cb[1] -eq 'D:\x y\' -and $cb[2] -eq 'b"c')
         $fr = Finish-Dv @('status') (@('Sync in progress {{spinner}}') + $sample) 0 $true $false 5

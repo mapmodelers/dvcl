@@ -2,6 +2,11 @@
 
 Versions follow [semver](https://semver.org). Tags: `vX.Y.Z`.
 
+## 0.19.0 - 2026-11-14
+
+- No popup, no lock screen: an action shows in the state bar with its current step (steps in the log). The window keeps working while Diversion and Unreal answer (repaint, scroll, browse the trees, panels and log); only other actions are refused until it is done (toolbar off, menus and drops say wait).
+- The window remembers how it was: place, size, maximized, panels, theme, open shelves and closed changelists. Saved within 3 s of a change, so an update or a crash keeps it.
+
 ## 0.18.0 - 2026-11-14
 
 - Action popup: a small window over dvcl, which stays visible behind it but locked, instead of covering it.
