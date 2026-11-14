@@ -347,7 +347,7 @@ function Run-Busy([scriptblock]$sb, [string]$what = 'Working...') {
 # window: everything behind it is locked (no misclick, no second action) and is not redrawn until the
 # action is done, then drawn once. The card lists the steps as they run.
 $script:OpDepth = 0; $script:TreeDirty = $false; $script:BuildCount = 0
-$script:OpSteps = New-Object System.Collections.ArrayList; $script:OpCurrent = ''
+$script:OpSteps = New-Object System.Collections.ArrayList; $script:OpCurrent = ''; $script:OpLater = @{}
 $opPanel = New-Object System.Windows.Forms.Panel; $opPanel.Visible = $false
 $opCard = New-Object System.Windows.Forms.Panel; $opCard.Width = 460; $opCard.Height = 236; $opCard.BorderStyle = 'FixedSingle'
 $opTitle = New-Object System.Windows.Forms.Label; $opTitle.Left = 20; $opTitle.Top = 16; $opTitle.Width = 420; $opTitle.Height = 26; $opTitle.AutoEllipsis = $true
@@ -406,6 +406,10 @@ function End-Op {
     $opPanel.Visible = $false
     Set-FloatsEnabled $true
     $form.UseWaitCursor = $false
+    # shelf list / branch head skipped during the action: read once now, in the background
+    if ($script:OpLater['shelf']) { Start-DvAsync @('shelf') 'Apply-DvShelves' $true $true '' }
+    if ($script:OpLater['head']) { Start-DvAsync @('show', [string]$script:OpLater['head']) 'Apply-Head' $true $true }
+    $script:OpLater = @{}
 }
 
 function Ask-YesNo([string]$text, [string]$title = 'dvcl') {
@@ -591,7 +595,10 @@ function Apply-DvShelves($r) {
     if ($r.Code -ne 0) { return }
     $list = @(Read-Shelves $r.Lines)
     Save-DvShelfCache $list
-    Load-Shelves; Build-Tree
+    # redrawn only when the list changed
+    $before = (@($script:Shelves | ForEach-Object { [string]$_.Id + '=' + [string]$_.Count }) -join '|')
+    Load-Shelves
+    if ((@($script:Shelves | ForEach-Object { [string]$_.Id + '=' + [string]$_.Count }) -join '|') -ne $before) { Build-Tree }
 }
 # Diversion shelves whose file list is not known yet: `dv shelf show` in the background, one shelf
 # at a time (read-only, works offline); each shelf tried once per session
@@ -632,9 +639,16 @@ function Stop-IfLocked([string[]]$paths, [string]$what) {
 # Before writing $paths: files Unreal holds are released through the dvcl link (no restart), unless
 # one has unsaved changes in Unreal (then nothing happens). $true = go on. $script:UeUsed = reload after.
 $script:UeUsed = $false
+# size + time of each file before the write: after it, Unreal reloads only the files that changed
+function File-Stamp([string]$rel) {
+    $f = Full-Path $rel
+    if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { return 'none' }
+    $i = Get-Item -LiteralPath $f; return ([string]$i.Length + ':' + $i.LastWriteTimeUtc.Ticks)
+}
 function Ue-Prepare([string[]]$paths, [string]$what) {
     $script:UeUsed = $false
     $paths = @($paths | Where-Object { $_ })
+    $script:UeStamp = @{}; foreach ($p in $paths) { $script:UeStamp[$p] = File-Stamp $p }
     $script:UeEditor = [bool](Find-UeEngine)
     $locked = @($paths | Where-Object { Test-Locked $_ })
     if ($locked.Count -eq 0) { $script:UeUsed = $script:UeEditor; return $true }
@@ -661,8 +675,11 @@ function Ue-Prepare([string[]]$paths, [string]$what) {
 # After writing: the editor reloads what it had loaded and rescans the files
 function Ue-Finish([string[]]$paths) {
     if (-not $script:UeUsed) { return }
-    $script:UeUsed = $false; $script:UePaths = @($paths)
-    Run-Busy { Ue-Reload $script:UePaths } 'Unreal reloading the assets'
+    $script:UeUsed = $false
+    $script:UePaths = @(@($paths) | Where-Object { $_ -and (-not $script:UeStamp -or -not $script:UeStamp.ContainsKey($_) -or (File-Stamp $_) -ne $script:UeStamp[$_]) })
+    Write-Log ('unreal: ' + $script:UePaths.Count + ' of ' + @($paths).Count + ' file(s) changed, reloaded')
+    if ($script:UePaths.Count -eq 0) { return }
+    Run-Busy { Ue-Reload $script:UePaths } 'Unreal reloading the changed assets'
 }
 
 function Do-Unshelve($sh, [string]$cl, [string[]]$only) {
@@ -750,7 +767,26 @@ function Start-DvAsync([string[]]$a, [string]$onDone, [bool]$quiet, [bool]$logLi
 }
 
 # Offline folder scan in a background runspace: runs src\dvcl-scan.ps1 (same engine)
+# Pending list right after dvcl paused sync: Diversion's last list as offline scan would give it
+function Pending-FromLast($known) {
+    $res = New-Object System.Collections.ArrayList
+    foreach ($p in @($known)) {
+        $k = Kind-Letter $p.Kind; $ex = Test-Path -LiteralPath (Full-Path $p.Path)
+        if ($k -eq 'D') { if (-not $ex) { [void]$res.Add([pscustomobject]@{ Index = $res.Count + 1; Kind = 'Deleted'; Path = $p.Path; Old = $null }) } }
+        elseif ($ex) { [void]$res.Add([pscustomobject]@{ Index = $res.Count + 1; Kind = $(if ($k -eq 'A') { 'New' } else { 'Modified' }); Path = $p.Path; Old = $null }) }
+    }
+    return $res
+}
+$script:PausedAt = $null
 function Start-ScanAsync {
+    if ($script:PausedAt -and ((Get-Date) - $script:PausedAt).TotalSeconds -lt 60 -and (Test-OfflineFlag)) {
+        $script:PausedAt = $null
+        $f = Pending-FromLast (Read-LastStatus)
+        Write-Log ('offline scan skipped: sync paused just now, ' + $f.Count + ' pending from Diversion')
+        Apply-Scan ([pscustomobject]@{ Files = $f; Fresh = $false; Error = $null })
+        return
+    }
+    $script:PausedAt = $null
     if ($script:SyncMode) {
         Begin-Busy 'Scanning folder'
         try { $f = Get-OfflinePending; Apply-Scan ([pscustomobject]@{ Files = $f; Fresh = [bool]$script:BaselineFresh; Error = $null }) }
@@ -912,7 +948,7 @@ function Show-Pending($st, [bool]$unreachable) {
     Build-Tree
     Write-Timing ('build-pending-tree (' + $st.Files.Count + ' files)') $sw.Elapsed.TotalMilliseconds
     # Diversion shelves: listed online in the background (no lock), cached for offline
-    if (-not $script:Offline -and -not $unreachable) { Start-DvAsync @('shelf') 'Apply-DvShelves' $true $true '' }
+    if (-not $script:Offline -and -not $unreachable) { if ($script:OpDepth -gt 0) { $script:OpLater['shelf'] = $true } else { Start-DvAsync @('shelf') 'Apply-DvShelves' $true $true '' } }
     $script:Branch = $st.Branch
     $note = ''; if ($script:BaselineFresh) { $note = '  (tracking from now)' }
     if ($unreachable) { Set-Mode 'down' '' }
@@ -928,8 +964,8 @@ function Show-Pending($st, [bool]$unreachable) {
     $statusLbl.Text = $script:Root + '    ' + $st.Files.Count + ' pending    dvcl ' + (Get-LocalVersion)
     $form.Text = 'dvcl - ' + (Split-Path -Leaf $script:Root)
     if (-not $script:FirstShown) { $script:FirstShown = $true; Write-Timing 'script-start-to-pending-list' $script:Clock.Elapsed.TotalMilliseconds }
-    if ($st.Syncing -and -not $script:Paused -and -not $script:SyncMode) { $pollTimer.Start() }
-    if ($st.Branch -and -not $script:Offline) { Start-DvAsync @('show', $st.Branch) 'Apply-Head' $true $true }
+    if ($st.Syncing -and -not $script:Paused -and -not $script:SyncMode -and $script:OpDepth -eq 0) { $pollTimer.Start() }
+    if ($st.Branch -and -not $script:Offline) { if ($script:OpDepth -gt 0) { $script:OpLater['head'] = $st.Branch } else { Start-DvAsync @('show', $st.Branch) 'Apply-Head' $true $true } }
     Views-Refresh
     if ($script:RefreshAgain) { $script:RefreshAgain = $false; Refresh-All }
 }
@@ -1188,6 +1224,7 @@ function Back-Offline {
     $script:WentOnline = $false
     Set-Mode 'busy' ''
     Run-Busy { Set-Sync $false } 'Going offline'
+    if (Test-OfflineFlag) { $script:PausedAt = Get-Date }
     $script:WasBack = $true
 }
 
@@ -2254,6 +2291,10 @@ function Run-GuiSelfCheck {
         End-Op
         C 'action card: window covered and locked, steps listed, nothing redrawn during the action' ($cov -and $stp -like '*Step one*' -and $still) ($stp)
         C 'action card: gone after, tree drawn once' (-not $opPanel.Visible -and $script:OpDepth -eq 0 -and $script:BuildCount -eq ($bt0 + 1)) ([string]($script:BuildCount - $bt0))
+
+        $pl = @(Pending-FromLast @([pscustomobject]@{ Kind = 'A'; Path = 'dvcl-no-such/x.uasset' }, [pscustomobject]@{ Kind = 'D'; Path = 'dvcl-no-such/y.uasset' }))
+        C 'after pause: pending taken from Diversion list (new gone = dropped, deleted kept)' ($pl.Count -eq 1 -and $pl[0].Kind -eq 'Deleted' -and $pl[0].Path -eq 'dvcl-no-such/y.uasset') ([string]$pl.Count)
+        C 'unreal: file stamp of a missing file' ((File-Stamp 'dvcl-no-such/z.uasset') -eq 'none')
 
         $u = Get-BugUrl
         C 'bug report: GitHub issue URL' ($u.StartsWith('https://github.com/' + $script:GhRepo + '/issues/new'))

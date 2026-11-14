@@ -2,6 +2,10 @@
 
 Versions follow [semver](https://semver.org). Tags: `vX.Y.Z`.
 
+## 0.17.0 - 2026-11-14
+
+- Faster actions: no extra Diversion calls while an action runs (shelf list and branch head read once after it); Unreal reloads only the files whose content changed (a partial unshelve no longer reloads the whole shelf); right after dvcl pauses sync, the pending list comes from Diversion instead of a full folder scan.
+
 ## 0.16.0 - 2026-11-14
 
 - Actions (unshelve, revert, shelve, submit, get latest, delete shelf, online / offline) run under one card over the window: the window is locked meanwhile (no misclick, no second action, no shortcut keys), the card shows each step as it runs, and the window is drawn once when the action is done (no more jumping).
