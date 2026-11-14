@@ -645,12 +645,15 @@ function File-Stamp([string]$rel) {
     if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { return 'none' }
     $i = Get-Item -LiteralPath $f; return ([string]$i.Length + ':' + $i.LastWriteTimeUtc.Ticks)
 }
+function Ue-StampNow([string]$rel) { $s = File-Stamp $rel; if ($script:UeStamp[$rel] -and ([string]$script:UeStamp[$rel]).Split(':').Count -gt 2) { $s += ':' + (File-Hash $rel) }; return $s }
 function Ue-Prepare([string[]]$paths, [string]$what) {
     $script:UeUsed = $false
     $paths = @($paths | Where-Object { $_ })
     $script:UeStamp = @{}; foreach ($p in $paths) { $script:UeStamp[$p] = File-Stamp $p }
     $script:UeEditor = [bool](Find-UeEngine)
     $locked = @($paths | Where-Object { Test-Locked $_ })
+    # files Unreal has loaded: content hash too, so a rewrite with the same size and time still counts
+    foreach ($p in $locked) { $script:UeStamp[$p] = (File-Stamp $p) + ':' + (File-Hash $p) }
     if ($locked.Count -eq 0) { $script:UeUsed = $script:UeEditor; return $true }
     if (-not $script:UeEditor) { return (-not (Stop-IfLocked $locked $what)) }
     $script:UeRel = $null
@@ -676,7 +679,7 @@ function Ue-Prepare([string[]]$paths, [string]$what) {
 function Ue-Finish([string[]]$paths) {
     if (-not $script:UeUsed) { return }
     $script:UeUsed = $false
-    $script:UePaths = @(@($paths) | Where-Object { $_ -and (-not $script:UeStamp -or -not $script:UeStamp.ContainsKey($_) -or (File-Stamp $_) -ne $script:UeStamp[$_]) })
+    $script:UePaths = @(@($paths) | Where-Object { $_ -and (-not $script:UeStamp -or -not $script:UeStamp.ContainsKey($_) -or (Ue-StampNow $_) -ne $script:UeStamp[$_]) })
     Write-Log ('unreal: ' + $script:UePaths.Count + ' of ' + @($paths).Count + ' file(s) changed, reloaded')
     if ($script:UePaths.Count -eq 0) { return }
     Run-Busy { Ue-Reload $script:UePaths } 'Unreal reloading the changed assets'

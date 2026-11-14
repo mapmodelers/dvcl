@@ -867,8 +867,9 @@ function Apply-Shelf([string]$shelf) {
     if ($r.Code -ne 0) { Fail ("dv shelf apply failed: " + ($r.Lines -join ' ')) }
     $un = Unwritten $r.Lines
     if ($un.Count) { Fail ("dv could not write (file in use): " + ($un -join ', ')) }
-    # dv returns before the agent has rewritten the files: give it a moment so a refresh shows them
-    Start-Sleep -Seconds 3
+    # dv returns before the agent has rewritten the files: wait until Diversion reports its sync done
+    # (the files are then on disk), instead of a fixed pause
+    [void](Get-Pending $true)
     Say ("Applied shelf '" + $shelf + "' (shelf kept).") 'Green'
 }
 

@@ -2,6 +2,10 @@
 
 Versions follow [semver](https://semver.org). Tags: `vX.Y.Z`.
 
+## 0.17.1 - 2026-11-14
+
+- Unshelve from Diversion waits until Diversion reports its sync done (files on disk) instead of a fixed 3 s pause, so Unreal always reloads the new versions. Files Unreal had loaded are also compared by content.
+
 ## 0.17.0 - 2026-11-14
 
 - Faster actions: no extra Diversion calls while an action runs (shelf list and branch head read once after it); Unreal reloads only the files whose content changed (a partial unshelve no longer reloads the whole shelf); right after dvcl pauses sync, the pending list comes from Diversion instead of a full folder scan.
