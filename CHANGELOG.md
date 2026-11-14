@@ -2,6 +2,10 @@
 
 Versions follow [semver](https://semver.org). Tags: `vX.Y.Z`.
 
+## 0.16.0 - 2026-11-14
+
+- Actions (unshelve, revert, shelve, submit, get latest, delete shelf, online / offline) run under one card over the window: the window is locked meanwhile (no misclick, no second action, no shortcut keys), the card shows each step as it runs, and the window is drawn once when the action is done (no more jumping).
+
 ## 0.15.0 - 2026-11-14
 
 - Unreal link 3: levels used as level instances (Unreal loads them as a temporary copy under another name) are let go of and the instances reload, so unshelve / revert of such a level works with Unreal open. Update once: close Unreal, ue\install.cmd, open Unreal.
