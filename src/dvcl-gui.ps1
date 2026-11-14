@@ -426,7 +426,7 @@ $script:MaxRows = 1500
 function Build-Tree {
     # keep what the user selected across rebuilds (refresh, theme, outside changes)
     $keepSel = $null; if ($tv.SelectedNode -and $tv.SelectedNode.Tag) { $t = $tv.SelectedNode.Tag; $keepSel = [string]$t.Type + '|' + $(if ($t.Type -eq 'file') { $t.Item.Path } elseif ($t.Type -eq 'cl') { $t.Name } else { [string]$t.Path + [string]$t.Cl }) }
-    $tv.BeginUpdate()
+    $script:InBuild = $true; $tv.BeginUpdate()
     $tv.Nodes.Clear()
     $set = Pending-Set $script:Pending
     $names = @('default') + @($script:CLs | ForEach-Object { $_.name })
@@ -500,21 +500,23 @@ function Build-Tree {
     foreach ($cn in $tv.Nodes) {
         if ($keepSel -eq ('cl|' + $cn.Tag.Name)) { $tv.SelectedNode = $cn }
         foreach ($x in $cn.Nodes) {
-            if ($x.Tag.Type -eq 'shelf') { $x.Collapse() }
+            if ($x.Tag.Type -eq 'shelf') { if ($script:OpenShelves.Contains([string]$x.Tag.Shelf.Id)) { $x.Expand() } else { $x.Collapse() } }
             if ($x.Tag.Type -eq 'file') {
                 if ($keepSel -eq ('file|' + $x.Tag.Item.Path)) { $tv.SelectedNode = $x }
             }
         }
     }
     if ($tv.Nodes.Count -gt 0) { $tv.Nodes[0].EnsureVisible() }
-    $tv.EndUpdate()
+    $tv.EndUpdate(); $script:InBuild = $false
 }
 
 $script:Shelves = @(); $script:ShelfMap = @{}
+$script:OpenShelves = New-Object 'System.Collections.Generic.HashSet[string]' 
 # Local shelves + last known Diversion shelves, grouped by changelist (creates missing changelists)
 function Load-Shelves {
     $script:Shelves = @(@(Get-LocalShelves) + @(Read-DvShelfCache))
     $script:ShelfMap = Map-Shelves $script:Shelves
+    Queue-ShelfFiles
 }
 function Apply-DvShelves($r) {
     if ($r.Code -ne 0) { return }
@@ -522,24 +524,47 @@ function Apply-DvShelves($r) {
     Save-DvShelfCache $list
     Load-Shelves; Build-Tree
 }
-# Unshelve = copy back, then the files go to the shelf's changelist
-# $only: paths of the selected shelved files (local shelves; empty = whole shelf)
+# Diversion shelves whose file list is not known yet: `dv shelf show` in the background, one shelf
+# at a time (read-only, works offline); each shelf tried once per session
+$script:ShelfQueue = New-Object System.Collections.Queue; $script:ShelfFetching = ''
+$script:ShelfTried = New-Object 'System.Collections.Generic.HashSet[string]'
+function Queue-ShelfFiles {
+    if (-not $script:Root) { return }
+    foreach ($sh in @($script:Shelves)) {
+        if ($sh.Local -or $sh.Count -ge 0 -or -not $script:ShelfTried.Add([string]$sh.Id)) { continue }
+        $script:ShelfQueue.Enqueue([string]$sh.Id)
+    }
+    Next-ShelfFiles
+}
+function Next-ShelfFiles {
+    if ($script:ShelfFetching -or $script:ShelfQueue.Count -eq 0) { return }
+    $script:ShelfFetching = [string]$script:ShelfQueue.Dequeue()
+    Start-DvAsync @('shelf', 'show', $script:ShelfFetching) 'Apply-ShelfFiles' $true $true
+}
+function Apply-ShelfFiles($r) {
+    $id = $script:ShelfFetching; $script:ShelfFetching = ''
+    if ($r.Code -eq 0 -and $id) { Save-ShelfFiles $id (Parse-Status $r.Lines) }
+    if ($script:ShelfQueue.Count -eq 0) { Load-Shelves; Build-Tree } else { Next-ShelfFiles }
+}
+# Unshelve into a changelist ($cl: the shelf's own, or any other). $only: some of its files.
+# Diversion shelves go online for this only, then back offline. Asks only when it would overwrite
+# files you have changed.
 function Do-Unshelve($sh, [string]$cl, [string[]]$only) {
+    if (-not $cl) { $cl = 'default' }
+    $files = @($sh.Files); if ($only) { $files = @($files | Where-Object { $only -icontains $_.Path }) }
+    $mine = @($files | Where-Object { $script:PendingByPath.ContainsKey($_.Path) } | ForEach-Object { $_.Path })
+    if ($mine.Count) {
+        $list = ($mine | Select-Object -First 12) -join "`r`n"; if ($mine.Count -gt 12) { $list += "`r`n... and " + ($mine.Count - 12) + " more" }
+        if (-not (Ask-YesNo ("These " + $mine.Count + " file(s) have your own changes; unshelving overwrites them:`r`n`r`n" + $list) 'Unshelve')) { return }
+    }
+    $script:UnSh = $sh; $script:UnOnly = $only; $script:UnCl = $cl; $script:UnDone = $null
     if ($sh.Local) {
-        $files = @($sh.Files); if ($only) { $files = @($files | Where-Object { $only -icontains $_.Path }) }
-        if (-not (Ask-YesNo ("Unshelve " + $(if ($only) { $files.Count + " selected file(s) of '" } else { "'" }) + $sh.Id + "'" + $(if ($only) { '' } else { ' (' + $sh.Count + ' file(s))' }) + " into '" + $cl + "'?`r`nOverwrites those files in your workspace. Shelf kept. Close Unreal first.") 'Unshelve')) { return }
-        $script:UnOnly = $only; $script:UnFiles = $files
-        Run-Busy {
-            Apply-LocalShelf $sh.Id $script:UnOnly
-            if ($cl -and $cl -ine 'default') { Move-ToCL $cl $script:UnFiles }
-        } 'Unshelving'
+        Run-Busy { Apply-LocalShelf $script:UnSh.Id $script:UnOnly; $script:UnDone = $files } 'Unshelving'
     } else {
         if (-not (Ensure-Online 'Unshelve')) { Back-Offline; return }
-        try {
-            if (-not (Ask-YesNo ("Unshelve Diversion shelf '" + $sh.Name + "'? Shelf kept.") 'Unshelve')) { return }
-            Run-Busy { Apply-Shelf $sh.Id } 'Unshelving'
-        } finally { Back-Offline }
+        try { Run-Busy { $script:UnDone = Apply-DvShelf $script:UnSh $script:UnOnly } 'Unshelving' } finally { Back-Offline }
     }
+    if ($script:UnDone -and $cl -ine 'default') { Run-Busy { Move-ToCL $script:UnCl @($script:UnDone) } }
     Refresh-All
 }
 function Do-DeleteShelf($sh) {
@@ -874,24 +899,21 @@ function Do-Submit {
     Refresh-All
 }
 
+# Shelve = a Diversion shelf (team-visible) attached to the changelist: the selected files, else the
+# changelist's files. Goes online for this only, then back offline.
 function Do-Shelve {
     $name = Selected-CL
-    if ($script:Offline) {
-        $items = Get-CLItems $script:Pending $name
-        if ($items.Count -eq 0) { [void][System.Windows.Forms.MessageBox]::Show($form, "Changelist '" + $name + "' has no pending file.", 'Shelve'); return }
-        $a = [System.Windows.Forms.MessageBox]::Show($form, "Shelve " + $items.Count + " file(s)`r`n`r`nYes: local (this PC only)`r`nNo: Diversion (uploaded to the repo)", 'Shelve', 'YesNoCancel', 'Question')
-        if ($a -eq 'Cancel') { return }
-        if ($a -eq 'Yes') { Run-Busy { [void](Shelve-Local $name $items $name) } 'Shelving'; Refresh-All; return }
-        if (-not (Ensure-Online 'Shelve')) { Back-Offline; return }
-    }
-    elseif (-not (Refresh-Now)) { return }
+    $paths = @(Target-Items | ForEach-Object { $_.Path })
+    if ($paths.Count -eq 0) { [void][System.Windows.Forms.MessageBox]::Show($form, "Changelist '" + $name + "' has no pending file.", 'Shelve'); return }
+    if (-not (Ensure-Online 'Shelve')) { Back-Offline; return }
     try {
-        $items = Get-CLItems $script:Pending $name
-        if ($items.Count -eq 0) { [void][System.Windows.Forms.MessageBox]::Show($form, "Changelist '" + $name + "' has no pending file.", 'Shelve'); return }
-        $r = Show-Dialog ("Shelve '" + $name + "'") 'Shelf name:' ($name + '_' + (Get-Date -Format 'yyyyMMdd-HHmm')) $null $null
-        if (-not $r -or -not $r.Name) { return }
-        Run-Busy { [void](Shelve-Items $r.Name $items) }
-    } finally { Back-Offline; if ($script:WasBack) { Refresh-All } }
+        # Diversion's own list once synced (same paths)
+        $items = @($script:Pending | Where-Object { $paths -icontains $_.Path })
+        if ($items.Count -eq 0) { [void][System.Windows.Forms.MessageBox]::Show($form, 'Diversion lists none of these files as changed.', 'Shelve'); return }
+        $script:ShName = $name + '_' + (Get-Date -Format 'yyyyMMdd-HHmm'); $script:ShItems = $items
+        Run-Busy { [void](Shelve-Items $script:ShName $script:ShItems) } 'Shelving'
+    } finally { Back-Offline }
+    Refresh-All
 }
 
 function Do-Revert {
@@ -899,7 +921,7 @@ function Do-Revert {
     if ($items.Count -eq 0) { return }
     $list = (@($items | Select-Object -First 15 | ForEach-Object { (Kind-Letter $_.Kind) + '  ' + $_.Path }) -join "`r`n")
     if ($items.Count -gt 15) { $list += "`r`n... and " + ($items.Count - 15) + " more" }
-    $q = "Discard local changes of " + $items.Count + " path(s)?`r`n(A backup shelf is created first; new files are skipped.)`r`nClose Unreal before reverting.`r`n`r`n" + $list
+    $q = "Discard local changes of " + $items.Count + " path(s)?`r`n(Your versions are copied to .dvcl\revert-backup on this PC; new files are skipped.)`r`n`r`n" + $list
     if (-not (Ask-YesNo $q 'Revert')) { return }
     $prefix = Selected-CL
     if (-not (Ensure-Online 'Revert')) { Back-Offline; return }
@@ -1580,8 +1602,8 @@ $watchTimer.Add_Tick({
 [void]$tool.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
 [void](Add-Btn 'New' 'New changelist; selected files move into it (Ctrl+N)' { [void](Do-NewCL (Target-Items-IfChecked)) })
 [void](Add-Btn 'Submit...' 'Submit the selected changelist (Ctrl+Enter)' { Do-Submit })
-[void](Add-Btn 'Shelve...' 'Shelve the selected changelist to the cloud, workspace untouched' { Do-Shelve })
-[void](Add-Btn 'Revert...' 'Discard local changes of the selected files (backup shelf first)' { Do-Revert })
+[void](Add-Btn 'Shelve' 'Shelve the selected files or changelist to Diversion (team-visible), workspace untouched' { Do-Shelve })
+[void](Add-Btn 'Revert...' 'Discard local changes of the selected files (your versions copied to .dvcl\revert-backup)' { Do-Revert })
 [void](Add-Btn 'Shelves' 'List, unshelve or delete shelves' { Do-Shelves })
 [void](Add-Btn 'Locks' 'Files locked in this repository' { Do-ShowLocks })
 [void]$tool.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
@@ -1614,8 +1636,23 @@ function Target-Items-IfChecked {
 $tv.Add_NodeMouseDoubleClick({ param($s, $e) if ($e.Node.Tag.Type -eq 'file') { $tv.SelectedNode = $e.Node; Do-ShowInExplorer } elseif ($e.Node.Tag.Type -eq 'cl') { $tv.SelectedNode = $e.Node; Do-EditDesc } })
 
 # Drag files onto a changelist (or onto a file of it)
+$tv.Add_AfterExpand({ param($s, $e) if (-not $script:InBuild -and $e.Node.Tag.Type -eq 'shelf') { [void]$script:OpenShelves.Add([string]$e.Node.Tag.Shelf.Id) } })
+$tv.Add_AfterCollapse({ param($s, $e) if (-not $script:InBuild -and $e.Node.Tag.Type -eq 'shelf') { [void]$script:OpenShelves.Remove([string]$e.Node.Tag.Shelf.Id) } })
+$script:DragShelf = $null
 $tv.Add_ItemDrag({
     param($s, $e)
+    if ($e.Item.Tag.Type -in 'shelf', 'shelffile') {
+        # a shelf, or shelved files (the selected ones if this one is selected), onto a changelist = unshelve there
+        $shn = $(if ($e.Item.Tag.Type -eq 'shelf') { $e.Item } else { $e.Item.Parent })
+        $only = $null
+        if ($e.Item.Tag.Type -eq 'shelffile') {
+            if (Is-Sel $e.Item) { $only = @(Sel-ShelfPaths ([string]$shn.Tag.Shelf.Id)) } else { $only = @($e.Item.Tag.Path) }
+            if ($only.Count -ge @($shn.Tag.Shelf.Files).Count) { $only = $null }
+        }
+        $script:DragShelf = @{ Shelf = $shn.Tag.Shelf; Only = $only }
+        try { [void]$tv.DoDragDrop('dvcl', [System.Windows.Forms.DragDropEffects]'Move, Link') } finally { $script:DragShelf = $null }
+        return
+    }
     if ($e.Item.Tag.Type -ne 'file') { return }
     # dragging a file outside the selection drags it alone (and selects it), like Explorer
     if (-not (Is-Sel $e.Item)) { Select-Click $e.Item ([System.Windows.Forms.Keys]::None) }
@@ -1626,12 +1663,13 @@ $tv.Add_DragOver({
     param($s, $e)
     $pt = $tv.PointToClient((New-Object System.Drawing.Point($e.X, $e.Y)))
     $n = $tv.GetNodeAt($pt)
-    if ($n -and $script:DragItems) { $tv.SelectedNode = $n; $e.Effect = [System.Windows.Forms.DragDropEffects]::Move } else { $e.Effect = [System.Windows.Forms.DragDropEffects]::None }
+    if ($n -and ($script:DragItems -or ($script:DragShelf -and $n.Tag.Type -eq 'cl'))) { $tv.SelectedNode = $n; $e.Effect = [System.Windows.Forms.DragDropEffects]::Move } else { $e.Effect = [System.Windows.Forms.DragDropEffects]::None }
 })
 $tv.Add_DragDrop({
     param($s, $e)
     $pt = $tv.PointToClient((New-Object System.Drawing.Point($e.X, $e.Y)))
     $n = $tv.GetNodeAt($pt)
+    if ($n -and $script:DragShelf -and $n.Tag.Type -eq 'cl') { $d = $script:DragShelf; Do-Unshelve $d.Shelf ([string]$n.Tag.Name) $d.Only; return }
     if (-not $n -or -not $script:DragItems) { return }
     $to = $n.Tag.Name; if ($n.Tag.Type -ne 'cl') { $to = $n.Tag.Cl }
     Do-Move $to $script:DragItems
@@ -1720,10 +1758,18 @@ $tv.Add_NodeMouseClick({
         $script:MenuShelf = $e.Node.Tag; if ($e.Node.Tag.Type -eq 'shelffile') { $script:MenuShelf = $e.Node.Parent.Tag }
         $script:MenuShelfPath = $(if ($e.Node.Tag.Type -eq 'shelffile') { $e.Node.Tag.Path } else { '' })
         $script:MenuShelfSel = @(Sel-ShelfPaths ([string]$script:MenuShelf.Shelf.Id))
-        if ($script:MenuShelf.Shelf.Local -and $script:MenuShelfSel.Count -gt 0 -and $script:MenuShelfSel.Count -lt @($script:MenuShelf.Shelf.Files).Count) {
-            [void](Add-MenuItem $menu ("Unshelve " + $script:MenuShelfSel.Count + " selected file(s) into '" + $script:MenuShelf.Cl + "'...") { Do-Unshelve $script:MenuShelf.Shelf $script:MenuShelf.Cl $script:MenuShelfSel })
+        $nf = @($script:MenuShelf.Shelf.Files).Count
+        $part = ($script:MenuShelfSel.Count -gt 0 -and $script:MenuShelfSel.Count -lt $nf)
+        $script:MenuUnOnly = $(if ($part) { $script:MenuShelfSel } else { $null })
+        $un = Add-MenuItem $menu ($(if ($part) { 'Unshelve ' + $script:MenuShelfSel.Count + ' selected file(s) into' } else { 'Unshelve' + $(if ($nf) { ' ' + $nf + ' file(s)' } else { '' }) + ' into' })) $null
+        # the shelf's own changelist first, then default, then the others
+        $targets = @($script:MenuShelf.Cl) + @('default') + @($script:CLs | ForEach-Object { $_.name })
+        $seen = @{}
+        foreach ($t in $targets) {
+            if (-not $t -or $seen.ContainsKey($t.ToLowerInvariant())) { continue }; $seen[$t.ToLowerInvariant()] = 1
+            $mi = Add-MenuItem $un (CL-MenuText $t) $null; $mi.Tag = $t
+            $mi.Add_Click({ param($src, $ev) Do-Unshelve $script:MenuShelf.Shelf ([string]$src.Tag) $script:MenuUnOnly })
         }
-        [void](Add-MenuItem $menu ("Unshelve " + $(if ($script:MenuShelf.Shelf.Local) { 'all' } else { 'whole shelf' }) + " into '" + $script:MenuShelf.Cl + "'...") { Do-Unshelve $script:MenuShelf.Shelf $script:MenuShelf.Cl })
         # shelved files still pending elsewhere (e.g. in default): bring them into this changelist
         $script:MenuShelfPending = @(@($script:MenuShelf.Shelf.Files) | ForEach-Object { $script:PendingByPath[$_.Path] } | Where-Object { $_ -and -not ((Owner-Of $_.Path) -and (Owner-Of $_.Path).name -ieq $script:MenuShelf.Cl) })
         [void](Add-MenuItem $menu ("Move its " + $script:MenuShelfPending.Count + " pending file(s) into '" + $script:MenuShelf.Cl + "'") { Do-Move $script:MenuShelf.Cl $script:MenuShelfPending } ($script:MenuShelfPending.Count -gt 0 -and $script:MenuShelf.Cl -ine 'default'))
@@ -1931,6 +1977,12 @@ function Run-GuiSelfCheck {
         C 'pending tree: default + changelists' ($clNodes.Count -eq (1 + $script:CLs.Count)) ([string]$clNodes.Count)
         $shNodes = 0; foreach ($cn in $tv.Nodes) { foreach ($x in $cn.Nodes) { if ($x.Tag.Type -eq 'shelf') { $shNodes++ } } }
         C 'shelves shown under their changelists' ($shNodes -eq @($script:Shelves).Count) ("" + $shNodes + ' / ' + @($script:Shelves).Count)
+        $dvs = @($script:Shelves | Where-Object { -not $_.Local })
+        if ($dvs.Count) {
+            C 'shelves: Diversion shelves list their files (read offline, kept)' (@($dvs | Where-Object { $_.Count -lt 1 }).Count -eq 0) ((@($dvs | ForEach-Object { $_.Name + ':' + $_.Count }) -join ', '))
+            $shFileNodes = 0; foreach ($cn in $tv.Nodes) { foreach ($x in $cn.Nodes) { if ($x.Tag.Type -eq 'shelf' -and -not $x.Tag.Shelf.Local) { $shFileNodes += $x.Nodes.Count } } }
+            C 'shelves: their files are in the tree' ($shFileNodes -eq (($dvs | Measure-Object -Property Count -Sum).Sum)) ([string]$shFileNodes)
+        } else { [void]$r.Add('SKIP  Diversion shelf files (no Diversion shelf)') }
         [void]$r.Add('INFO  shelves: ' + (@($script:Shelves | ForEach-Object { $(if ($_.Local) { $_.Id } else { $_.Name }) + ' -> ' + (Shelf-ClName $_) }) -join ', '))
         $files = File-Nodes
         C 'pending tree: all pending files shown' ($files.Count -eq $script:Pending.Count) ("" + $files.Count + ' / ' + $script:Pending.Count)

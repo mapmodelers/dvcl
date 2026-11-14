@@ -2,6 +2,13 @@
 
 Versions follow [semver](https://semver.org). Tags: `vX.Y.Z`.
 
+## 0.13.0 - 2026-11-14
+
+- Shelves like changelists: every shelf sits under its changelist with its files listed, also offline (read once, kept). Unshelve into any changelist: right-click Unshelve into, or drag the shelf or some of its files onto a changelist; selected files only works for Diversion shelves too (the shelf's other files are left as they were).
+- Shelve = Diversion shelf of the selected files or the changelist, no name to type. Diversion needs sync for it: on for this only, then off again. Same for revert and unshelve; nothing else is sent or fetched.
+- Revert: no backup shelf any more (your versions are copied to .dvcl\revert-backup on this PC). Files Unreal (or any program) holds open are not touched and are reported; a file Diversion could not write is reported and stays pending (it was shown as reverted).
+- Unshelve asks only when it would overwrite your own changes.
+
 ## 0.12.0 - 2026-11-13
 
 - Submit of any size: all pending files = one Diversion commit; otherwise, beyond the command-line limit, several commits "(part i/n)", said in the output. No more "command line too long".

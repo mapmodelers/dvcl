@@ -40,9 +40,11 @@ Run inside a Diversion workspace (any subfolder).
   dvcl delete <cl>              delete <cl> (its files go back to default)
   dvcl submit <cl> [-y]         commit ONLY <cl>'s files with its description, then close it
   dvcl submit default "msg"     commit the unassigned files
-  dvcl revert <cl> [-y]         discard <cl>'s local changes (backup shelf made first)
-  dvcl shelve <cl>              cloud shelf of <cl>'s files, workspace untouched
-  dvcl shelves                  list shelves          dvcl unshelve <shelf>   apply one (kept)
+  dvcl revert <cl> [-y]         discard <cl>'s local changes (your versions copied to .dvcl\revert-backup)
+  dvcl shelve <cl>              Diversion shelf of <cl>'s files, workspace untouched
+  dvcl shelves                  list shelves and their files
+  dvcl unshelve <shelf> [<cl>]  apply one (kept) into <cl> (default: the shelf's changelist)
+  (revert / shelve / unshelve need Diversion sync: on for that command only, then off again)
   dvcl get                      get latest: pull the branch's new commits into the workspace
   dvcl sync on|off              go online (resume sync) / offline (pause sync). Offline, dvcl finds
                                 your changes by scanning the folder; shelve makes a local copy
@@ -240,6 +242,30 @@ function Run-SelfTest {
             T "local unshelve restores the shelved content" ([System.IO.File]::ReadAllText((Full-Path 'Game/Content/A.uasset')) -eq 'a2-longer' -and [System.IO.File]::ReadAllText((Full-Path $other)) -ne 'changed-other')
             Delete-LocalShelf $id
             T "local shelf deleted" (@(Get-LocalShelves).Count -eq 0)
+            # ---- Diversion shelves, revert (dv simulated)
+            T "kinds: letters kept" ((Kind-Letter 'M') -eq 'M' -and (Kind-Letter 'a') -eq 'A' -and (Kind-Letter 'Modified') -eq 'M' -and (Kind-Letter 'New') -eq 'A')
+            $sfl = Parse-Status @('Shelf mansion_20261108-0755 contains 3 change(s):', '', 'Modified:', "`t Game/S/a.uasset", "`t Game/S/b.uasset", 'New:', "`t Game/S/n.uasset")
+            Save-ShelfFiles 'dv.shelf.t1' $sfl; $rb = Read-ShelfFiles 'dv.shelf.t1'
+            T "shelf files: dv shelf show parsed and kept" ($rb.Count -eq 3 -and $rb[0].Kind -eq 'M' -and $rb[2].Kind -eq 'A' -and $rb[2].Path -eq 'Game/S/n.uasset' -and $null -eq (Read-ShelfFiles 'dv.shelf.none'))
+            T "dv errors: unwritten files found" (((@(Unwritten @('Restored x', 'Last error: Cannot write to Game/S/a.uasset - file is locked by Unreal', 'Last error: Cannot write to .diversion/u/P/.dv.tmp.X - file is open'))) -join ',') -eq 'Game/S/a.uasset')
+            MkF 'Game/S/a.uasset' 'mine-a'; MkF 'Game/S/b.uasset' 'mine-b'
+            $lk = [System.IO.File]::Open((Full-Path 'Game/S/b.uasset'), 'Open', 'ReadWrite', 'None')
+            $l1 = Test-Locked 'Game/S/b.uasset'; $lk.Close()
+            T "open file seen as locked, closed one not" ($l1 -and -not (Test-Locked 'Game/S/b.uasset') -and -not (Test-Locked 'Game/S/none.uasset'))
+            # unshelve a Diversion shelf partly: dv applies all three, dvcl puts the other two back
+            $origApply = ${function:Apply-Shelf}
+            Set-Item function:script:Apply-Shelf { param($x) MkF 'Game/S/a.uasset' 'shelf-a'; MkF 'Game/S/b.uasset' 'shelf-b'; MkF 'Game/S/n.uasset' 'shelf-n' }
+            try { $done = Apply-DvShelf ([pscustomobject]@{ Id = 'dv.shelf.t1' }) @('Game/S/a.uasset') } finally { Set-Item function:script:Apply-Shelf $origApply }
+            T "Diversion shelf: selected files only, the others left as they were" (@($done).Count -eq 1 -and [System.IO.File]::ReadAllText((Full-Path 'Game/S/a.uasset')) -eq 'shelf-a' -and [System.IO.File]::ReadAllText((Full-Path 'Game/S/b.uasset')) -eq 'mine-b' -and -not (Test-Path -LiteralPath (Full-Path 'Game/S/n.uasset')))
+            # revert: dv restore simulated; one file held open -> not touched, reported, stays pending
+            MkF 'Game/S/a.uasset' 'mine-a2'
+            $origDv = ${function:Invoke-Dv}
+            Set-Item function:script:Invoke-Dv { param([string[]]$a, [bool]$q) if ($a[0] -eq 'restore') { MkF $a[1] ('base-' + $a[1]) }; return [pscustomobject]@{ Code = 0; Lines = @('Restored') } }
+            $lk = [System.IO.File]::Open((Full-Path 'Game/S/b.uasset'), 'Open', 'ReadWrite', 'None')
+            $msg = ''
+            try { [void](Revert-Items 'x' @([pscustomobject]@{ Kind = 'Modified'; Path = 'Game/S/a.uasset' }, [pscustomobject]@{ Kind = 'Modified'; Path = 'Game/S/b.uasset' })) } catch { $msg = [string]$_ } finally { $lk.Close(); Set-Item function:script:Invoke-Dv $origDv }
+            $bk = @(Get-ChildItem -LiteralPath (Full-Path '.dvcl/revert-backup') -Directory)
+            T "revert: done where possible, open file reported (not touched), your version copied" ([System.IO.File]::ReadAllText((Full-Path 'Game/S/a.uasset')) -eq 'base-Game/S/a.uasset' -and [System.IO.File]::ReadAllText((Full-Path 'Game/S/b.uasset')) -eq 'mine-b' -and $msg -like '*not reverted*' -and $bk.Count -eq 1 -and [System.IO.File]::ReadAllText((Join-Path $bk[0].FullName 'Game/S/a.uasset')) -eq 'mine-a2')
             Save-LastHead 'main' 'dv.commit.7'; $h = Read-LastHead
             T "launch cache: branch + commit" ($h.Branch -eq 'main' -and $h.Commit -eq 'dv.commit.7')
             Save-DepotCache 'dv.commit.7' ([string[]]@('A/', 'A/b.uasset'))
@@ -263,6 +289,13 @@ function Current-Pending {
     $st = Get-Pending
     if ($st.Paused) { $st.Files = Get-OfflinePending }
     return $st
+}
+
+# Diversion exchanges files only with sync on: on for this command only, then back off
+function With-Sync([scriptblock]$sb) {
+    $was = (Test-OfflineFlag) -or (Get-Pending $false).Paused
+    if ($was) { Set-Sync $true }
+    try { & $sb } finally { if ($was) { Set-Sync $false } }
 }
 
 # ---------------------------------------------------------------- main
@@ -358,32 +391,33 @@ try {
         'revert' {
             $name = $argv[0]; if (-not $name) { Fail "usage: dvcl revert <cl>" }
             if ($name -ine 'default' -and -not (Find-CL $name)) { Fail ("no changelist '" + $name + "'") }
-            $st = Get-Pending
-            if ($st.Paused -or (Test-OfflineFlag)) { Fail "offline: revert needs Diversion online. Run: dvcl sync on" }
-            $items = Get-CLItems $st.Files $name
-            if ($items.Count -eq 0) { Fail "no pending files in this changelist" }
-            Say ("Revert '" + $name + "' : local changes will be DISCARDED (backup shelf first)") 'Cyan'
-            foreach ($p in $items) { Say ("   {0}  {1}" -f (Kind-Letter $p.Kind), $p.Path) }
-            Confirm-Or-Exit ("Revert these " + $items.Count + " path(s)? Close Unreal first.") $yes
-            [void](Revert-Items $name $items)
+            $pre = Get-CLItems (Current-Pending).Files $name
+            if ($pre.Count -eq 0) { Fail "no pending files in this changelist" }
+            Say ("Revert '" + $name + "' : local changes will be DISCARDED (your versions copied to .dvcl\revert-backup)") 'Cyan'
+            foreach ($p in $pre) { Say ("   {0}  {1}" -f (Kind-Letter $p.Kind), $p.Path) }
+            Confirm-Or-Exit ("Revert these " + $pre.Count + " path(s)?") $yes
+            With-Sync { $items = Get-CLItems (Get-Pending).Files $name; [void](Revert-Items $name $items) }
         }
 
         'shelve' {
             $name = $argv[0]; if (-not $name) { Fail "usage: dvcl shelve <cl>" }
-            if (Test-OfflineFlag) {
-                [void](Shelve-Local $name (Get-CLItems (Get-OfflinePending) $name))
-            } else {
-                $st = Get-Pending
-                if ($st.Paused) { [void](Shelve-Local $name (Get-CLItems (Get-OfflinePending) $name)) }
-                else { [void](Shelve-Items ($name + "_" + (Get-Date -Format 'yyyyMMdd-HHmm')) (Get-CLItems $st.Files $name)) }
-            }
+            if ((Get-CLItems (Current-Pending).Files $name).Count -eq 0) { Fail "no pending files in this changelist" }
+            With-Sync { [void](Shelve-Items ($name + "_" + (Get-Date -Format 'yyyyMMdd-HHmm')) (Get-CLItems (Get-Pending).Files $name)) }
         }
 
         'shelves' {
-            $sh = @(Get-LocalShelves)
-            if (-not (Test-OfflineFlag)) { $sh += @(Get-Shelves) }
+            # dv shelf / dv shelf show work with sync paused
+            $sh = @(Get-LocalShelves) + @(Get-Shelves)
             if ($sh.Count -eq 0) { Say "No shelves." }
-            foreach ($s in $sh) { $w = 'diversion'; if ($s.Local) { $w = 'local    '; Say ("  " + $w + "  " + $s.Id + "   (" + $s.Created + ")") } else { Say ("  " + $w + "  " + $s.Name + "   (" + $s.Created + ")") } }
+            foreach ($s in $sh) {
+                if ($s.Local) { Say ("  local      " + $s.Id + "   (" + $s.Created + ")  -> " + (Shelf-ClName $s)) 'Cyan' }
+                else {
+                    $fl = Read-ShelfFiles $s.Id; if ($null -eq $fl) { $fl = Fetch-ShelfFiles $s.Id }
+                    $s.Files = @($fl)
+                    Say ("  diversion  " + $s.Name + "   (" + $s.Created + ")  -> " + (Shelf-ClName $s)) 'Cyan'
+                }
+                foreach ($f in @($s.Files)) { Say ("      {0}  {1}" -f (Kind-Letter $f.Kind), $f.Path) }
+            }
         }
 
         'get' { Get-Latest }
@@ -425,8 +459,18 @@ try {
         }
 
         'unshelve' {
-            if (-not $argv[0]) { Fail "usage: dvcl unshelve <shelf name or id>" }
-            if (@(Get-LocalShelves | Where-Object { $_.Id -ieq $argv[0] }).Count) { Apply-LocalShelf $argv[0] } else { Apply-Shelf $argv[0] }
+            if (-not $argv[0]) { Fail "usage: dvcl unshelve <shelf name or id> [<cl>]" }
+            $loc = @(Get-LocalShelves | Where-Object { $_.Id -ieq $argv[0] })
+            if ($loc.Count) { $sh = $loc[0]; Apply-LocalShelf $sh.Id; $done = @($sh.Files) }
+            else {
+                $sh = @(Get-Shelves | Where-Object { $_.Id -ieq $argv[0] -or $_.Name -ieq $argv[0] })
+                if ($sh.Count -eq 0) { Fail ("no shelf '" + $argv[0] + "' (dvcl shelves)") }
+                $sh = $sh[0]; $script:UnDone = $null
+                With-Sync { $script:UnDone = Apply-DvShelf $sh $null }
+                $done = @($script:UnDone)
+            }
+            $to = $(if ($argv[1]) { [string]$argv[1] } else { Shelf-ClName $sh }); $tc = Find-CL $to; if ($tc) { $to = $tc.name }
+            if ($to -ine 'default' -and $done.Count) { Move-ToCL $to $done }
         }
 
         default { Write-Host ("Unknown command '" + $cmd + "'.") -ForegroundColor Red; Show-Help; exit 1 }

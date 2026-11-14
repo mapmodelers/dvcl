@@ -327,7 +327,7 @@ function Parse-ShowFiles([string[]]$lines) {
 }
 
 function Kind-Letter([string]$k) {
-    switch -regex ($k) { '^New|^Add' { 'A' } '^Mod|^Chang' { 'M' } '^Del|^Rem' { 'D' } '^Ren|^Mov' { 'R' } '^Conf' { '!' } default { '?' } }
+    switch -regex ($k) { '^[AMDR!]$' { $k.ToUpperInvariant() } '^New|^Add' { 'A' } '^Mod|^Chang' { 'M' } '^Del|^Rem' { 'D' } '^Ren|^Mov' { 'R' } '^Conf' { '!' } default { '?' } }
 }
 
 # ---------------------------------------------------------------- changelist store
@@ -656,33 +656,128 @@ function Submit-Items([string]$clName, $items, [string]$desc, $pending = $null) 
     Say ("Submitted " + @($items).Count + " path(s) from '" + $clName + "': " + $desc) 'Green'
 }
 
+# Creates a Diversion shelf (sync must be on). Its file list is kept at once (.dvcl\dv-shelf-files).
 function Shelve-Items([string]$shelf, $items) {
     if (@($items).Count -eq 0) { Fail "nothing to shelve" }
     if ($shelf.Length -gt 60) { $shelf = $shelf.Substring(0, 60) }
     $r = Invoke-Dv (@('shelf', 'create', $shelf) + (Files-For-Commit $items) + @('--no-reset'))
     if ($r.Code -ne 0) { Fail ("dv shelf create failed (exit " + $r.Code + "): " + ($r.Lines -join ' ')) }
+    $id = ''; foreach ($l in $r.Lines) { if ($l -match '(dv\.shelf\.[0-9A-Za-z-]+)') { $id = $Matches[1] } }
+    if ($id) { Save-ShelfFiles $id $items }
     Say ("Shelved " + @($items).Count + " path(s) as '" + $shelf + "'. Workspace unchanged.") 'Green'
     return $shelf
 }
 
-# Discards local changes (dv restore from the workspace base commit) after a backup shelf.
-# New files are skipped (nothing to restore). Returns the backup shelf name.
+# A file another program holds open (Unreal keeps loaded assets open): cannot be overwritten now
+function Test-Locked([string]$rel) {
+    $f = Full-Path $rel
+    if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { return $false }
+    try { $st = [System.IO.File]::Open($f, 'Open', 'ReadWrite', 'None'); $st.Close(); return $false } catch { return $true }
+}
+# Paths dv reported it could not write ("Cannot write to <path> - file is locked ...")
+function Unwritten($lines) {
+    $h = @{}
+    foreach ($l in @($lines)) { if ([string]$l -match 'Cannot write to (.+?) - ') { $p = Norm $Matches[1]; if ($p -notlike '.diversion*') { $h[$p.ToLowerInvariant()] = $p } } }
+    return @($h.Values)
+}
+function File-Hash([string]$rel) { $f = Full-Path $rel; if (Test-Path -LiteralPath $f -PathType Leaf) { return (Get-FileHash -LiteralPath $f -Algorithm MD5).Hash }; return '' }
+
+# Your version of each file, copied before a revert: .dvcl\revert-backup\<time>\<path> (last 10 kept)
+function Backup-Local($items) {
+    $base = [System.IO.Path]::Combine($script:Root, '.dvcl', 'revert-backup')
+    $dir = Join-Path $base (Get-Date -Format 'yyyyMMdd-HHmmss')
+    foreach ($p in @($items)) {
+        $src = Full-Path $p.Path
+        if (-not (Test-Path -LiteralPath $src -PathType Leaf)) { continue }
+        $dst = [System.IO.Path]::Combine([string[]](@($dir) + ($p.Path -split '/')))
+        [void][System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($dst))
+        Copy-Item -LiteralPath $src -Destination $dst -Force
+    }
+    $old = @(Get-ChildItem -LiteralPath $base -Directory -ErrorAction SilentlyContinue | Sort-Object Name -Descending | Select-Object -Skip 10)
+    foreach ($o in $old) { Remove-Item -LiteralPath $o.FullName -Recurse -Force -ErrorAction SilentlyContinue }
+    return $dir
+}
+
+# Discards local changes (dv restore from the workspace base commit). Sync must be on. Nothing else
+# goes to Diversion: your versions are copied to .dvcl\revert-backup first (this PC only).
+# New files are skipped (nothing to restore). Files another program holds open are not touched and
+# are reported; any file dv could not write stays pending. Returns the backup folder.
 function Revert-Items([string]$prefix, $items) {
     $toRestore = @($items | Where-Object { (Kind-Letter $_.Kind) -ne 'A' })
     foreach ($p in @($items | Where-Object { (Kind-Letter $_.Kind) -eq 'A' })) { Say ("   skip (new file, nothing to revert): " + $p.Path) 'Yellow' }
-    if ($toRestore.Count -eq 0) { Fail "nothing revertable (only new files)" }
-    $shelf = Shelve-Items ($prefix + "_backup_" + (Get-Date -Format 'yyyyMMdd-HHmmss')) $toRestore
-    $bad = 0
+    $locked = @($toRestore | Where-Object { Test-Locked $_.Path })
+    foreach ($p in $locked) { Say ("   NOT reverted (open in Unreal or another program): " + $p.Path) 'Red' }
+    $toRestore = @($toRestore | Where-Object { $locked -notcontains $_ })
+    if ($toRestore.Count -eq 0) { Fail $(if ($locked.Count) { "nothing reverted: close those files (in Unreal: unload or close the level/asset), then revert again" } else { "nothing revertable (only new files)" }) }
+    $dir = Backup-Local $toRestore
+    $ok = 0; $bad = New-Object System.Collections.ArrayList
     foreach ($p in $toRestore) {
+        $before = File-Hash $p.Path
         $r = Invoke-Dv @('restore', $p.Path)
-        if ($r.Code -ne 0) { $bad++; Say ("   FAILED: " + $p.Path + "  -> " + ($r.Lines -join ' ')) 'Red' }
-        else { Detach $p.Path; Say ("   reverted: " + $p.Path) }
+        $un = Unwritten $r.Lines
+        if ($r.Code -ne 0 -or $un.Count -gt 0 -or ((File-Hash $p.Path) -eq $before -and (Kind-Letter $p.Kind) -ne 'D')) {
+            [void]$bad.Add($p.Path); Say ("   NOT reverted: " + $p.Path + $(if ($un.Count) { '  (file in use)' } elseif ($r.Code -ne 0) { '  -> ' + ($r.Lines -join ' ') } else { '  (file unchanged)' })) 'Red'
+        } else { Detach $p.Path; $ok++; Say ("   reverted: " + $p.Path) }
     }
-    foreach ($c in @($script:CLs)) { if ($c.files.Count -eq 0 -and $c.name -ieq $prefix) { [void]$script:CLs.Remove($c) } }
     Save-Db
-    if ($bad -gt 0) { Fail ($bad.ToString() + " path(s) failed to revert. Backup shelf: " + $shelf) }
-    Say ("Reverted " + $toRestore.Count + " path(s). Undo: unshelve " + $shelf) 'Green'
-    return $shelf
+    Say ("Reverted " + $ok + " path(s). Your versions were copied to " + $dir) $(if ($bad.Count + $locked.Count) { 'Yellow' } else { 'Green' })
+    if ($bad.Count + $locked.Count) { Fail ([string]($bad.Count + $locked.Count) + " path(s) not reverted (listed above); they stay pending.") }
+    return $dir
+}
+
+# ---- Diversion shelf contents: `dv shelf show` (works with sync paused), kept per shelf in
+# .dvcl\dv-shelf-files\<id>.tsv (a shelf never changes)
+function Shelf-FilesFile([string]$id) { return [System.IO.Path]::Combine($script:Root, '.dvcl', 'dv-shelf-files', (($id -replace '[^\w.-]', '_') + '.tsv')) }
+function Save-ShelfFiles([string]$id, $items) {
+    $f = Shelf-FilesFile $id
+    [void][System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($f))
+    $lines = @(@($items) | ForEach-Object { (Kind-Letter $_.Kind) + "`t" + $_.Path + "`t" + [string]$_.Old })
+    [System.IO.File]::WriteAllLines($f, [string[]]$lines, $script:Utf8)
+}
+function Read-ShelfFiles([string]$id) {
+    $f = Shelf-FilesFile $id
+    if (-not (Test-Path -LiteralPath $f)) { return $null }
+    $res = New-Object System.Collections.ArrayList
+    foreach ($l in [System.IO.File]::ReadAllLines($f)) { $x = $l.Split("`t"); if ($x.Count -ge 2 -and $x[1]) { [void]$res.Add([pscustomobject]@{ Kind = $x[0]; Path = $x[1]; Old = $(if ($x.Count -gt 2 -and $x[2]) { $x[2] } else { $null }) }) } }
+    return ,$res.ToArray()
+}
+# From dv (and kept); $null when dv did not answer
+function Fetch-ShelfFiles([string]$id) {
+    $r = Invoke-Dv @('shelf', 'show', $id) $true
+    if ($r.Code -ne 0) { return $null }
+    $items = Parse-Status $r.Lines
+    Save-ShelfFiles $id $items
+    return ,$items
+}
+
+# Unshelves a Diversion shelf (sync must be on). $only: just these paths, the shelf's other files are
+# put back as they were (dv applies a whole shelf). Refuses if a file it would write is open in
+# another program. Returns the unshelved items.
+function Apply-DvShelf($sh, [string[]]$only) {
+    $files = Read-ShelfFiles $sh.Id; if ($null -eq $files) { $files = Fetch-ShelfFiles $sh.Id }
+    if ($null -eq $files) { Fail "could not read the shelf's files (dv shelf show)" }
+    $want = @($files); if ($only) { $want = @($files | Where-Object { $only -icontains $_.Path }) }
+    $locked = @($files | Where-Object { Test-Locked $_.Path } | ForEach-Object { $_.Path })
+    if ($locked.Count) { Fail ("open in Unreal or another program, close them first (nothing unshelved): " + ($locked -join ', ')) }
+    # the shelf's other files: keep their current state
+    $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ('dvcl-unshelve-' + [guid]::NewGuid().ToString('N'))
+    $keep = @($files | Where-Object { $want -notcontains $_ })
+    $absent = @{}
+    foreach ($k in $keep) {
+        $src = Full-Path $k.Path
+        if (Test-Path -LiteralPath $src -PathType Leaf) { $dst = [System.IO.Path]::Combine([string[]](@($tmp) + ($k.Path -split '/'))); [void][System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($dst)); Copy-Item -LiteralPath $src -Destination $dst -Force }
+        else { $absent[$k.Path] = 1 }
+    }
+    try {
+        Apply-Shelf $sh.Id
+        foreach ($k in $keep) {
+            $f = Full-Path $k.Path
+            if ($absent.ContainsKey($k.Path)) { if (Test-Path -LiteralPath $f -PathType Leaf) { Remove-Item -LiteralPath $f -Force } }
+            else { Copy-Item -LiteralPath ([System.IO.Path]::Combine([string[]](@($tmp) + ($k.Path -split '/')))) -Destination $f -Force }
+        }
+    } finally { if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue } }
+    if ($only) { Say ("Unshelved " + $want.Count + " of " + @($files).Count + " file(s); the others were left as they were.") 'Green' }
+    return ,$want
 }
 
 # Parses `dv shelf` output into objects { Name; Id; Created }
@@ -708,6 +803,8 @@ function Read-Shelves([string[]]$lines) {
 function Apply-Shelf([string]$shelf) {
     $r = Invoke-Dv @('shelf', 'apply', $shelf, '--keep', '-f')
     if ($r.Code -ne 0) { Fail ("dv shelf apply failed: " + ($r.Lines -join ' ')) }
+    $un = Unwritten $r.Lines
+    if ($un.Count) { Fail ("dv could not write (file in use): " + ($un -join ', ')) }
     # dv returns before the agent has rewritten the files: give it a moment so a refresh shows them
     Start-Sleep -Seconds 3
     Say ("Applied shelf '" + $shelf + "' (shelf kept).") 'Green'
@@ -1144,6 +1241,7 @@ function Read-DvShelfCache {
     if (-not (Test-Path -LiteralPath $f)) { return }
     foreach ($l in [System.IO.File]::ReadAllLines($f)) {
         $x = $l.Split("`t"); if ($x.Count -lt 2) { continue }
-        [pscustomobject]@{ Name = $x[0]; Id = $x[1]; Created = $(if ($x.Count -gt 2) { $x[2] } else { '' }); Local = $false; Count = -1; Cl = ''; Files = @() }
+        $fl = Read-ShelfFiles $x[1]
+        [pscustomobject]@{ Name = $x[0]; Id = $x[1]; Created = $(if ($x.Count -gt 2) { $x[2] } else { '' }); Local = $false; Count = $(if ($null -ne $fl) { @($fl).Count } else { -1 }); Cl = ''; Files = $(if ($null -ne $fl) { @($fl) } else { @() }) }
     }
 }
