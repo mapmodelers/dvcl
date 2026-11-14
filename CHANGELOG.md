@@ -2,6 +2,10 @@
 
 Versions follow [semver](https://semver.org). Tags: `vX.Y.Z`.
 
+## 0.13.1 - 2026-11-14
+
+- Revert / unshelve check first whether Unreal (or any program) holds a file open: if so they stop at once with the list, without going online.
+
 ## 0.13.0 - 2026-11-14
 
 - Shelves like changelists: every shelf sits under its changelist with its files listed, also offline (read once, kept). Unshelve into any changelist: right-click Unshelve into, or drag the shelf or some of its files onto a changelist; selected files only works for Diversion shelves too (the shelf's other files are left as they were).

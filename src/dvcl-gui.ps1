@@ -549,8 +549,21 @@ function Apply-ShelfFiles($r) {
 # Unshelve into a changelist ($cl: the shelf's own, or any other). $only: some of its files.
 # Diversion shelves go online for this only, then back offline. Asks only when it would overwrite
 # files you have changed.
+# Files Unreal (or another program) holds open cannot be written: say so before anything happens
+# (no going online for nothing). $true = stopped.
+function Stop-IfLocked([string[]]$paths, [string]$what) {
+    $l = @($paths | Where-Object { $_ -and (Test-Locked $_) })
+    if ($l.Count -eq 0) { return $false }
+    $list = ($l | Select-Object -First 12) -join "`r`n"; if ($l.Count -gt 12) { $list += "`r`n... and " + ($l.Count - 12) + " more" }
+    & $script:OnSay ($what + ' not done: ' + $l.Count + ' file(s) open in Unreal or another program') 'Red'
+    [void][System.Windows.Forms.MessageBox]::Show($form, ($what + " not done, nothing was changed.`r`n`r`nThese " + $l.Count + " file(s) are open in Unreal (or another program), so they cannot be written now:`r`n`r`n" + $list), $what, 'OK', 'Warning')
+    return $true
+}
+
 function Do-Unshelve($sh, [string]$cl, [string[]]$only) {
     if (-not $cl) { $cl = 'default' }
+    # a Diversion shelf is applied whole (the others are put back after): all its files get written
+    if (Stop-IfLocked @(@($sh.Files) | ForEach-Object { $_.Path } | Where-Object { $sh.Local -eq $false -or -not $only -or $only -icontains $_ }) 'Unshelve') { return }
     $files = @($sh.Files); if ($only) { $files = @($files | Where-Object { $only -icontains $_.Path }) }
     $mine = @($files | Where-Object { $script:PendingByPath.ContainsKey($_.Path) } | ForEach-Object { $_.Path })
     if ($mine.Count) {
@@ -923,6 +936,7 @@ function Do-Revert {
     if ($items.Count -gt 15) { $list += "`r`n... and " + ($items.Count - 15) + " more" }
     $q = "Discard local changes of " + $items.Count + " path(s)?`r`n(Your versions are copied to .dvcl\revert-backup on this PC; new files are skipped.)`r`n`r`n" + $list
     if (-not (Ask-YesNo $q 'Revert')) { return }
+    if (Stop-IfLocked @($items | Where-Object { (Kind-Letter $_.Kind) -ne 'A' } | ForEach-Object { $_.Path }) 'Revert') { return }
     $prefix = Selected-CL
     if (-not (Ensure-Online 'Revert')) { Back-Offline; return }
     try {
