@@ -2,6 +2,13 @@
 
 Versions follow [semver](https://semver.org). Tags: `vX.Y.Z`.
 
+## 0.15.0 - 2026-11-14
+
+- Unreal link 3: levels used as level instances (Unreal loads them as a temporary copy under another name) are let go of and the instances reload, so unshelve / revert of such a level works with Unreal open. Update once: close Unreal, ue\install.cmd, open Unreal.
+- Unreal reloads right after the files are written, before sync is paused again (shorter time with assets released).
+- ue\install.cmd finds the engine with Unreal closed too (Epic launcher list).
+- tests\diag-hold.ps1: which program holds a file, and what Unreal loaded under its name (read-only).
+
 ## 0.14.1 - 2026-11-14
 
 - Unshelve asks about overwriting before Unreal lets go of the files (answering No left them released, not reloaded). If a file stays held, Unreal takes back the ones it let go of.

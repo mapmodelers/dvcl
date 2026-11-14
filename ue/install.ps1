@@ -16,7 +16,7 @@ function Set-PluginOn([string]$file) {
     Set-Content -LiteralPath $file -Value ($j | ConvertTo-Json -Depth 6) -Encoding UTF8
 }
 
-# the engine: given, else the running editor's, else the registry's newest 5.x
+# the engine: given, else the running editor's, else the registry's / launcher's newest 5.x
 if (-not $Engine) {
     $ed = @(Get-Process UnrealEditor -ErrorAction SilentlyContinue | Where-Object { $_.Path })
     if ($ed.Count) { $Engine = Split-Path (Split-Path (Split-Path (Split-Path $ed[0].Path))) }
@@ -24,6 +24,14 @@ if (-not $Engine) {
 if (-not $Engine) {
     $k = @(Get-ChildItem 'HKLM:\SOFTWARE\EpicGames\Unreal Engine' -ErrorAction SilentlyContinue | Sort-Object PSChildName -Descending)
     foreach ($x in $k) { $d = (Get-ItemProperty $x.PSPath -ErrorAction SilentlyContinue).InstalledDirectory; if ($d) { $Engine = $d; break } }
+}
+# else the Epic launcher's list of installed engines (newest 5.x)
+if (-not $Engine) {
+    $dat = Join-Path $env:ProgramData 'Epic\UnrealEngineLauncher\LauncherInstalled.dat'
+    if (Test-Path -LiteralPath $dat) {
+        $ue = @((Get-Content -LiteralPath $dat -Raw | ConvertFrom-Json).InstallationList | Where-Object { $_.AppName -like 'UE_5*' } | Sort-Object AppName -Descending)
+        foreach ($x in $ue) { if (Test-Path (Join-Path $x.InstallLocation 'Engine\Build\BatchFiles\RunUAT.bat')) { $Engine = $x.InstallLocation; break } }
+    }
 }
 if (-not $Engine -or -not (Test-Path (Join-Path $Engine 'Engine\Build\BatchFiles\RunUAT.bat'))) { Note ('FAIL no Unreal engine found (give its folder: install.ps1 "D:\...\UE_5.8")'); exit 1 }
 Note ('engine: ' + $Engine)

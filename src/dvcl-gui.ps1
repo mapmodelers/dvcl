@@ -614,7 +614,9 @@ function Do-Unshelve($sh, [string]$cl, [string[]]$only) {
             Run-Busy { Apply-LocalShelf $script:UnSh.Id $script:UnOnly; $script:UnDone = $files } 'Unshelving'
         } else {
             if (-not (Ensure-Online 'Unshelve')) { Back-Offline; return }
-            try { Run-Busy { $script:UnDone = Apply-DvShelf $script:UnSh $script:UnOnly } 'Unshelving' } finally { Back-Offline }
+            # Unreal takes the files back right after the write, before sync is paused again
+            try { Run-Busy { $script:UnDone = Apply-DvShelf $script:UnSh $script:UnOnly } 'Unshelving' }
+            finally { try { Ue-Finish $writes } finally { Back-Offline } }
         }
     } finally { Ue-Finish $writes }
     if ($script:UnDone -and $cl -ine 'default') { Run-Busy { Move-ToCL $script:UnCl @($script:UnDone) } }
@@ -987,7 +989,7 @@ function Do-Revert {
             $still = @($items | Where-Object { $now.ContainsKey($_.Path.ToLowerInvariant()) })
             [void](Revert-Items $prefix $still)
         }
-    } finally { Back-Offline; Ue-Finish $writes }
+    } finally { try { Ue-Finish $writes } finally { Back-Offline } }
     Refresh-All
 }
 

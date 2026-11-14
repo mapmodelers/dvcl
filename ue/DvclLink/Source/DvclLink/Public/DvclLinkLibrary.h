@@ -24,7 +24,7 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "dvcl")
 	static FString ReloadFiles(const TArray<FString>& Files);
 
-	// "dvcl link 1"
+	// "dvcl link <n>"
 	UFUNCTION(BlueprintCallable, Category = "dvcl")
 	static FString Version();
 };
