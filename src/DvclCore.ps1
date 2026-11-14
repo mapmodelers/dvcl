@@ -239,7 +239,10 @@ function Set-FolderSync([string]$folder, [bool]$on) {
 # and the current pending list, so it can find offline edits by itself (dv reports nothing while paused).
 function Set-Sync([bool]$on) {
     if (-not $on) {
-        $st = Get-Pending $true
+        # Diversion's list from a sync wait seconds ago (after unshelve; nothing written since): reused
+        if ($script:SyncedSt -and $script:SyncedAt -and ((Get-Date) - $script:SyncedAt).TotalSeconds -lt 15) { $st = $script:SyncedSt; Write-Log 'sync wait reused (just synced)' }
+        else { $st = Get-Pending $true }
+        $script:SyncedSt = $null
         if ($st.Paused) {
             # already paused (Diversion app): keep an existing baseline, else start one from the last online list
             if (-not (Test-Path -LiteralPath (Dvcl-File 'baseline.tsv'))) { Write-Baseline (Read-LastStatus) $st.Commit }
@@ -837,6 +840,8 @@ function Apply-DvShelf($sh, [string[]]$only) {
             if ($absent.ContainsKey($k.Path)) { if (Test-Path -LiteralPath $f -PathType Leaf) { Remove-Item -LiteralPath $f -Force } }
             else { Copy-Item -LiteralPath ([System.IO.Path]::Combine([string[]](@($tmp) + ($k.Path -split '/')))) -Destination $f -Force }
         }
+        # the shelf's other files were put back: Diversion's list from before that is out of date
+        if ($keep.Count) { $script:SyncedSt = $null }
     } finally { if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue } }
     if ($only) { Say ("Unshelved " + $want.Count + " of " + @($files).Count + " file(s); the others were left as they were.") 'Green' }
     return ,$want
@@ -869,7 +874,7 @@ function Apply-Shelf([string]$shelf) {
     if ($un.Count) { Fail ("dv could not write (file in use): " + ($un -join ', ')) }
     # dv returns before the agent has rewritten the files: wait until Diversion reports its sync done
     # (the files are then on disk), instead of a fixed pause
-    [void](Get-Pending $true)
+    $script:SyncedSt = Get-Pending $true; $script:SyncedAt = Get-Date
     Say ("Applied shelf '" + $shelf + "' (shelf kept).") 'Green'
 }
 

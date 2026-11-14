@@ -2,6 +2,11 @@
 
 Versions follow [semver](https://semver.org). Tags: `vX.Y.Z`.
 
+## 0.18.0 - 2026-11-14
+
+- Action popup: a small window over dvcl, which stays visible behind it but locked, instead of covering it.
+- Faster: revert uses the list Diversion gave when going online (no second sync wait); after an unshelve of the whole shelf, going offline reuses the sync wait just done.
+
 ## 0.17.1 - 2026-11-14
 
 - Unshelve from Diversion waits until Diversion reports its sync done (files on disk) instead of a fixed 3 s pause, so Unreal always reloads the new versions. Files Unreal had loaded are also compared by content.

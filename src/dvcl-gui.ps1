@@ -343,13 +343,14 @@ function Run-Busy([scriptblock]$sb, [string]$what = 'Working...') {
 }
 
 # ---------------------------------------------------------------- action card
-# One action (unshelve, revert, shelve, submit, get latest, online / offline) = one card over the
-# window: everything behind it is locked (no misclick, no second action) and is not redrawn until the
-# action is done, then drawn once. The card lists the steps as they run.
+# One action (unshelve, revert, shelve, submit, get latest, online / offline) = one small popup over
+# the window, which stays visible behind it but locked (no misclick, no second action); the changelist
+# tree is not redrawn until the action is done, then drawn once. The popup lists the steps as they run.
 $script:OpDepth = 0; $script:TreeDirty = $false; $script:BuildCount = 0
 $script:OpSteps = New-Object System.Collections.ArrayList; $script:OpCurrent = ''; $script:OpLater = @{}
-$opPanel = New-Object System.Windows.Forms.Panel; $opPanel.Visible = $false
-$opCard = New-Object System.Windows.Forms.Panel; $opCard.Width = 460; $opCard.Height = 236; $opCard.BorderStyle = 'FixedSingle'
+$opPanel = New-Object System.Windows.Forms.Form
+$opPanel.FormBorderStyle = 'None'; $opPanel.ShowInTaskbar = $false; $opPanel.StartPosition = 'Manual'; $opPanel.Width = 460; $opPanel.Height = 236
+$opCard = New-Object System.Windows.Forms.Panel; $opCard.Dock = 'Fill'; $opCard.BorderStyle = 'FixedSingle'
 $opTitle = New-Object System.Windows.Forms.Label; $opTitle.Left = 20; $opTitle.Top = 16; $opTitle.Width = 420; $opTitle.Height = 26; $opTitle.AutoEllipsis = $true
 $opTitle.Font = New-Object System.Drawing.Font('Segoe UI', 11, [System.Drawing.FontStyle]::Bold)
 $opBar = New-Object System.Windows.Forms.ProgressBar; $opBar.Style = 'Marquee'; $opBar.MarqueeAnimationSpeed = 30; $opBar.Left = 20; $opBar.Top = 50; $opBar.Width = 420; $opBar.Height = 10
@@ -360,12 +361,12 @@ $opHint = New-Object System.Windows.Forms.Label; $opHint.Left = 20; $opHint.Top 
 $opHint.Text = 'dvcl is locked until this is done.'
 $opCard.Controls.AddRange(@($opTitle, $opBar, $opNow, $opDone, $opHint))
 $opPanel.Controls.Add($opCard)
-$form.Controls.Add($opPanel)
 function Place-Op {
-    $opPanel.Bounds = $form.ClientRectangle
-    $opCard.Left = [Math]::Max(0, [int](($opPanel.Width - $opCard.Width) / 2)); $opCard.Top = [Math]::Max(0, [int](($opPanel.Height - $opCard.Height) / 2.6))
+    $opPanel.Left = $form.Left + [Math]::Max(0, [int](($form.Width - $opPanel.Width) / 2))
+    $opPanel.Top = $form.Top + [Math]::Max(0, [int](($form.Height - $opPanel.Height) / 2.6))
 }
 $form.Add_Resize({ if ($opPanel.Visible) { Place-Op } })
+$form.Add_Move({ if ($opPanel.Visible) { Place-Op } })
 function Show-OpSteps {
     $ok = [string][char]0x2713
     $d = @($script:OpSteps | Select-Object -Last 6 | ForEach-Object { $ok + '  ' + $_ })
@@ -376,10 +377,12 @@ function Begin-Op([string]$title) {
     if ($script:OpDepth -gt 1) { return }
     $script:OpSteps.Clear(); $script:OpCurrent = ''; $script:TreeDirty = $false
     $opTitle.Text = $title; $opNow.Text = 'Starting'; $opDone.Text = ''
-    $opPanel.BackColor = $form.BackColor; $opCard.BackColor = $tv.BackColor
+    $opCard.BackColor = $tv.BackColor
     foreach ($c in @($opTitle, $opNow)) { $c.ForeColor = $tv.ForeColor }
     foreach ($c in @($opDone, $opHint)) { $c.ForeColor = $script:Pal.Muted }
-    Place-Op; $opPanel.Visible = $true; $opPanel.BringToFront()
+    Place-Op; $opPanel.Owner = $form; $opPanel.Show()
+    # locked, still visible: the popup is shown first so focus stays in dvcl
+    $form.Enabled = $false
     Set-FloatsEnabled $false
     $form.UseWaitCursor = $true
     [System.Windows.Forms.Application]::DoEvents()
@@ -403,7 +406,7 @@ function End-Op {
     }
     $script:OpDepth = 0
     if ($script:TreeDirty) { $script:TreeDirty = $false; Build-Tree }
-    $opPanel.Visible = $false
+    $form.Enabled = $true; $opPanel.Hide(); $form.Activate()
     Set-FloatsEnabled $true
     $form.UseWaitCursor = $false
     # shelf list / branch head skipped during the action: read once now, in the background
@@ -1107,7 +1110,7 @@ function Do-Revert {
     try {
         Run-Busy {
             # only what is still pending once Diversion has synced
-            $now = Pending-Set (Get-Pending $true).Files
+            $now = Pending-Set $script:Pending
             $still = @($items | Where-Object { $now.ContainsKey($_.Path.ToLowerInvariant()) })
             [void](Revert-Items $prefix $still)
         } 'Reverting'
@@ -2288,12 +2291,12 @@ function Run-GuiSelfCheck {
         Begin-Op 'Test action'
         Begin-Busy 'Step one'; End-Busy; Begin-Busy 'Step two'; End-Busy
         Build-Tree; Build-Tree
-        $cov = $opPanel.Visible -and $opPanel.Bounds.Contains($tool.Bounds) -and $opPanel.Bounds.Contains($split.Bounds) -and $script:BuildCount -eq $bt0
+        $cov = $opPanel.Visible -and -not $form.Enabled -and $opPanel.Owner -eq $form -and $form.Bounds.Contains($opPanel.Bounds) -and $script:BuildCount -eq $bt0
         $stp = $opDone.Text
         Begin-Op 'nested'; End-Op; $still = $opPanel.Visible -and $script:OpDepth -eq 1
         End-Op
-        C 'action card: window covered and locked, steps listed, nothing redrawn during the action' ($cov -and $stp -like '*Step one*' -and $still) ($stp)
-        C 'action card: gone after, tree drawn once' (-not $opPanel.Visible -and $script:OpDepth -eq 0 -and $script:BuildCount -eq ($bt0 + 1)) ([string]($script:BuildCount - $bt0))
+        C 'action popup: over the window, window locked, steps listed, nothing redrawn during the action' ($cov -and $stp -like '*Step one*' -and $still) ($stp)
+        C 'action popup: gone after, window unlocked, tree drawn once' (-not $opPanel.Visible -and $form.Enabled -and $script:OpDepth -eq 0 -and $script:BuildCount -eq ($bt0 + 1)) ([string]($script:BuildCount - $bt0))
 
         $pl = @(Pending-FromLast @([pscustomobject]@{ Kind = 'A'; Path = 'dvcl-no-such/x.uasset' }, [pscustomobject]@{ Kind = 'D'; Path = 'dvcl-no-such/y.uasset' }))
         C 'after pause: pending taken from Diversion list (new gone = dropped, deleted kept)' ($pl.Count -eq 1 -and $pl[0].Kind -eq 'Deleted' -and $pl[0].Path -eq 'dvcl-no-such/y.uasset') ([string]$pl.Count)
