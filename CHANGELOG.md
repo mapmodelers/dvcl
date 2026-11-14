@@ -2,6 +2,10 @@
 
 Versions follow [semver](https://semver.org). Tags: `vX.Y.Z`.
 
+## 0.14.1 - 2026-11-14
+
+- Unshelve asks about overwriting before Unreal lets go of the files (answering No left them released, not reloaded). If a file stays held, Unreal takes back the ones it let go of.
+
 ## 0.14.0 - 2026-11-14
 
 - Unreal link: revert, unshelve and get latest no longer need Unreal closed or restarted. dvcl asks the open editor to let go of the files, writes them, then the editor reloads them (as Unreal's own revision control does). Assets with unsaved changes in Unreal stop the action, nothing changed. Needs the dvcl link plugin once: ue\install.cmd (builds it for your engine), then restart Unreal once.

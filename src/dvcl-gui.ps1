@@ -582,8 +582,11 @@ function Ue-Prepare([string[]]$paths, [string]$what) {
     if ($r.State -eq 'nolink') { & $script:OnSay 'Unreal holds these files and the dvcl link is not installed (ue\install.cmd, then restart Unreal once).' 'Yellow' }
     elseif ($r.State -ne 'ok') { & $script:OnSay ('Unreal link: ' + $r.State + ' (see dvcl.log)') 'Yellow' }
     $script:UeUsed = ($r.State -eq 'ok')
-    # whatever is still held (no link, another program): stop here
-    if (Stop-IfLocked $locked $what) { $script:UeUsed = $false; return $false }
+    # whatever is still held (no link, another program): stop here, Unreal takes back what it let go
+    if (Stop-IfLocked $locked $what) {
+        if ($r.Released.Count) { $script:UeRel2 = $r.Released; Run-Busy { Ue-Reload $script:UeRel2 } 'Unreal reloading the assets' }
+        $script:UeUsed = $false; return $false
+    }
     return $true
 }
 # After writing: the editor reloads what it had loaded and rescans the files
@@ -597,13 +600,14 @@ function Do-Unshelve($sh, [string]$cl, [string[]]$only) {
     if (-not $cl) { $cl = 'default' }
     # a Diversion shelf is applied whole (the others are put back after): all its files get written
     $writes = @(@($sh.Files) | ForEach-Object { $_.Path } | Where-Object { $sh.Local -eq $false -or -not $only -or $only -icontains $_ })
-    if (-not (Ue-Prepare $writes 'Unshelve')) { return }
     $files = @($sh.Files); if ($only) { $files = @($files | Where-Object { $only -icontains $_.Path }) }
     $mine = @($files | Where-Object { $script:PendingByPath.ContainsKey($_.Path) } | ForEach-Object { $_.Path })
     if ($mine.Count) {
         $list = ($mine | Select-Object -First 12) -join "`r`n"; if ($mine.Count -gt 12) { $list += "`r`n... and " + ($mine.Count - 12) + " more" }
         if (-not (Ask-YesNo ("These " + $mine.Count + " file(s) have your own changes; unshelving overwrites them:`r`n`r`n" + $list) 'Unshelve')) { return }
     }
+    # asked first: Unreal only lets go of the files once the answer is yes
+    if (-not (Ue-Prepare $writes 'Unshelve')) { return }
     $script:UnSh = $sh; $script:UnOnly = $only; $script:UnCl = $cl; $script:UnDone = $null
     try {
         if ($sh.Local) {
