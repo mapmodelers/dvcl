@@ -92,7 +92,7 @@ $colKind = @{
 # Layout: toolbar / state bar / zones [left | center | right] over [bottom] / status bar.
 # Panels (Local, Depot, Changelists, Submitted, History, Log) are tabs in those zones (DvclDock.ps1).
 $form = New-Object System.Windows.Forms.Form
-$form.Text = 'dvcl'
+$form.Text = 'dvcl (experimental)'
 $form.Font = $fontUi
 $form.StartPosition = 'CenterScreen'
 $form.Width = [int]$settings.w; $form.Height = [int]$settings.h
@@ -967,7 +967,7 @@ function Show-Pending($st, [bool]$unreachable) {
     if ($st.Syncing) { $sync = 'sync on - Diversion still syncing, list updates by itself' }
     if ($script:Offline) { $sync = 'OFFLINE' }
     $statusLbl.Text = $script:Root + '    ' + $st.Files.Count + ' pending    dvcl ' + (Get-LocalVersion)
-    $form.Text = 'dvcl - ' + (Split-Path -Leaf $script:Root)
+    $form.Text = 'dvcl - ' + (Split-Path -Leaf $script:Root) + '   (experimental)'
     if (-not $script:FirstShown) { $script:FirstShown = $true; Write-Timing 'script-start-to-pending-list' $script:Clock.Elapsed.TotalMilliseconds }
     if ($st.Syncing -and -not $script:Paused -and -not $script:SyncMode -and $script:OpDepth -eq 0) { $pollTimer.Start() }
     if ($st.Branch -and -not $script:Offline) { if ($script:OpDepth -gt 0) { $script:OpLater['head'] = $st.Branch } else { Start-DvAsync @('show', $st.Branch) 'Apply-Head' $true $true } }
@@ -2413,6 +2413,7 @@ function Run-GuiSelfCheck {
         $us = Ue-LinkStatus
         C 'unreal link: status read (engine / installed / up to date / editor)' ($null -ne $us -and $null -ne $us.PSObject.Properties['UpToDate'] -and $null -ne $us.PSObject.Properties['Editor'])
         [void]$r.Add('INFO  unreal link status: engine found ' + [bool]$us.Engine + ', installed ' + $us.Installed + ', up to date ' + $us.UpToDate + ', editor open ' + $us.Editor)
+        C 'title says experimental' ($form.Text -like '*(experimental)*') $form.Text
         C 'unreal link: in the Tools menu' (@($ddTools.DropDownItems | Where-Object { $_.Text -eq 'Unreal link...' }).Count -eq 1)
         $pl = @(Pending-FromLast @([pscustomobject]@{ Kind = 'A'; Path = 'dvcl-no-such/x.uasset' }, [pscustomobject]@{ Kind = 'D'; Path = 'dvcl-no-such/y.uasset' }))
         C 'after pause: pending taken from Diversion list (new gone = dropped, deleted kept)' ($pl.Count -eq 1 -and $pl[0].Kind -eq 'Deleted' -and $pl[0].Path -eq 'dvcl-no-such/y.uasset') ([string]$pl.Count)
@@ -2439,7 +2440,7 @@ $script:TrayOn = $false; $script:ReallyExit = $false; $script:TrayTipShown = $fa
 $trayMenu = New-Object System.Windows.Forms.ContextMenuStrip
 $notify = New-Object System.Windows.Forms.NotifyIcon
 $notify.Icon = $(if ($form.Icon) { $form.Icon } else { [System.Drawing.SystemIcons]::Application })
-$notify.Text = 'dvcl'
+$notify.Text = 'dvcl (experimental)'
 $notify.ContextMenuStrip = $trayMenu
 function Show-FromTray {
     # dvcl was updated while this window was running: restart on the new version
@@ -2500,7 +2501,8 @@ if (-not $SelfCheck -and -not $Shot) {
     if ($StartDir) { $r0 = Find-DvRoot $StartDir }
     if (-not $r0 -and $settings.lastRepo) { $r0 = Find-DvRoot $settings.lastRepo }
     if ($r0 -and -not (Claim-Instance $r0)) { exit }
-    $notify.Text = ('dvcl - ' + $(if ($r0) { Split-Path -Leaf $r0 } else { 'no repo' }))
+    $nt = 'dvcl - ' + $(if ($r0) { Split-Path -Leaf $r0 } else { 'no repo' }); if ($nt.Length -gt 48) { $nt = $nt.Substring(0, 48) }
+    $notify.Text = $nt + ' (experimental)'   # tray tooltip: 63 characters at most
     if ($notify.Text.Length -gt 63) { $notify.Text = $notify.Text.Substring(0, 63) }
     $notify.Visible = $true; $script:TrayOn = $true
     $instTimer.Start()

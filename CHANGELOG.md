@@ -2,6 +2,10 @@
 
 Versions follow [semver](https://semver.org). Tags: `vX.Y.Z`.
 
+## 0.20.1 - 2026-11-15
+
+- Marked experimental (window title, tray, README, site), with a feedback link (GitHub issues).
+
 ## 0.20.0 - 2026-11-15
 
 - Tools > Unreal link: shows the engine, whether the dvcl link plugin is installed and up to date, and whether the open editor answers. Install / Update from there (builds it for the engine with progress in the state bar, Unreal closed). The engine is remembered from the last time Unreal was open, or chosen by hand.

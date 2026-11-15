@@ -7,7 +7,7 @@
 <meta name="description" content="Changelists, shelves and offline work for Diversion version control. Windows window + command line. Free, MIT.">
 <meta name="keywords" content="Diversion, version control, changelist, shelve, offline, game development, Unreal Engine, Windows">
 <meta property="og:title" content="dvcl - changelists for Diversion">
-<meta property="og:description" content="Changelists, shelves and offline work for Diversion version control.">
+<meta property="og:description" content="Changelists, shelves and offline work for Diversion version control. Experimental, feedback welcome.">
 <meta property="og:image" content="https://mapmodelers.github.io/dvcl/screenshot.png">
 <style>
   :root { color-scheme: dark; --bg: #1e1e1e; --fg: #e6e6e6; --mut: #9a9a9a; --acc: #6ecd78; --line: #333; }
@@ -15,7 +15,9 @@
   body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.55 "Segoe UI", system-ui, sans-serif; }
   main { max-width: 860px; margin: 0 auto; padding: 56px 24px 40px; }
   h1 { font-size: 40px; margin: 0; letter-spacing: -0.5px; }
-  .tag { color: var(--mut); margin: 4px 0 28px; font-size: 18px; }
+  .tag { color: var(--mut); margin: 4px 0 10px; font-size: 18px; }
+  .exp { display: inline-block; font-size: 13px; font-weight: 600; letter-spacing: 0.4px; color: #111; background: #e0b43c; border-radius: 4px; padding: 2px 8px; vertical-align: middle; margin-left: 10px; }
+  .note { color: var(--mut); margin: 0 0 28px; font-size: 15px; }
   img { width: 100%; border: 1px solid var(--line); border-radius: 6px; display: block; }
   ul { padding: 0; list-style: none; margin: 28px 0; }
   li { padding: 6px 0 6px 18px; position: relative; }
@@ -28,8 +30,9 @@
 </head>
 <body>
 <main>
-  <h1>dvcl</h1>
+  <h1>dvcl <span class="exp">EXPERIMENTAL</span></h1>
   <p class="tag">Changelists for <a href="https://diversion.dev">Diversion</a>.</p>
+  <p class="note">Used daily on a real Unreal project, still changing. Feedback and ideas welcome: <a href="https://github.com/mapmodelers/dvcl/issues">open an issue</a>.</p>
   <img src="screenshot.png" alt="dvcl window: Local and Depot trees, numbered changelists">
   <ul>
     <li>Numbered changelists: group pending files, submit, shelve, revert.</li>
@@ -43,6 +46,7 @@
   <a class="btn" href="https://github.com/mapmodelers/dvcl/archive/refs/heads/main.zip">Download</a>
   <a class="btn alt" href="https://github.com/mapmodelers/dvcl">GitHub</a>
   <a class="btn alt" href="https://github.com/mapmodelers/dvcl/blob/main/CHANGELOG.md">Changes</a>
+  <a class="btn alt" href="https://github.com/mapmodelers/dvcl/issues">Feedback</a>
   <p style="color:var(--mut);font-size:14px;margin-top:18px">Windows + Diversion <code>dv</code> CLI. Unzip, run <code>install.cmd</code>.</p>
   <footer>MIT, as is. No telemetry. Not affiliated with or endorsed by Diversion; Diversion is a trademark of its owner.</footer>
 </main>

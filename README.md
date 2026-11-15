@@ -2,6 +2,8 @@
 
 Changelists for [Diversion](https://diversion.dev). [Site](https://mapmodelers.github.io/dvcl/)
 
+**Experimental:** used daily on a real Unreal project, still changing. Feedback and ideas welcome: [open an issue](https://github.com/mapmodelers/dvcl/issues).
+
 ![dvcl](docs/screenshot.png)
 
 - Numbered changelists: group pending files, submit, shelve, revert.
