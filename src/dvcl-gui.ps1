@@ -39,7 +39,8 @@ function Settings-Json([string]$last, $lay) {
     $b = $(if ($form.WindowState -eq 'Normal') { $form.Bounds } else { $form.RestoreBounds })
     return ([pscustomobject]@{ lastRepo = $last; w = $b.Width; h = $b.Height; x = $b.X; y = $b.Y; max = ($form.WindowState -eq 'Maximized')
         ui = $(if ($script:Dark) { 'dark' } else { 'light' }); layout = $lay
-        openShelves = @($script:OpenShelves); closedCls = @($script:ClosedCLs) } | ConvertTo-Json -Depth 8)
+        openShelves = @($script:OpenShelves); closedCls = @($script:ClosedCLs)
+        ueEngine = $(if ($script:UeEngineSeen) { [string]$script:UeEngineSeen } else { [string]$settings.ueEngine }) } | ConvertTo-Json -Depth 8)
 }
 $settings = Load-Settings
 
@@ -648,7 +649,8 @@ function Ue-Prepare([string[]]$paths, [string]$what) {
     $script:UeUsed = $false
     $paths = @($paths | Where-Object { $_ })
     $script:UeStamp = @{}; foreach ($p in $paths) { $script:UeStamp[$p] = File-Stamp $p }
-    $script:UeEditor = [bool](Find-UeEngine)
+    $eng0 = Find-UeEngine; if ($eng0) { $script:UeEngineSeen = $eng0 }
+    $script:UeEditor = [bool]$eng0
     $locked = @($paths | Where-Object { Test-Locked $_ })
     # files Unreal has loaded: content hash too, so a rewrite with the same size and time still counts
     foreach ($p in $locked) { $script:UeStamp[$p] = (File-Stamp $p) + ':' + (File-Hash $p) }
@@ -663,7 +665,7 @@ function Ue-Prepare([string[]]$paths, [string]$what) {
         [void][System.Windows.Forms.MessageBox]::Show($form, ($what + " not done, nothing was changed.`r`n`r`nThese assets have unsaved changes in Unreal. Save them (or revert them there), then try again:`r`n`r`n" + $list), $what, 'OK', 'Warning')
         return $false
     }
-    if ($r.State -eq 'nolink') { & $script:OnSay 'Unreal holds these files and the dvcl link is not installed (ue\install.cmd, then restart Unreal once).' 'Yellow' }
+    if ($r.State -eq 'nolink') { & $script:OnSay 'Unreal holds these files and the dvcl link is not installed: Tools > Unreal link (install once, then restart Unreal).' 'Yellow' }
     elseif ($r.State -ne 'ok') { & $script:OnSay ('Unreal link: ' + $r.State + ' (see dvcl.log)') 'Yellow' }
     $script:UeUsed = ($r.State -eq 'ok')
     # whatever is still held (no link, another program): stop here, Unreal takes back what it let go
@@ -1319,6 +1321,87 @@ function Do-FolderSync([string]$rel, [bool]$on) {
     Refresh-All
 }
 
+# ---------------------------------------------------------------- Unreal link (Tools > Unreal link)
+# The engine: the open editor's, else the last one seen open (kept in settings), else chosen by hand
+function Ue-EnginePath {
+    $e = Find-UeEngine
+    if ($e) { $script:UeEngineSeen = $e; return $e }
+    if ($script:UeEngineSeen) { return [string]$script:UeEngineSeen }
+    if ($settings.ueEngine -and (Test-Path -LiteralPath (Join-Path ([string]$settings.ueEngine) 'Engine\Build\BatchFiles\RunUAT.bat'))) { return [string]$settings.ueEngine }
+    return ''
+}
+# Installed in that engine? Same source as this dvcl (= up to date)? Editor open?
+function Ue-LinkStatus {
+    $eng = Ue-EnginePath
+    $src = Join-Path $script:ToolDir 'ue\DvclLink\Source\DvclLink\Private\DvclLinkLibrary.cpp'
+    $inst = $(if ($eng) { Join-Path $eng 'Engine\Plugins\DvclLink' } else { '' })
+    $installed = [bool]($inst -and (Test-Path -LiteralPath (Join-Path $inst 'DvclLink.uplugin')))
+    $cpp = $(if ($inst) { Join-Path $inst 'Source\DvclLink\Private\DvclLinkLibrary.cpp' } else { '' })
+    $same = $installed -and (Test-Path -LiteralPath $cpp) -and (Test-Path -LiteralPath $src) -and ((Get-FileHash -LiteralPath $cpp -Algorithm MD5).Hash -eq (Get-FileHash -LiteralPath $src -Algorithm MD5).Hash)
+    return [pscustomobject]@{ Engine = $eng; Installed = $installed; UpToDate = [bool]$same; Editor = [bool](Find-UeEngine) }
+}
+function Do-UeLink {
+    if (Op-Busy) { return }
+    $st = Ue-LinkStatus
+    $ans = ''
+    if ($st.Editor) {
+        $script:UeAns = $null
+        Run-Busy { $script:UeAns = Invoke-Ue "import unreal`nprint(unreal.DvclLinkLibrary.version() if hasattr(unreal, 'DvclLinkLibrary') else 'DVCL nolink')" } 'Asking Unreal'
+        $a = $script:UeAns
+        if (-not $a) { $ans = 'open, no answer' }
+        elseif ($a.State -eq 'ok') { $ans = 'open, the link answers (' + ((@($a.Lines | Where-Object { $_ -like 'dvcl link*' }) | Select-Object -First 1)) + ')' }
+        elseif ($a.State -eq 'nolink') { $ans = 'open, the link is not loaded' + $(if ($st.Installed) { ' (restart Unreal once)' } else { '' }) }
+        elseif ($a.State -eq 'nopython') { $ans = 'open, but Python 3 is not found on this PC (needed to talk to Unreal)' }
+        else { $ans = 'open, does not answer: Project Settings > Plugins > Python > Enable Remote Execution' }
+    } else { $ans = 'not open' }
+    $plug = $(if (-not $st.Engine) { '?' } elseif (-not $st.Installed) { 'not installed' } elseif ($st.UpToDate) { 'installed, up to date' } else { 'installed, update available' })
+    $d = New-Object System.Windows.Forms.Form
+    $d.Text = 'Unreal link'; $d.Font = $fontUi; $d.FormBorderStyle = 'FixedDialog'; $d.MaximizeBox = $false; $d.MinimizeBox = $false
+    $d.StartPosition = 'CenterParent'; $d.Width = 600; $d.Height = 300; $d.ShowInTaskbar = $false
+    $l = New-Object System.Windows.Forms.Label; $l.Left = 14; $l.Top = 12; $l.Width = 560; $l.Height = 190
+    $l.Text = "Lets dvcl revert, unshelve and get latest with Unreal open: Unreal lets go of the files, dvcl writes them, Unreal reloads them.`r`n`r`n" +
+        "Engine:   " + $(if ($st.Engine) { $st.Engine } else { 'not found (open Unreal once, or Choose engine)' }) + "`r`n" +
+        "Plugin:   " + $plug + "`r`n" +
+        "Unreal:   " + $ans + "`r`n`r`n" +
+        "Install builds the plugin for this engine (a few minutes, Unreal closed) and puts it in the engine, on for every project. Then open Unreal. Needs Visual Studio, Python 3, and in Unreal: Python Editor Script plugin with Enable Remote Execution."
+    $d.Controls.Add($l)
+    $bi = New-Object System.Windows.Forms.Button; $bi.Text = $(if (-not $st.Installed) { 'Install' } elseif ($st.UpToDate) { 'Reinstall' } else { 'Update' }); $bi.Left = 14; $bi.Top = 214; $bi.Width = 110; $bi.Enabled = [bool]$st.Engine
+    $be = New-Object System.Windows.Forms.Button; $be.Text = 'Choose engine...'; $be.Left = 132; $be.Top = 214; $be.Width = 130
+    $bc = New-Object System.Windows.Forms.Button; $bc.Text = 'Close'; $bc.Left = 474; $bc.Top = 214; $bc.Width = 100; $bc.DialogResult = 'Cancel'
+    $d.Controls.AddRange(@($bi, $be, $bc)); $d.CancelButton = $bc
+    $script:UeLinkPick = ''
+    $bi.Add_Click({ $d.Tag = 'install'; $d.Close() })
+    $be.Add_Click({
+        $fb = New-Object System.Windows.Forms.FolderBrowserDialog; $fb.Description = 'Unreal engine folder (the one with Engine inside, e.g. UE_5.8)'
+        if ($fb.ShowDialog($d) -eq 'OK') {
+            if (Test-Path -LiteralPath (Join-Path $fb.SelectedPath 'Engine\Build\BatchFiles\RunUAT.bat')) { $script:UeEngineSeen = $fb.SelectedPath; $d.Tag = 'again'; $d.Close() }
+            else { [void][System.Windows.Forms.MessageBox]::Show($d, 'No Unreal engine there (Engine\Build\BatchFiles\RunUAT.bat missing).', 'Unreal link', 'OK', 'Warning') }
+        }
+    })
+    Theme-Walk $d
+    [void]$d.ShowDialog($form)
+    if ($d.Tag -eq 'again') { Do-UeLink; return }
+    if ($d.Tag -ne 'install') { return }
+    if (Get-Process UnrealEditor -ErrorAction SilentlyContinue) {
+        [void][System.Windows.Forms.MessageBox]::Show($form, "Close Unreal first (save your work), then Install again.`r`nThe engine's plugin files cannot be replaced while it runs.", 'Unreal link', 'OK', 'Warning'); return
+    }
+    $script:UeInstEng = $st.Engine
+    Begin-Op 'Installing the Unreal link'
+    try {
+        $script:UeInst = $null
+        Run-Busy { $script:UeInst = Invoke-Pumped (Join-Path $PSHOME 'powershell.exe') @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $script:ToolDir 'ue\install.ps1'), $script:UeInstEng) $script:ToolDir } 'Building the plugin for your engine (a few minutes)'
+        $last = @($script:UeInst.Lines | Where-Object { $_ -match '^(OK|FAIL)' }) | Select-Object -Last 1
+        if ($script:UeInst -and $script:UeInst.Code -eq 0 -and $last -like 'OK*') {
+            & $script:OnSay 'Unreal link installed. Open Unreal: it is on in every project of this engine.' 'Green'
+            [void][System.Windows.Forms.MessageBox]::Show($form, "Unreal link installed.`r`nOpen Unreal: it is on in every project of this engine.", 'Unreal link', 'OK', 'Information')
+        } else {
+            $msg = $(if ($last) { $last } else { 'see ue\install.log' })
+            & $script:OnSay ('Unreal link install failed: ' + $msg) 'Red'
+            [void][System.Windows.Forms.MessageBox]::Show($form, ("Install failed:`r`n" + $msg + "`r`n`r`nDetails: ue\install.log"), 'Unreal link', 'OK', 'Error')
+        }
+    } finally { End-Op }
+}
+
 function Do-Recover {
     if (Op-Busy) { return }
     Run-Busy {
@@ -1825,6 +1908,7 @@ $btnGet = Add-Btn 'Get latest' "Pull the branch's new commits into your workspac
 $ddTools = Add-DropBtn 'Tools' 'Changelist maintenance'
 [void](Add-DropItem $ddTools 'Remove all not-pending entries' 'Drop entries Diversion no longer reports (committed elsewhere)' { Do-CleanStale '' })
 [void](Add-DropItem $ddTools 'Recover entries lost by dvcl 0.2' 'Put back files that dvcl 0.2 dropped from changelists while sync was paused' { Do-Recover })
+[void](Add-DropItem $ddTools 'Unreal link...' 'Revert / unshelve / get latest with Unreal open: status, install or update the dvcl link plugin' { Do-UeLink })
 [void]$tool.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
 $ddView = Add-DropBtn 'View' 'Panels: drag a tab to move it, out of the window for its own window; right-click a tab for more'
 foreach ($pid0 in @($script:Pads.Keys)) {
@@ -2326,6 +2410,10 @@ function Run-GuiSelfCheck {
         C 'dv run with the window working: same answer as the normal call' ([bool](Dv-Exe) -and $pa.Code -eq $pb.Code -and (($pa.Lines -join "`n") -ceq ($pb.Lines -join "`n"))) ('' + $pa.Code + '/' + $pb.Code + ' ' + @($pa.Lines).Count + '/' + @($pb.Lines).Count + ' ' + (Dv-Exe))
         $sj = (Settings-Json 'x' $null) | ConvertFrom-Json
         C 'settings: place, maximized, open shelves and closed changelists kept' ($null -ne $sj.x -and $null -ne $sj.y -and $null -ne $sj.max -and $null -ne $sj.PSObject.Properties['openShelves'] -and $null -ne $sj.PSObject.Properties['closedCls'])
+        $us = Ue-LinkStatus
+        C 'unreal link: status read (engine / installed / up to date / editor)' ($null -ne $us -and $null -ne $us.PSObject.Properties['UpToDate'] -and $null -ne $us.PSObject.Properties['Editor'])
+        [void]$r.Add('INFO  unreal link status: engine found ' + [bool]$us.Engine + ', installed ' + $us.Installed + ', up to date ' + $us.UpToDate + ', editor open ' + $us.Editor)
+        C 'unreal link: in the Tools menu' (@($ddTools.DropDownItems | Where-Object { $_.Text -eq 'Unreal link...' }).Count -eq 1)
         $pl = @(Pending-FromLast @([pscustomobject]@{ Kind = 'A'; Path = 'dvcl-no-such/x.uasset' }, [pscustomobject]@{ Kind = 'D'; Path = 'dvcl-no-such/y.uasset' }))
         C 'after pause: pending taken from Diversion list (new gone = dropped, deleted kept)' ($pl.Count -eq 1 -and $pl[0].Kind -eq 'Deleted' -and $pl[0].Path -eq 'dvcl-no-such/y.uasset') ([string]$pl.Count)
         C 'unreal: file stamp of a missing file' ((File-Stamp 'dvcl-no-such/z.uasset') -eq 'none')

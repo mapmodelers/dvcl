@@ -2,6 +2,10 @@
 
 Versions follow [semver](https://semver.org). Tags: `vX.Y.Z`.
 
+## 0.20.0 - 2026-11-15
+
+- Tools > Unreal link: shows the engine, whether the dvcl link plugin is installed and up to date, and whether the open editor answers. Install / Update from there (builds it for the engine with progress in the state bar, Unreal closed). The engine is remembered from the last time Unreal was open, or chosen by hand.
+
 ## 0.19.0 - 2026-11-14
 
 - No popup, no lock screen: an action shows in the state bar with its current step (steps in the log). The window keeps working while Diversion and Unreal answer (repaint, scroll, browse the trees, panels and log); only other actions are refused until it is done (toolbar off, menus and drops say wait).
