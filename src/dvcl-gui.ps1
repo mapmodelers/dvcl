@@ -218,24 +218,24 @@ function New-Icon([string]$base, [string]$badge) {
             # page with a folded corner
             $g.SmoothingMode = 'None'
             $pts = [System.Drawing.Point[]]@((New-Object System.Drawing.Point(3, 1)), (New-Object System.Drawing.Point(9, 1)), (New-Object System.Drawing.Point(12, 4)), (New-Object System.Drawing.Point(12, 14)), (New-Object System.Drawing.Point(3, 14)))
-            $g.FillPolygon((New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(238, 238, 238))), $pts)
+            $g.FillPolygon((New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(205, 205, 205))), $pts)
             $g.DrawPolygon((New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(130, 130, 130))), $pts)
             $g.DrawLine((New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(130, 130, 130))), 9, 1, 9, 4); $g.DrawLine((New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(130, 130, 130))), 9, 4, 12, 4)
             $g.SmoothingMode = 'AntiAlias'
         }
         'faded'  { $g.DrawRectangle((New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(190, 190, 190))), 3, 1, 9, 13) }
-        'folder' { $b = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(235, 190, 70)); $g.FillRectangle($b, 1, 3, 6, 3); $g.FillRectangle($b, 1, 5, 14, 9) }
+        'folder' { $b = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(165, 165, 165)); $g.FillRectangle($b, 1, 3, 6, 3); $g.FillRectangle($b, 1, 5, 14, 9) }
         'folderoff' { $pn = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(170, 170, 170)); $g.DrawRectangle($pn, 1, 3, 5, 2); $g.DrawRectangle($pn, 1, 5, 13, 8) }
-        'cl'     { $g.FillRectangle((New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(200, 60, 60))), 2, 2, 12, 12); foreach ($y in 5, 8, 11) { $g.DrawLine([System.Drawing.Pens]::White, 4, $y, 11, $y) } }
+        'cl'     { $g.FillRectangle((New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(175, 175, 175))), 2, 2, 12, 12); foreach ($y in 5, 8, 11) { $g.DrawLine([System.Drawing.Pens]::White, 4, $y, 11, $y) } }
         'shelf'  {
             # zipped folder
             $g.SmoothingMode = 'None'
-            $b = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(235, 190, 70)); $g.FillRectangle($b, 1, 3, 6, 3); $g.FillRectangle($b, 1, 5, 14, 9)
-            $z = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(70, 70, 70))
+            $b = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(165, 165, 165)); $g.FillRectangle($b, 1, 3, 6, 3); $g.FillRectangle($b, 1, 5, 14, 9)
+            $z = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(60, 60, 60))
             foreach ($y in 5, 7, 9) { $g.FillRectangle($z, 6, $y, 2, 1); $g.FillRectangle($z, 8, ($y + 1), 2, 1) }
             $g.FillRectangle($z, 6, 11, 4, 3)
         }
-        'cldef'  { $g.FillRectangle((New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(150, 150, 150))), 2, 2, 12, 12); foreach ($y in 5, 8, 11) { $g.DrawLine([System.Drawing.Pens]::White, 4, $y, 11, $y) } }
+        'cldef'  { $g.FillRectangle((New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(125, 125, 125))), 2, 2, 12, 12); foreach ($y in 5, 8, 11) { $g.DrawLine([System.Drawing.Pens]::White, 4, $y, 11, $y) } }
     }
     if ($badge) {
         $c = $script:BadgeColor[$badge]
@@ -282,18 +282,26 @@ $tv.Dock = 'Fill'; $tv.CheckBoxes = $false; $tv.HideSelection = $false; $tv.Full
 $script:Sel = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
 $tv.ShowLines = $true; $tv.AllowDrop = $true; $tv.ItemHeight = 22; $tv.ImageList = $icons; $tv.ShowNodeToolTips = $true
 $tv.Font = $fontBold   # changelist rows bold; file rows set back to regular (avoids clipped bold text)
-# Header with the icon legend
-$pendHead = New-Object System.Windows.Forms.FlowLayoutPanel
-$pendHead.Dock = 'Top'; $pendHead.Height = 24; $pendHead.WrapContents = $false
-foreach ($lg in @(@('file-A', 'added'), @('file-M', 'modified'), @('file-D', 'deleted'), @('file-R', 'renamed'), @('file-!', 'conflict'), @('stale', 'stale'), @('shelf', 'shelved'))) {
-    $pb = New-Object System.Windows.Forms.PictureBox; $pb.Size = New-Object System.Drawing.Size(16, 16); $pb.Image = $icons.Images[$lg[0]]
-    $pb.Margin = New-Object System.Windows.Forms.Padding(6, 4, 2, 0)
-    $lt = New-Object System.Windows.Forms.Label; $lt.AutoSize = $true; $lt.Text = $lg[1]; $lt.ForeColor = [System.Drawing.Color]::FromArgb(80, 80, 80)
-    $lt.Margin = New-Object System.Windows.Forms.Padding(0, 5, 4, 0)
-    [void]$pendHead.Controls.Add($pb); [void]$pendHead.Controls.Add($lt)
-}
+# Icon legend: shown when hovering the Changelists tab (no header row)
+$script:Legend = @(@('file-A', 'added'), @('file-M', 'modified'), @('file-D', 'deleted'), @('file-R', 'renamed'), @('file-!', 'conflict'), @('folder-M', 'OFPA files of a level'), @('stale', 'not pending any more'), @('shelf', 'shelved files'))
+$script:LegendTip = New-Object System.Windows.Forms.ToolTip
+$script:LegendTip.OwnerDraw = $true; $script:LegendTip.InitialDelay = 300; $script:LegendTip.AutoPopDelay = 15000
+$script:LegendTip.Add_Popup({ param($s, $e) $e.ToolTipSize = New-Object System.Drawing.Size(230, (12 + 20 * $script:Legend.Count)) })
+$script:LegendTip.Add_Draw({
+    param($s, $e)
+    $bg = $(if ($script:Dark) { [System.Drawing.Color]::FromArgb(37, 37, 38) } else { [System.Drawing.Color]::FromArgb(250, 250, 250) })
+    $fg = $(if ($script:Dark) { [System.Drawing.Color]::FromArgb(205, 205, 205) } else { [System.Drawing.Color]::FromArgb(45, 45, 45) })
+    $b = New-Object System.Drawing.SolidBrush($bg); $e.Graphics.FillRectangle($b, $e.Bounds); $b.Dispose()
+    $e.Graphics.DrawRectangle((New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(110, 110, 110))), 0, 0, ($e.Bounds.Width - 1), ($e.Bounds.Height - 1))
+    $y = 6
+    foreach ($lg in $script:Legend) {
+        $e.Graphics.DrawImage($icons.Images[$lg[0]], 10, ($y + 2), 16, 16)
+        [System.Windows.Forms.TextRenderer]::DrawText($e.Graphics, $lg[1], $fontUi, (New-Object System.Drawing.Rectangle(34, $y, 190, 20)), $fg, [System.Windows.Forms.TextFormatFlags]'Left, VerticalCenter, NoPrefix, SingleLine')
+        $y += 20
+    }
+})
 $padPending = New-Object System.Windows.Forms.Panel
-$padPending.Controls.Add($tv); $padPending.Controls.Add($pendHead)
+$padPending.Controls.Add($tv)
 
 $logBox = New-Object System.Windows.Forms.TextBox
 $logBox.Dock = 'Fill'; $logBox.Multiline = $true; $logBox.ReadOnly = $true; $logBox.ScrollBars = 'Vertical'
@@ -848,8 +856,9 @@ function Start-ScanAsync {
     }
     $ps = [powershell]::Create()
     [void]$ps.AddCommand((Join-Path $PSScriptRoot 'dvcl-scan.ps1')).AddParameter('Workspace', $script:Root)
-    Begin-Busy 'Scanning folder'
-    $job = [pscustomobject]@{ PS = $ps; Handle = $ps.BeginInvoke(); Args = @('(folder scan)'); Done = 'Apply-Scan'; Raw = $true; Quiet = $true; LogLines = $false; Sw = [Diagnostics.Stopwatch]::StartNew(); Busy = $true }
+    $lock = -not $script:QuietRefresh
+    if ($lock) { Begin-Busy 'Scanning folder' }
+    $job = [pscustomobject]@{ PS = $ps; Handle = $ps.BeginInvoke(); Args = @('(folder scan)'); Done = 'Apply-Scan'; Raw = $true; Quiet = $true; LogLines = $false; Sw = [Diagnostics.Stopwatch]::StartNew(); Busy = $lock }
     [void]$script:Jobs.Add($job)
     $jobTimer.Start()
 }
@@ -926,12 +935,14 @@ $script:RefreshAgain = $false
 $script:WsCommit = ''
 
 # Reads the status in the background (dv status --nowait: answers at once, no wait for sync)
-function Refresh-All {
+# $quiet: refresh by itself after a file change (no lock, no busy bar, tree redrawn only if it changed)
+function Refresh-All([bool]$quiet = $false) {
     if (-not $script:Root) { $statusLbl.Text = 'No Diversion repo selected (Repo...)'; $tv.Nodes.Clear(); return }
-    if ($script:StatusRunning) { $script:RefreshAgain = $true; return }
+    if ($script:StatusRunning) { if (-not $quiet) { $script:RefreshAgain = $true }; return }
+    if (-not $script:SyncMode -and (-not $script:FsWatch -or $script:FsWatch.Path -ne $script:Root)) { Start-FsWatch }
     Load-Db
-    $script:StatusRunning = $true
-    $statusLbl.Text = 'Reading status'
+    $script:StatusRunning = $true; $script:QuietRefresh = $quiet
+    if (-not $quiet) { $statusLbl.Text = 'Reading status' }
     if (-not $script:Mode) { Set-Mode 'loading' '' }
     # Offline (dvcl paused sync): Diversion is not asked at all (its first answer takes ~20 s);
     # branch/commit come from the last online read, files from the folder scan.
@@ -943,8 +954,58 @@ function Refresh-All {
         return
     }
     $script:LastStatusArgs = Status-Args $false
-    Start-DvAsync $script:LastStatusArgs 'Apply-Status' $true $true 'Reading status'
+    Start-DvAsync $script:LastStatusArgs 'Apply-Status' $true $true $(if ($quiet) { '' } else { 'Reading status' })
 }
+
+# ---------------------------------------------------------------- up to date by itself
+# A watcher on the workspace folder: files saved, added, deleted or renamed (Unreal, Explorer, ...)
+# refresh the list 2 s after the last change, in the background (no lock; the tree is redrawn only
+# if the list changed). Unreal's own busy folders (Saved, Intermediate, DerivedDataCache) and dvcl /
+# Diversion data are left out. Hidden window: refreshed when shown again.
+$script:FsNoise = @('/.dvcl/', '/.diversion/', '/saved/', '/intermediate/', '/deriveddatacache/', '/.vs/', '/.git/')
+$script:FsDirty = $false; $script:FsWatch = $null
+function Fs-Noise([string]$rel) {
+    $r = '/' + $rel.ToLowerInvariant().Replace('\', '/') + '/'
+    foreach ($d in $script:FsNoise) { if ($r.Contains($d)) { return $true } }
+    return $false
+}
+function Stop-FsWatch { if ($script:FsWatch) { try { $script:FsWatch.EnableRaisingEvents = $false; $script:FsWatch.Dispose() } catch {}; $script:FsWatch = $null } }
+function Start-FsWatch {
+    Stop-FsWatch
+    if (-not $script:Root -or -not (Test-Path -LiteralPath $script:Root)) { return }
+    try {
+        $w = New-Object System.IO.FileSystemWatcher($script:Root)
+        $w.IncludeSubdirectories = $true; $w.InternalBufferSize = 65536
+        $w.NotifyFilter = [System.IO.NotifyFilters]'FileName, DirectoryName, LastWrite, Size'
+        $w.SynchronizingObject = $form
+        $w.Add_Changed({ param($s, $e) Fs-Event $e.FullPath }); $w.Add_Created({ param($s, $e) Fs-Event $e.FullPath })
+        $w.Add_Deleted({ param($s, $e) Fs-Event $e.FullPath }); $w.Add_Renamed({ param($s, $e) Fs-Event $e.FullPath; Fs-Event $e.OldFullPath })
+        # too many changes at once (big copy): one full refresh
+        $w.Add_Error({ param($s, $e) $script:FsDirty = $true; $fsTimer.Stop(); $fsTimer.Start() })
+        $w.EnableRaisingEvents = $true
+        $script:FsWatch = $w
+        Write-Log 'watching the workspace folder for changes'
+    } catch { Write-Log ('folder watcher not started: ' + $_.Exception.Message) }
+}
+function Fs-Event([string]$full) {
+    # an action writes files itself and refreshes when done
+    if ($script:OpDepth -gt 0) { return }
+    $rel = $full; if ($full.StartsWith($script:Root, [StringComparison]::OrdinalIgnoreCase)) { $rel = $full.Substring($script:Root.Length) }
+    if (Fs-Noise $rel) { return }
+    $script:FsDirty = $true
+    $fsTimer.Stop(); $fsTimer.Start()
+}
+$fsTimer = New-Object System.Windows.Forms.Timer
+$fsTimer.Interval = 2000
+$fsTimer.Add_Tick({
+    $fsTimer.Stop()
+    if (-not $script:FsDirty -or -not $form.Visible) { return }
+    # busy: try again shortly
+    if ($script:OpDepth -gt 0 -or $script:BusyDepth -gt 0 -or $script:StatusRunning) { $fsTimer.Start(); return }
+    $script:FsDirty = $false
+    Write-Log 'files changed: list refreshed'
+    Refresh-All $true
+})
 
 # Reads the status now and waits until Diversion has synced everything (before submit / shelve / revert)
 function Refresh-Now {
@@ -996,9 +1057,11 @@ function Show-Pending($st, [bool]$unreachable) {
     $script:WsCommit = $st.Commit
     $script:PendingByPath = @{}
     foreach ($p in $st.Files) { $script:PendingByPath[$p.Path] = $p }
+    $sig = (@($st.Files | ForEach-Object { [string]$_.Kind + '|' + $_.Path }) -join "`n")
+    $same = ($script:QuietRefresh -and $sig -eq $script:PendingSig)
+    $script:PendingSig = $sig
     $sw = [Diagnostics.Stopwatch]::StartNew()
-    Build-Tree
-    Write-Timing ('build-pending-tree (' + $st.Files.Count + ' files)') $sw.Elapsed.TotalMilliseconds
+    if (-not $same) { Build-Tree; Write-Timing ('build-pending-tree (' + $st.Files.Count + ' files)') $sw.Elapsed.TotalMilliseconds }
     # Diversion shelves: listed online in the background (no lock), cached for offline
     if (-not $script:Offline -and -not $unreachable) { if ($script:OpDepth -gt 0) { $script:OpLater['shelf'] = $true } else { Start-DvAsync @('shelf') 'Apply-DvShelves' $true $true '' } }
     $script:Branch = $st.Branch
@@ -1008,8 +1071,8 @@ function Show-Pending($st, [bool]$unreachable) {
     elseif ($st.Syncing) { Set-Mode 'online' 'Syncing...' }
     else { Set-Mode 'online' '' }
     Set-BranchInfo
-    $script:LocalBuilt = $false; $script:DepotBuilt = $false
-    Show-Tab
+    if (-not $same) { $script:LocalBuilt = $false; $script:DepotBuilt = $false; Show-Tab }
+    $script:QuietRefresh = $false
     $sync = 'sync on'
     if ($st.Syncing) { $sync = 'sync on - Diversion still syncing, list updates by itself' }
     if ($script:Offline) { $sync = 'OFFLINE' }
@@ -2516,6 +2579,8 @@ function Run-GuiSelfCheck {
         $fr = $null; foreach ($cn in $tv.Nodes) { foreach ($x in $cn.Nodes) { if (-not $fr -and $x.Tag.Type -eq 'file') { $fr = $x } } }
         if ($fr) { C 'rows: file name first, folder after (muted), full path in the tooltip' ($fr.Tag.Main -eq (Path-Leaf $fr.Tag.Item.Path) -and $fr.Tag.Sub -eq (Path-Dir $fr.Tag.Item.Path) -and $fr.ToolTipText -eq $fr.Tag.Item.Path) $fr.Text }
         C 'rows: one text grey for files in both themes' ($script:PalDark.Row -and $script:PalLight.Row)
+        C 'up to date by itself: Unreal busy folders and dvcl data ignored, assets watched' ((Fs-Noise 'mapping-x/Saved/Logs/a.log') -and (Fs-Noise '\.dvcl\dvcl.log') -and (Fs-Noise 'g/Intermediate/x') -and -not (Fs-Noise 'g/Content/Maps/A.umap') -and -not (Fs-Noise 'g/Content/__ExternalActors__/M/0/AB/x.uasset'))
+        C 'legend: on the Changelists tab, not above the list' ($script:LegendTip -and $script:LegendTip.OwnerDraw -and $padPending.Controls.Count -eq 1)
         $us = Ue-LinkStatus
         C 'unreal link: status read (engine / installed / up to date / editor)' ($null -ne $us -and $null -ne $us.PSObject.Properties['UpToDate'] -and $null -ne $us.PSObject.Properties['Editor'])
         [void]$r.Add('INFO  unreal link status: engine found ' + [bool]$us.Engine + ', installed ' + $us.Installed + ', up to date ' + $us.UpToDate + ', editor open ' + $us.Editor)
@@ -2554,6 +2619,7 @@ function Show-FromTray {
     $form.Show(); Show-Floats
     if ($form.WindowState -eq 'Minimized') { $form.WindowState = 'Normal' }
     $form.Activate(); $form.BringToFront()
+    if ($script:FsDirty) { $fsTimer.Stop(); $fsTimer.Start() }
 }
 function Exit-Dvcl { $script:ReallyExit = $true; $form.Close() }
 $script:SelfPath = $PSCommandPath
@@ -2590,7 +2656,7 @@ $form.Add_FormClosing({
         return
     }
     Save-Settings
-    $jobTimer.Stop(); $pollTimer.Stop(); $watchTimer.Stop(); $instTimer.Stop(); $saveTimer.Stop()
+    $jobTimer.Stop(); $pollTimer.Stop(); $watchTimer.Stop(); $instTimer.Stop(); $saveTimer.Stop(); $fsTimer.Stop(); Stop-FsWatch
     foreach ($j in @($script:Jobs)) { try { $j.PS.Stop(); $j.PS.Dispose() } catch {} }
     $notify.Visible = $false; $notify.Dispose()
     if ($script:InstMutex) { try { $script:InstMutex.ReleaseMutex() } catch {}; $script:InstMutex.Dispose(); $script:InstMutex = $null }

@@ -89,6 +89,8 @@ function Render-Zone($z) {
         $l.AutoSize = $true; $l.Text = $p.Title; $l.Tag = $id; $l.Cursor = [System.Windows.Forms.Cursors]::Hand
         $l.Padding = New-Object System.Windows.Forms.Padding(9, 4, 9, 4); $l.Margin = New-Object System.Windows.Forms.Padding(0, 0, 1, 0)
         $l.Add_MouseDown($script:TabDown); $l.Add_MouseMove($script:TabMove); $l.Add_MouseUp($script:TabUp)
+        # Changelists tab: the icon legend when hovered
+        if ($id -eq 'pending' -and $script:LegendTip) { $script:LegendTip.SetToolTip($l, 'legend') }
         [void]$z.Strip.Controls.Add($l)
     }
     $z.Strip.ResumeLayout()

@@ -2,6 +2,12 @@
 
 Versions follow [semver](https://semver.org). Tags: `vX.Y.Z`.
 
+## 0.23.0 - 2026-11-16
+
+- Up to date by itself: files saved, added, deleted or renamed in the workspace (Unreal, Explorer) refresh the list 2 s after the last change, in the background: no lock, the tree is redrawn only if the list changed. Unreal's busy folders (Saved, Intermediate, DerivedDataCache) are left out.
+- Icons in grey; only the state badge is colored.
+- Icon legend: hover the Changelists tab (no header row above the list).
+
 ## 0.22.0 - 2026-11-16
 
 - Changelists easier to read: one text grey for every file (no color per state; the icon shows it), file name first with its folder after in a dimmer grey (full path in the tooltip), changelist counts dimmer, a little more space between rows.
