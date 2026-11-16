@@ -2,6 +2,11 @@
 
 Versions follow [semver](https://semver.org). Tags: `vX.Y.Z`.
 
+## 0.22.0 - 2026-11-16
+
+- Changelists easier to read: one text grey for every file (no color per state; the icon shows it), file name first with its folder after in a dimmer grey (full path in the tooltip), changelist counts dimmer, a little more space between rows.
+- Clearer state icons: page with a folded corner, colored badge with a dark ring (green + added, blue dot modified, red x deleted, orange arrow renamed).
+
 ## 0.21.0 - 2026-11-16
 
 - OFPA files (Unreal one-file-per-actor, __ExternalActors__ / __ExternalObjects__): one line per level in changelists and shelves, with the file count by kind. Click, Ctrl / Shift+click, drag, move, revert, shelve, submit and unshelve act on all its files. View > "OFPA files: one line per level" (on by default, remembered).

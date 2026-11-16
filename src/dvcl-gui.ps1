@@ -60,7 +60,7 @@ $fontMono = New-Object System.Drawing.Font('Consolas', 9)
 $script:Dark = $false
 $script:PalLight = @{
     Back = [System.Drawing.SystemColors]::Control; Fore = [System.Drawing.SystemColors]::ControlText; Input = [System.Drawing.SystemColors]::Window
-    Muted = [System.Drawing.Color]::FromArgb(110, 110, 110); Stale = [System.Drawing.Color]::DarkGray; Shelf = [System.Drawing.Color]::FromArgb(120, 80, 30)
+    Row = [System.Drawing.Color]::FromArgb(45, 45, 45); Muted = [System.Drawing.Color]::FromArgb(110, 110, 110); Stale = [System.Drawing.Color]::DarkGray; Shelf = [System.Drawing.Color]::FromArgb(120, 80, 30)
     Log = [System.Drawing.Color]::FromArgb(250, 250, 250); Link = [System.Drawing.Color]::FromArgb(0, 90, 190)
     Border = [System.Drawing.SystemColors]::ControlDark; Hi = [System.Drawing.SystemColors]::Highlight; Sel = [System.Drawing.SystemColors]::Highlight
     offline = [System.Drawing.Color]::FromArgb(255, 236, 160); online = [System.Drawing.Color]::FromArgb(214, 240, 214)
@@ -70,7 +70,7 @@ $script:PalLight = @{
 }
 $script:PalDark = @{
     Back = [System.Drawing.Color]::FromArgb(45, 45, 48); Fore = [System.Drawing.Color]::FromArgb(225, 225, 225); Input = [System.Drawing.Color]::FromArgb(30, 30, 30)
-    Muted = [System.Drawing.Color]::FromArgb(150, 150, 150); Stale = [System.Drawing.Color]::FromArgb(115, 115, 115); Shelf = [System.Drawing.Color]::FromArgb(205, 165, 110)
+    Row = [System.Drawing.Color]::FromArgb(205, 205, 205); Muted = [System.Drawing.Color]::FromArgb(140, 140, 140); Stale = [System.Drawing.Color]::FromArgb(115, 115, 115); Shelf = [System.Drawing.Color]::FromArgb(205, 165, 110)
     Log = [System.Drawing.Color]::FromArgb(24, 24, 24); Link = [System.Drawing.Color]::FromArgb(110, 175, 255)
     Border = [System.Drawing.Color]::FromArgb(63, 63, 70); Hi = [System.Drawing.Color]::FromArgb(62, 62, 66); Sel = [System.Drawing.Color]::FromArgb(0, 120, 215)
     offline = [System.Drawing.Color]::FromArgb(92, 74, 20); online = [System.Drawing.Color]::FromArgb(35, 80, 45)
@@ -204,8 +204,8 @@ $main.Panel1.Controls.Add($trees)
 $icons = New-Object System.Windows.Forms.ImageList
 $icons.ImageSize = New-Object System.Drawing.Size(16, 16); $icons.ColorDepth = 'Depth32Bit'
 $script:BadgeColor = @{
-    'A' = [System.Drawing.Color]::FromArgb(40, 160, 60); 'M' = [System.Drawing.Color]::FromArgb(245, 245, 245)
-    'D' = [System.Drawing.Color]::FromArgb(210, 40, 40); 'R' = [System.Drawing.Color]::FromArgb(220, 130, 0)
+    'A' = [System.Drawing.Color]::FromArgb(46, 160, 67); 'M' = [System.Drawing.Color]::FromArgb(36, 124, 220)
+    'D' = [System.Drawing.Color]::FromArgb(215, 58, 58); 'R' = [System.Drawing.Color]::FromArgb(230, 140, 20)
     '!' = [System.Drawing.Color]::FromArgb(200, 0, 160); '?' = [System.Drawing.Color]::Gray
 }
 function New-Icon([string]$base, [string]$badge) {
@@ -214,7 +214,15 @@ function New-Icon([string]$base, [string]$badge) {
     $g.SmoothingMode = 'AntiAlias'
     $grey = [System.Drawing.Color]::FromArgb(120, 120, 120)
     switch ($base) {
-        'file'   { $g.FillRectangle([System.Drawing.Brushes]::White, 3, 1, 9, 13); $g.DrawRectangle((New-Object System.Drawing.Pen($grey)), 3, 1, 9, 13) }
+        'file'   {
+            # page with a folded corner
+            $g.SmoothingMode = 'None'
+            $pts = [System.Drawing.Point[]]@((New-Object System.Drawing.Point(3, 1)), (New-Object System.Drawing.Point(9, 1)), (New-Object System.Drawing.Point(12, 4)), (New-Object System.Drawing.Point(12, 14)), (New-Object System.Drawing.Point(3, 14)))
+            $g.FillPolygon((New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(238, 238, 238))), $pts)
+            $g.DrawPolygon((New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(130, 130, 130))), $pts)
+            $g.DrawLine((New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(130, 130, 130))), 9, 1, 9, 4); $g.DrawLine((New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(130, 130, 130))), 9, 4, 12, 4)
+            $g.SmoothingMode = 'AntiAlias'
+        }
         'faded'  { $g.DrawRectangle((New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(190, 190, 190))), 3, 1, 9, 13) }
         'folder' { $b = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(235, 190, 70)); $g.FillRectangle($b, 1, 3, 6, 3); $g.FillRectangle($b, 1, 5, 14, 9) }
         'folderoff' { $pn = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(170, 170, 170)); $g.DrawRectangle($pn, 1, 3, 5, 2); $g.DrawRectangle($pn, 1, 5, 13, 8) }
@@ -231,11 +239,13 @@ function New-Icon([string]$base, [string]$badge) {
     }
     if ($badge) {
         $c = $script:BadgeColor[$badge]
+        # dark ring keeps the badge apart from the page
+        $g.FillEllipse((New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(40, 40, 40))), 6, 6, 11, 11)
         $g.FillEllipse((New-Object System.Drawing.SolidBrush($c)), 7, 7, 9, 9)
         $w = New-Object System.Drawing.Pen([System.Drawing.Color]::White, 1.6)
         switch ($badge) {
             'A' { $g.DrawLine($w, 11.5, 9, 11.5, 14); $g.DrawLine($w, 9, 11.5, 14, 11.5) }
-            'M' { $g.DrawEllipse((New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(90, 90, 90))), 7, 7, 8.6, 8.6); $g.FillEllipse((New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(60, 60, 60))), 10, 10, 3, 3) }
+            'M' { $g.FillEllipse([System.Drawing.Brushes]::White, 10, 10, 3, 3) }
             'D' { $g.DrawLine($w, 9.5, 9.5, 13.5, 13.5); $g.DrawLine($w, 13.5, 9.5, 9.5, 13.5) }
             'R' { $g.DrawLine($w, 9, 11.5, 14, 11.5); $g.DrawLine($w, 12, 9.5, 14, 11.5); $g.DrawLine($w, 12, 13.5, 14, 11.5) }
             '!' { $g.DrawLine($w, 11.5, 8.5, 11.5, 12); $g.FillRectangle([System.Drawing.Brushes]::White, 11, 13, 1.6, 1.6) }
@@ -251,6 +261,14 @@ foreach ($k in 'A', 'M', 'D', 'R', '!', '?') { $icons.Images.Add(('file-' + $k),
 # Local / Depot trees exist before the icons: attach the list here
 $tvLocal.ImageList = $icons; $tvDepot.ImageList = $icons
 function Set-Icon($node, [string]$key) { $node.ImageKey = $key; $node.SelectedImageKey = $key }
+# Changelist rows: main text (name) + a muted part (folder, counts); the node text holds both
+function Set-Row($node, [string]$main, [string]$sub) {
+    $node.Text = $main + $(if ($sub) { '   ' + $sub } else { '' })
+    $node.Tag.PSObject.Properties.Add([psnoteproperty]::new('Main', $main))
+    $node.Tag.PSObject.Properties.Add([psnoteproperty]::new('Sub', $sub))
+}
+function Path-Leaf([string]$p) { $i = $p.LastIndexOf('/'); if ($i -lt 0) { return $p }; return $p.Substring($i + 1) }
+function Path-Dir([string]$p) { $i = $p.LastIndexOf('/'); if ($i -lt 0) { return '' }; return $p.Substring(0, $i) }
 # Icon of a pending item: folder or file + its state
 function Pending-IconKey($p) {
     $base = 'file'; if ([System.IO.Directory]::Exists((Full-Path $p.Path))) { $base = 'folder' }
@@ -262,7 +280,7 @@ $tv = New-Object System.Windows.Forms.TreeView
 $tv.Dock = 'Fill'; $tv.CheckBoxes = $false; $tv.HideSelection = $false; $tv.FullRowSelect = $false; $tv.DrawMode = 'OwnerDrawText'
 # Multi-selection like Explorer (click, Ctrl+click, Shift+click, Ctrl+A): selected file paths
 $script:Sel = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
-$tv.ShowLines = $true; $tv.AllowDrop = $true; $tv.ItemHeight = 20; $tv.ImageList = $icons; $tv.ShowNodeToolTips = $true
+$tv.ShowLines = $true; $tv.AllowDrop = $true; $tv.ItemHeight = 22; $tv.ImageList = $icons; $tv.ShowNodeToolTips = $true
 $tv.Font = $fontBold   # changelist rows bold; file rows set back to regular (avoids clipped bold text)
 # Header with the icon legend
 $pendHead = New-Object System.Windows.Forms.FlowLayoutPanel
@@ -520,6 +538,7 @@ function Build-Tree {
         $count += ')'
         $n = New-Object System.Windows.Forms.TreeNode(($label + $count))
         $n.Tag = [pscustomobject]@{ Type = 'cl'; Name = $name; Stale = $stale.Count }
+        Set-Row $n $label ($count.Trim())
         Set-Icon $n $(if ($name -eq 'default') { 'cldef' } else { 'cl' })
         # OFPA actor files: one line per level instead of one per file
         $plainItems = @($items); $ofpa = @()
@@ -536,6 +555,7 @@ function Build-Tree {
             $k = Kind-Letter $p.Kind
             $f = New-Object System.Windows.Forms.TreeNode($p.Path)
             $f.Tag = [pscustomobject]@{ Type = 'file'; Item = $p; Cl = $name }
+            Set-Row $f (Path-Leaf $p.Path) (Path-Dir $p.Path); $f.ToolTipText = $p.Path
             $f.ForeColor = $colKind[$k]
             Set-Icon $f (Pending-IconKey $p)
             $f.NodeFont = $fontUi
@@ -543,8 +563,9 @@ function Build-Tree {
         }
         foreach ($og in $ofpa) {
             $k = Kind-Letter (@($og.Items)[0].Kind); if (@($og.Items | Where-Object { (Kind-Letter $_.Kind) -ne $k }).Count) { $k = 'M' }
-            $f = New-Object System.Windows.Forms.TreeNode(($og.Name + '   OFPA ' + $og.What + ', ' + (Kinds-Text $og.Items)))
+            $f = New-Object System.Windows.Forms.TreeNode($og.Name)
             $f.Tag = [pscustomobject]@{ Type = 'ofpa'; Items = @($og.Items); Keys = @($og.Items | ForEach-Object { $_.Path }); Folder = $og.Folder; Cl = $name }
+            Set-Row $f ($og.Name + '   OFPA ' + $og.What) (Kinds-Text $og.Items)
             $f.ToolTipText = $og.Folder + "`r`nOne line for this level's actor files (View > OFPA files: one line per level)"
             $f.ForeColor = $colKind[$k]; Set-Icon $f ('folder-' + $k); $f.NodeFont = $fontUi
             [void]$n.Nodes.Add($f)
@@ -553,6 +574,7 @@ function Build-Tree {
         foreach ($sp in $stale) {
             $f = New-Object System.Windows.Forms.TreeNode($sp)
             $f.Tag = [pscustomobject]@{ Type = 'stale'; Path = $sp; Cl = $name }
+            Set-Row $f (Path-Leaf $sp) ((Path-Dir $sp) + '   not pending'); $f.ToolTipText = $sp + "`r`nNot pending any more (submitted or reverted elsewhere): right-click > Remove"
             Set-Icon $f 'stale'
             $f.ForeColor = $script:Pal.Stale
             $f.NodeFont = $fontUi
@@ -565,13 +587,15 @@ function Build-Tree {
             $sn = New-Object System.Windows.Forms.TreeNode($label)
             $sn.ToolTipText = 'shelf ' + $(if ($sh.Local) { $sh.Id } else { $sh.Name + ' (' + $sh.Id + ')' })
             $sn.Tag = [pscustomobject]@{ Type = 'shelf'; Shelf = $sh; Cl = $name }; $sn.NodeFont = $fontUi
+            Set-Row $sn ('Shelved files' + $(if ($sh.Count -ge 0) { ' (' + $sh.Count + ')' } else { '' })) ($(if ($sh.Local) { 'local' } else { 'Diversion' }) + $(if ($sh.Created) { ', ' + $sh.Created } else { '' }))
             $sn.ForeColor = $script:Pal.Shelf; Set-Icon $sn 'shelf'
             $shFiles = @($sh.Files); $shGroups = @()
             if ($script:GroupOfpa) { $so = Split-Ofpa $shFiles; $shFiles = @($so.Plain); $shGroups = @($so.Groups) }
             foreach ($og in $shGroups) {
                 $k = Kind-Letter (@($og.Items)[0].Kind)
-                $fn = New-Object System.Windows.Forms.TreeNode(($og.Name + '   OFPA ' + $og.What + ', ' + (Kinds-Text $og.Items)))
+                $fn = New-Object System.Windows.Forms.TreeNode($og.Name)
                 $fn.Tag = [pscustomobject]@{ Type = 'shelfgroup'; Paths = @($og.Items | ForEach-Object { $_.Path }); Keys = @($og.Items | ForEach-Object { 'shelf|' + [string]$sh.Id + '|' + $_.Path }); Cl = $name; ShelfId = [string]$sh.Id; Folder = $og.Folder }
+                Set-Row $fn ($og.Name + '   OFPA ' + $og.What) (Kinds-Text $og.Items)
                 $fn.ToolTipText = $og.Folder; $fn.NodeFont = $fontUi; $fn.ForeColor = $script:Pal.Muted; Set-Icon $fn ('folder-' + $k)
                 [void]$sn.Nodes.Add($fn)
             }
@@ -579,6 +603,7 @@ function Build-Tree {
                 $k = Kind-Letter $sf.Kind
                 $fn = New-Object System.Windows.Forms.TreeNode($sf.Path)
                 $fn.Tag = [pscustomobject]@{ Type = 'shelffile'; Path = $sf.Path; Cl = $name; ShelfId = [string]$sh.Id }; $fn.NodeFont = $fontUi
+                Set-Row $fn (Path-Leaf $sf.Path) (Path-Dir $sf.Path); $fn.ToolTipText = $sf.Path
                 $fn.ForeColor = $script:Pal.Muted; Set-Icon $fn ('file-' + $k)
                 [void]$sn.Nodes.Add($fn)
             }
@@ -2067,18 +2092,29 @@ function Check-AllFiles([bool]$on) {
 $tv.Add_DrawNode({
     param($s, $e)
     $n = $e.Node
+    if ($e.Bounds.Width -le 0 -or $e.Bounds.Height -le 0) { return }
     $on = (Is-Sel $n) -or ($n -eq $s.SelectedNode -and $n.Tag -and -not (Node-Key $n))
     $cur = ($n -eq $s.SelectedNode)
-    if (-not $on -and -not $cur) { $e.DrawDefault = $true; return }
-    if ($e.Bounds.Width -le 0) { return }
+    $fnt = $n.NodeFont; if (-not $fnt) { $fnt = $s.Font }
+    $main = [string]$n.Text; $sub = ''
+    if ($n.Tag -and $n.Tag.PSObject.Properties['Main']) { $main = [string]$n.Tag.Main; $sub = [string]$n.Tag.Sub }
+    $fl = [System.Windows.Forms.TextFormatFlags]'Left, VerticalCenter, NoPrefix, SingleLine, NoPadding'
+    $big = New-Object System.Drawing.Size(8000, $e.Bounds.Height)
+    $w1 = [System.Windows.Forms.TextRenderer]::MeasureText($e.Graphics, $main, $fnt, $big, $fl).Width
+    $w2 = $(if ($sub) { [System.Windows.Forms.TextRenderer]::MeasureText($e.Graphics, ('   ' + $sub), $fnt, $big, $fl).Width } else { 0 })
+    $r = New-Object System.Drawing.Rectangle($e.Bounds.X, $e.Bounds.Y, ([Math]::Max($e.Bounds.Width, $w1 + $w2 + 6)), $e.Bounds.Height)
     $bg = $s.BackColor
     if ($on) { $bg = $(if ($s.Focused) { $script:Pal.Sel } elseif ($script:Dark) { $script:Pal.Hi } else { [System.Drawing.Color]::FromArgb(217, 217, 217) }) }
-    $b = New-Object System.Drawing.SolidBrush($bg); $e.Graphics.FillRectangle($b, $e.Bounds); $b.Dispose()
-    $fnt = $n.NodeFont; if (-not $fnt) { $fnt = $s.Font }
-    $fc = $n.ForeColor; if ($fc.IsEmpty) { $fc = $s.ForeColor }
-    if ($on -and $s.Focused) { $fc = [System.Drawing.Color]::White }
-    [System.Windows.Forms.TextRenderer]::DrawText($e.Graphics, $n.Text, $fnt, $e.Bounds, $fc, [System.Windows.Forms.TextFormatFlags]'Left, VerticalCenter, NoPrefix, SingleLine')
-    if ($cur -and $s.Focused -and -not $on) { [System.Windows.Forms.ControlPaint]::DrawFocusRectangle($e.Graphics, $e.Bounds) }
+    $b = New-Object System.Drawing.SolidBrush($bg); $e.Graphics.FillRectangle($b, $r); $b.Dispose()
+    # one text grey for every row (state = icon), headers brighter, entries not pending dimmer
+    $fc = $script:Pal.Row; $sc = $script:Pal.Muted
+    if ($n.Tag -and $n.Tag.Type -eq 'cl') { $fc = $script:Pal.Fore }
+    elseif ($n.Tag -and $n.Tag.Type -in 'stale', 'more') { $fc = $script:Pal.Stale }
+    if ($on -and $s.Focused) { $fc = [System.Drawing.Color]::White; $sc = [System.Drawing.Color]::FromArgb(215, 225, 240) }
+    $x = $r.X + 3
+    [System.Windows.Forms.TextRenderer]::DrawText($e.Graphics, $main, $fnt, (New-Object System.Drawing.Rectangle($x, $r.Y, ($w1 + 4), $r.Height)), $fc, $fl)
+    if ($sub) { [System.Windows.Forms.TextRenderer]::DrawText($e.Graphics, ('   ' + $sub), $fnt, (New-Object System.Drawing.Rectangle(($x + $w1), $r.Y, ($w2 + 4), $r.Height)), $sc, $fl) }
+    if ($cur -and $s.Focused -and -not $on) { [System.Windows.Forms.ControlPaint]::DrawFocusRectangle($e.Graphics, $r) }
 })
 $tv.Add_KeyDown({
     param($s, $e)
@@ -2472,11 +2508,14 @@ function Run-GuiSelfCheck {
             $fnl = File-Nodes; $ofx = @($fnl | Where-Object { $_.Tag.Item.Path -like ($tp + '/*') }).Count
             if ($on) { Select-Click $on ([System.Windows.Forms.Keys]::None) }
             $ti = Target-Items
-            C 'OFPA: a level''s actor files on one line, selecting it selects them all' ($on -and $ofx -eq 0 -and @($on.Tag.Items).Count -eq 3 -and $ti.Count -eq 3 -and (Is-Sel $on) -and $on.Text -like 'T   OFPA actors, 3 files*') ($(if ($on) { $on.Text + ' | rows ' + $ofx + ', items ' + @($on.Tag.Items).Count + ', selected ' + @($ti).Count + ', line selected ' + (Is-Sel $on) } else { 'no line' }))
+            C 'OFPA: a level''s actor files on one line, selecting it selects them all' ($on -and $ofx -eq 0 -and @($on.Tag.Items).Count -eq 3 -and $ti.Count -eq 3 -and (Is-Sel $on) -and $on.Text -like 'T   OFPA actors*3 files*') ($(if ($on) { $on.Text + ' | rows ' + $ofx + ', items ' + @($on.Tag.Items).Count + ', selected ' + @($ti).Count + ', line selected ' + (Is-Sel $on) } else { 'no line' }))
             $script:GroupOfpa = $false; Build-Tree
             $fnl = File-Nodes
             C 'OFPA: off = one row per file' (@($fnl | Where-Object { $_.Tag.Item.Path -like ($tp + '/*') }).Count -eq 3) ([string]@($fnl | Where-Object { $_.Tag.Item.Path -like ($tp + '/*') }).Count)
         } finally { $script:Pending = $svP; $script:GroupOfpa = $svG; $script:Sel.Clear(); Build-Tree }
+        $fr = $null; foreach ($cn in $tv.Nodes) { foreach ($x in $cn.Nodes) { if (-not $fr -and $x.Tag.Type -eq 'file') { $fr = $x } } }
+        if ($fr) { C 'rows: file name first, folder after (muted), full path in the tooltip' ($fr.Tag.Main -eq (Path-Leaf $fr.Tag.Item.Path) -and $fr.Tag.Sub -eq (Path-Dir $fr.Tag.Item.Path) -and $fr.ToolTipText -eq $fr.Tag.Item.Path) $fr.Text }
+        C 'rows: one text grey for files in both themes' ($script:PalDark.Row -and $script:PalLight.Row)
         $us = Ue-LinkStatus
         C 'unreal link: status read (engine / installed / up to date / editor)' ($null -ne $us -and $null -ne $us.PSObject.Properties['UpToDate'] -and $null -ne $us.PSObject.Properties['Editor'])
         [void]$r.Add('INFO  unreal link status: engine found ' + [bool]$us.Engine + ', installed ' + $us.Installed + ', up to date ' + $us.UpToDate + ', editor open ' + $us.Editor)
