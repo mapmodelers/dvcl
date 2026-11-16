@@ -376,6 +376,41 @@ function Parse-ShowFiles([string[]]$lines) {
     return $list   # streamed: callers wrap in @()
 }
 
+# Unreal one-file-per-actor (OFPA): ".../__ExternalActors__/<level path>/<hashed folders>/<file>".
+# Returns the level's folder and name ($null for any other file), so a level's thousands of actor
+# files can show as one line.
+function Ofpa-Group([string]$path) {
+    $m = [regex]::Match($path, '^(.*?/__External(Actors|Objects)__/)(.+)$', 'IgnoreCase')
+    if (-not $m.Success) { return $null }
+    $segs = @($m.Groups[3].Value.Split('/'))
+    $keep = New-Object System.Collections.ArrayList
+    for ($i = 0; $i -lt $segs.Count - 1; $i++) { [void]$keep.Add($segs[$i]) }
+    # the hashed folders under the level (Unreal: two, of one and two characters)
+    $cut = 0
+    while ($cut -lt 2 -and $keep.Count -gt 1 -and ([string]$keep[$keep.Count - 1]) -match '^[0-9A-Za-z]{1,2}$') { $keep.RemoveAt($keep.Count - 1); $cut++ }
+    if ($keep.Count -eq 0) { return $null }
+    $lvl = ($keep -join '/')
+    return [pscustomobject]@{ Folder = ($m.Groups[1].Value + $lvl); Name = [string]$keep[$keep.Count - 1]; What = $(if ($m.Groups[2].Value -ieq 'Actors') { 'actors' } else { 'objects' }) }
+}
+# Pending / shelved items split into plain ones and OFPA groups (one per level folder), order kept
+function Split-Ofpa($items, [string]$pathProp = 'Path') {
+    $plain = New-Object System.Collections.ArrayList
+    $groups = [ordered]@{}
+    foreach ($it in @($items)) {
+        $g = Ofpa-Group ([string]$it.$pathProp)
+        if (-not $g) { [void]$plain.Add($it); continue }
+        if (-not $groups.Contains($g.Folder)) { $groups[$g.Folder] = [pscustomobject]@{ Folder = $g.Folder; Name = $g.Name; What = $g.What; Items = (New-Object System.Collections.ArrayList) } }
+        [void]$groups[$g.Folder].Items.Add($it)
+    }
+    return [pscustomobject]@{ Plain = $plain; Groups = @($groups.Values) }
+}
+# "123 files: 120 M, 2 A, 1 D"
+function Kinds-Text($items) {
+    $n = [ordered]@{}
+    foreach ($it in @($items)) { $k = Kind-Letter $it.Kind; if (-not $n.Contains($k)) { $n[$k] = 0 }; $n[$k]++ }
+    return ([string]@($items).Count + ' files: ' + (@($n.Keys | ForEach-Object { [string]$n[$_] + ' ' + $_ }) -join ', '))
+}
+
 function Kind-Letter([string]$k) {
     switch -regex ($k) { '^[AMDR!]$' { $k.ToUpperInvariant() } '^New|^Add' { 'A' } '^Mod|^Chang' { 'M' } '^Del|^Rem' { 'D' } '^Ren|^Mov' { 'R' } '^Conf' { '!' } default { '?' } }
 }

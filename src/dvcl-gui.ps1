@@ -39,7 +39,7 @@ function Settings-Json([string]$last, $lay) {
     $b = $(if ($form.WindowState -eq 'Normal') { $form.Bounds } else { $form.RestoreBounds })
     return ([pscustomobject]@{ lastRepo = $last; w = $b.Width; h = $b.Height; x = $b.X; y = $b.Y; max = ($form.WindowState -eq 'Maximized')
         ui = $(if ($script:Dark) { 'dark' } else { 'light' }); layout = $lay
-        openShelves = @($script:OpenShelves); closedCls = @($script:ClosedCLs)
+        openShelves = @($script:OpenShelves); closedCls = @($script:ClosedCLs); groupOfpa = [bool]$script:GroupOfpa
         ueEngine = $(if ($script:UeEngineSeen) { [string]$script:UeEngineSeen } else { [string]$settings.ueEngine }) } | ConvertTo-Json -Depth 8)
 }
 $settings = Load-Settings
@@ -489,6 +489,8 @@ $script:Offline = $false
 $script:BaselineFresh = $false
 
 $script:MaxRows = 1500
+# OFPA actor files: one line per level (View menu, kept in settings; on unless turned off)
+$script:GroupOfpa = ($settings.groupOfpa -ne $false)
 function Build-Tree {
     if ($script:OpDepth -gt 0) { $script:TreeDirty = $true; return }
     $script:BuildCount++
@@ -519,11 +521,14 @@ function Build-Tree {
         $n = New-Object System.Windows.Forms.TreeNode(($label + $count))
         $n.Tag = [pscustomobject]@{ Type = 'cl'; Name = $name; Stale = $stale.Count }
         Set-Icon $n $(if ($name -eq 'default') { 'cldef' } else { 'cl' })
+        # OFPA actor files: one line per level instead of one per file
+        $plainItems = @($items); $ofpa = @()
+        if ($script:GroupOfpa) { $so = Split-Ofpa $items; $plainItems = @($so.Plain); $ofpa = @($so.Groups) }
         # a huge list freezes the TreeView (48k rows = 80 s): show the first ones, the rest stay in the changelist
         $shown = 0
-        foreach ($p in $items) {
+        foreach ($p in $plainItems) {
             if ($shown -ge $script:MaxRows) {
-                $more = New-Object System.Windows.Forms.TreeNode(('+' + ($items.Count - $shown) + ' more'))
+                $more = New-Object System.Windows.Forms.TreeNode(('+' + ($plainItems.Count - $shown) + ' more'))
                 $more.Tag = [pscustomobject]@{ Type = 'more'; Cl = $name }; $more.ForeColor = $script:Pal.Stale; $more.NodeFont = $fontUi; Set-Icon $more 'none'
                 [void]$n.Nodes.Add($more); break
             }
@@ -534,6 +539,14 @@ function Build-Tree {
             $f.ForeColor = $colKind[$k]
             Set-Icon $f (Pending-IconKey $p)
             $f.NodeFont = $fontUi
+            [void]$n.Nodes.Add($f)
+        }
+        foreach ($og in $ofpa) {
+            $k = Kind-Letter (@($og.Items)[0].Kind); if (@($og.Items | Where-Object { (Kind-Letter $_.Kind) -ne $k }).Count) { $k = 'M' }
+            $f = New-Object System.Windows.Forms.TreeNode(($og.Name + '   OFPA ' + $og.What + ', ' + (Kinds-Text $og.Items)))
+            $f.Tag = [pscustomobject]@{ Type = 'ofpa'; Items = @($og.Items); Keys = @($og.Items | ForEach-Object { $_.Path }); Folder = $og.Folder; Cl = $name }
+            $f.ToolTipText = $og.Folder + "`r`nOne line for this level's actor files (View > OFPA files: one line per level)"
+            $f.ForeColor = $colKind[$k]; Set-Icon $f ('folder-' + $k); $f.NodeFont = $fontUi
             [void]$n.Nodes.Add($f)
         }
         # Entries kept although dv does not report them (committed elsewhere, or sync paused)
@@ -553,7 +566,16 @@ function Build-Tree {
             $sn.ToolTipText = 'shelf ' + $(if ($sh.Local) { $sh.Id } else { $sh.Name + ' (' + $sh.Id + ')' })
             $sn.Tag = [pscustomobject]@{ Type = 'shelf'; Shelf = $sh; Cl = $name }; $sn.NodeFont = $fontUi
             $sn.ForeColor = $script:Pal.Shelf; Set-Icon $sn 'shelf'
-            foreach ($sf in @($sh.Files)) {
+            $shFiles = @($sh.Files); $shGroups = @()
+            if ($script:GroupOfpa) { $so = Split-Ofpa $shFiles; $shFiles = @($so.Plain); $shGroups = @($so.Groups) }
+            foreach ($og in $shGroups) {
+                $k = Kind-Letter (@($og.Items)[0].Kind)
+                $fn = New-Object System.Windows.Forms.TreeNode(($og.Name + '   OFPA ' + $og.What + ', ' + (Kinds-Text $og.Items)))
+                $fn.Tag = [pscustomobject]@{ Type = 'shelfgroup'; Paths = @($og.Items | ForEach-Object { $_.Path }); Keys = @($og.Items | ForEach-Object { 'shelf|' + [string]$sh.Id + '|' + $_.Path }); Cl = $name; ShelfId = [string]$sh.Id; Folder = $og.Folder }
+                $fn.ToolTipText = $og.Folder; $fn.NodeFont = $fontUi; $fn.ForeColor = $script:Pal.Muted; Set-Icon $fn ('folder-' + $k)
+                [void]$sn.Nodes.Add($fn)
+            }
+            foreach ($sf in $shFiles) {
                 $k = Kind-Letter $sf.Kind
                 $fn = New-Object System.Windows.Forms.TreeNode($sf.Path)
                 $fn.Tag = [pscustomobject]@{ Type = 'shelffile'; Path = $sf.Path; Cl = $name; ShelfId = [string]$sh.Id }; $fn.NodeFont = $fontUi
@@ -1005,26 +1027,44 @@ function Node-Key($n) {
     if ($n.Tag.Type -eq 'shelffile') { return ('shelf|' + $n.Tag.ShelfId + '|' + $n.Tag.Path) }
     return $null
 }
-function Is-Sel($n) { $k = Node-Key $n; return ($k -and $script:Sel.Contains($k)) }
+# all keys of a row: one for a file, every file's for an OFPA line
+function Node-Keys($n) {
+    if (-not $n -or -not $n.Tag) { return @() }
+    if ($n.Tag.Type -in 'ofpa', 'shelfgroup') { return @($n.Tag.Keys) }
+    $k = Node-Key $n; if ($k) { return @($k) }; return @()
+}
+function Is-Sel($n) {
+    if ($n -and $n.Tag -and $n.Tag.Type -in 'ofpa', 'shelfgroup') { $ks = @($n.Tag.Keys); return ($ks.Count -gt 0 -and @($ks | Where-Object { -not $script:Sel.Contains($_) }).Count -eq 0) }
+    $k = Node-Key $n; return ($k -and $script:Sel.Contains($k))
+}
 # Rows a Shift+click range runs over, top to bottom (shelved files only when their shelf is open)
 function Sel-Nodes {
     $l = New-Object System.Collections.ArrayList
     foreach ($cn in $tv.Nodes) { foreach ($fn in $cn.Nodes) {
-            if ($fn.Tag.Type -eq 'file') { [void]$l.Add($fn) }
+            if ($fn.Tag.Type -in 'file', 'ofpa') { [void]$l.Add($fn) }
             elseif ($fn.Tag.Type -eq 'shelf' -and $fn.IsExpanded) { foreach ($sf in $fn.Nodes) { [void]$l.Add($sf) } }
         } }
     return ,$l
 }
 # Selected shelved files of one shelf
 function Sel-ShelfPaths([string]$shelfId) { return @($script:Sel | Where-Object { $_ -like ('shelf|' + $shelfId + '|*') } | ForEach-Object { $_.Substring(('shelf|' + $shelfId + '|').Length) }) }
-function Target-Items {
+# Selected pending items: selected files, and the selected files of OFPA lines
+function Sel-Items {
     $sel = New-Object System.Collections.ArrayList
-    foreach ($fn in (File-Nodes)) { if (Is-Sel $fn) { [void]$sel.Add($fn.Tag.Item) } }
+    foreach ($cn in $tv.Nodes) { foreach ($fn in $cn.Nodes) {
+            if ($fn.Tag.Type -eq 'file') { if (Is-Sel $fn) { [void]$sel.Add($fn.Tag.Item) } }
+            elseif ($fn.Tag.Type -eq 'ofpa') { foreach ($it in @($fn.Tag.Items)) { if ($script:Sel.Contains($it.Path)) { [void]$sel.Add($it) } } }
+        } }
+    return ,$sel
+}
+function Target-Items {
+    $sel = Sel-Items
     if ($sel.Count -gt 0) { return ,$sel.ToArray() }
     $n = $tv.SelectedNode
     if (-not $n) { return ,@() }
     if ($n.Tag.Type -eq 'file') { return ,@($n.Tag.Item) }
-    if ($n.Tag.Type -in 'stale', 'shelf', 'shelffile') { return ,@() }
+    if ($n.Tag.Type -eq 'ofpa') { return ,@($n.Tag.Items) }
+    if ($n.Tag.Type -in 'stale', 'shelf', 'shelffile', 'shelfgroup') { return ,@() }
     if ($n.Tag.Type -eq 'more') { return ,@(Get-CLItems $script:Pending $n.Tag.Cl) }
     return ,@(Get-CLItems $script:Pending $n.Tag.Name)
 }
@@ -1217,6 +1257,7 @@ function Selected-Rel {
     if (-not $n) { return '' }
     if ($n.Tag.Type -eq 'file') { return $n.Tag.Item.Path }
     if ($n.Tag.Type -eq 'stale') { return $n.Tag.Path }
+    if ($n.Tag.Type -eq 'ofpa') { return $n.Tag.Folder }
     return ''
 }
 
@@ -1916,6 +1957,8 @@ foreach ($pid0 in @($script:Pads.Keys)) {
     $mi.Tag = $pid0
 }
 [void]$ddView.DropDownItems.Add((New-Object System.Windows.Forms.ToolStripSeparator))
+$miOfpa = Add-DropItem $ddView 'OFPA files: one line per level' "Unreal's one-file-per-actor files (__ExternalActors__) shown as one line per level, in changelists and shelves. Selecting the line selects all its files." { $script:GroupOfpa = -not $script:GroupOfpa; $miOfpa.Checked = $script:GroupOfpa; $script:Sel.Clear(); Build-Tree; Save-Settings }
+$miOfpa.Checked = $script:GroupOfpa
 [void](Add-DropItem $ddView 'Reset layout' 'Panels back to their places' { Reset-Layout })
 [void](Add-Btn 'Repo...' 'Pick another Diversion workspace' { Do-ChangeRepo })
 $bBug = Add-Btn 'Report bug' 'Open a new issue on GitHub' { Do-ReportBug }; $bBug.Alignment = 'Right'
@@ -1924,8 +1967,7 @@ $btnTheme = Add-Btn 'Dark' 'Dark / light theme' { Apply-Theme (-not $script:Dark
 
 # Selected files only (used by "New changelist": nothing selected = empty changelist)
 function Target-Items-IfChecked {
-    $sel = New-Object System.Collections.ArrayList
-    foreach ($fn in (File-Nodes)) { if (Is-Sel $fn) { [void]$sel.Add($fn.Tag.Item) } }
+    $sel = Sel-Items
     return ,$sel.ToArray()
 }
 
@@ -1939,23 +1981,23 @@ $tv.Add_AfterCollapse({ param($s, $e) if ($script:InBuild) { return }; if ($e.No
 $script:DragShelf = $null
 $tv.Add_ItemDrag({
     param($s, $e)
-    if ($e.Item.Tag.Type -in 'shelf', 'shelffile') {
+    if ($e.Item.Tag.Type -in 'shelf', 'shelffile', 'shelfgroup') {
         # a shelf, or shelved files (the selected ones if this one is selected), onto a changelist = unshelve there
         $shn = $(if ($e.Item.Tag.Type -eq 'shelf') { $e.Item } else { $e.Item.Parent })
         $only = $null
-        if ($e.Item.Tag.Type -eq 'shelffile') {
-            if (Is-Sel $e.Item) { $only = @(Sel-ShelfPaths ([string]$shn.Tag.Shelf.Id)) } else { $only = @($e.Item.Tag.Path) }
+        if ($e.Item.Tag.Type -in 'shelffile', 'shelfgroup') {
+            if (Is-Sel $e.Item) { $only = @(Sel-ShelfPaths ([string]$shn.Tag.Shelf.Id)) } elseif ($e.Item.Tag.Type -eq 'shelfgroup') { $only = @($e.Item.Tag.Paths) } else { $only = @($e.Item.Tag.Path) }
             if ($only.Count -ge @($shn.Tag.Shelf.Files).Count) { $only = $null }
         }
         $script:DragShelf = @{ Shelf = $shn.Tag.Shelf; Only = $only }
         try { [void]$tv.DoDragDrop('dvcl', [System.Windows.Forms.DragDropEffects]'Move, Link') } finally { $script:DragShelf = $null }
         return
     }
-    if ($e.Item.Tag.Type -ne 'file') { return }
+    if ($e.Item.Tag.Type -notin 'file', 'ofpa') { return }
     # dragging a file outside the selection drags it alone (and selects it), like Explorer
     if (-not (Is-Sel $e.Item)) { Select-Click $e.Item ([System.Windows.Forms.Keys]::None) }
     $items = Target-Items-IfChecked
-    Start-TreeDrag $tv $e.Item.Tag.Item.Path $items
+    Start-TreeDrag $tv $(if ($e.Item.Tag.Type -eq 'ofpa') { $e.Item.Tag.Folder } else { $e.Item.Tag.Item.Path }) $items
 })
 $tv.Add_DragOver({
     param($s, $e)
@@ -1998,23 +2040,29 @@ $tv.Add_AfterSelect({
 })
 function Select-Click($node, $mods) {
     $shift = ($mods -band [System.Windows.Forms.Keys]::Shift); $ctrl = ($mods -band [System.Windows.Forms.Keys]::Control)
-    $p = Node-Key $node
-    if (-not $p) {
+    $ks = @(Node-Keys $node)
+    if ($ks.Count -eq 0) {
         if (-not $ctrl) { $script:Sel.Clear() }; $script:Anchor = $null; $tv.Invalidate(); return
     }
     if ($shift -and $script:Anchor -and $script:Anchor.TreeView) {
         $all = Sel-Nodes; $a = $all.IndexOf($script:Anchor); $b = $all.IndexOf($node)
         if (-not $ctrl) { $script:Sel.Clear() }
-        if ($a -ge 0 -and $b -ge 0) { for ($i = [Math]::Min($a, $b); $i -le [Math]::Max($a, $b); $i++) { [void]$script:Sel.Add((Node-Key $all[$i])) } }
+        if ($a -ge 0 -and $b -ge 0) { for ($i = [Math]::Min($a, $b); $i -le [Math]::Max($a, $b); $i++) { foreach ($k in @(Node-Keys $all[$i])) { [void]$script:Sel.Add($k) } } }
     } elseif ($ctrl) {
-        if (-not $script:Sel.Remove($p)) { [void]$script:Sel.Add($p) }; $script:Anchor = $node
-    } else { $script:Sel.Clear(); [void]$script:Sel.Add($p); $script:Anchor = $node }
+        # an OFPA line = all its files at once
+        if (Is-Sel $node) { foreach ($k in $ks) { [void]$script:Sel.Remove($k) } } else { foreach ($k in $ks) { [void]$script:Sel.Add($k) } }
+        $script:Anchor = $node
+    } else { $script:Sel.Clear(); foreach ($k in $ks) { [void]$script:Sel.Add($k) }; $script:Anchor = $node }
     $tv.Invalidate()
 }
 # Click below the last row: nothing selected, like Explorer
 function Tree-EmptyClick($pt) { if (-not $tv.GetNodeAt($pt)) { $script:Sel.Clear(); $script:Anchor = $null; $tv.SelectedNode = $null; $tv.Invalidate() } }
 $tv.Add_MouseDown({ param($s, $e) if ($e.Button -eq [System.Windows.Forms.MouseButtons]::Left) { Tree-EmptyClick $e.Location } })
-function Check-AllFiles([bool]$on) { $script:Sel.Clear(); if ($on) { foreach ($n in (File-Nodes)) { [void]$script:Sel.Add($n.Tag.Item.Path) } }; $tv.Invalidate() }
+function Check-AllFiles([bool]$on) {
+    $script:Sel.Clear()
+    if ($on) { foreach ($cn in $tv.Nodes) { foreach ($fn in $cn.Nodes) { if ($fn.Tag.Type -eq 'file') { [void]$script:Sel.Add($fn.Tag.Item.Path) } elseif ($fn.Tag.Type -eq 'ofpa') { foreach ($k in @($fn.Tag.Keys)) { [void]$script:Sel.Add($k) } } } } }
+    $tv.Invalidate()
+}
 # Draws the selection (selected files; a selected changelist or other row)
 $tv.Add_DrawNode({
     param($s, $e)
@@ -2052,8 +2100,10 @@ $tv.Add_NodeMouseClick({
     if ($e.Button -ne [System.Windows.Forms.MouseButtons]::Right) { return }
     $tv.SelectedNode = $e.Node
     $menu.Items.Clear()
-    if ($e.Node.Tag.Type -in 'shelf', 'shelffile') {
-        $script:MenuShelf = $e.Node.Tag; if ($e.Node.Tag.Type -eq 'shelffile') { $script:MenuShelf = $e.Node.Parent.Tag }
+    # right-click on an OFPA line outside the selection: that line becomes the selection
+    if ($e.Node.Tag.Type -in 'ofpa', 'shelfgroup' -and -not (Is-Sel $e.Node)) { Select-Click $e.Node ([System.Windows.Forms.Keys]::None) }
+    if ($e.Node.Tag.Type -in 'shelf', 'shelffile', 'shelfgroup') {
+        $script:MenuShelf = $e.Node.Tag; if ($e.Node.Tag.Type -in 'shelffile', 'shelfgroup') { $script:MenuShelf = $e.Node.Parent.Tag }
         $script:MenuShelfPath = $(if ($e.Node.Tag.Type -eq 'shelffile') { $e.Node.Tag.Path } else { '' })
         $script:MenuShelfSel = @(Sel-ShelfPaths ([string]$script:MenuShelf.Shelf.Id))
         $nf = @($script:MenuShelf.Shelf.Files).Count
@@ -2125,7 +2175,7 @@ $tv.Add_NodeMouseClick({
         if ($isStale) { [void](Add-MenuItem $menu 'Remove from changelist' { Do-RemoveEntry (Selected-Rel) }) }
         [void](Add-MenuItem $menu 'Show in Local tree' { Navigate-Tree 'local' (Selected-Rel) })
         [void](Add-MenuItem $menu 'Show in Depot tree' { Navigate-Tree 'depot' (Selected-Rel) })
-        [void](Add-MenuItem $menu 'History' { Do-History (Selected-Rel) })
+        if ($e.Node.Tag.Type -ne 'ofpa') { [void](Add-MenuItem $menu 'History' { Do-History (Selected-Rel) }) }
         $mx = Add-MenuItem $menu 'Show in Explorer' { Do-ShowInExplorer }; $mx.ShortcutKeyDisplayString = 'Ctrl+Shift+S'
         [void](Add-MenuItem $menu 'Copy path' { [System.Windows.Forms.Clipboard]::SetText(($script:Root + '\' + ((Selected-Rel) -replace '/', '\'))) })
     }
@@ -2298,12 +2348,14 @@ function Run-GuiSelfCheck {
         $dvs = @($script:Shelves | Where-Object { -not $_.Local })
         if ($dvs.Count) {
             C 'shelves: Diversion shelves list their files (read offline, kept)' (@($dvs | Where-Object { $_.Count -lt 1 }).Count -eq 0) ((@($dvs | ForEach-Object { $_.Name + ':' + $_.Count }) -join ', '))
-            $shFileNodes = 0; foreach ($cn in $tv.Nodes) { foreach ($x in $cn.Nodes) { if ($x.Tag.Type -eq 'shelf' -and -not $x.Tag.Shelf.Local) { $shFileNodes += $x.Nodes.Count } } }
+            $shFileNodes = 0; foreach ($cn in $tv.Nodes) { foreach ($x in $cn.Nodes) { if ($x.Tag.Type -eq 'shelf' -and -not $x.Tag.Shelf.Local) { foreach ($y in $x.Nodes) { if ($y.Tag.Type -eq 'shelfgroup') { $shFileNodes += @($y.Tag.Paths).Count } else { $shFileNodes++ } } } } }
             C 'shelves: their files are in the tree' ($shFileNodes -eq (($dvs | Measure-Object -Property Count -Sum).Sum)) ([string]$shFileNodes)
         } else { [void]$r.Add('SKIP  Diversion shelf files (no Diversion shelf)') }
         [void]$r.Add('INFO  shelves: ' + (@($script:Shelves | ForEach-Object { $(if ($_.Local) { $_.Id } else { $_.Name }) + ' -> ' + (Shelf-ClName $_) }) -join ', '))
         $files = File-Nodes
-        C 'pending tree: all pending files shown' ($files.Count -eq $script:Pending.Count) ("" + $files.Count + ' / ' + $script:Pending.Count)
+        # OFPA lines count for their files
+        $nOfpa = 0; foreach ($cn in $tv.Nodes) { foreach ($x in $cn.Nodes) { if ($x.Tag.Type -eq 'ofpa') { $nOfpa += @($x.Tag.Items).Count } } }
+        C 'pending tree: all pending files shown' (($files.Count + $nOfpa) -eq $script:Pending.Count) ("" + $files.Count + ' rows + ' + $nOfpa + ' in OFPA lines / ' + $script:Pending.Count)
         $staleShown = 0; foreach ($cn in $tv.Nodes) { foreach ($fn in $cn.Nodes) { if ($fn.Tag.Type -eq 'stale') { $staleShown++ } } }
         $staleReal = 0; foreach ($c in $script:CLs) { $staleReal += (Stale-Of $script:Pending $c).Count }
         C 'not-pending entries shown, not dropped' ($staleShown -eq $staleReal) ("" + $staleShown + ' / ' + $staleReal)
@@ -2410,6 +2462,21 @@ function Run-GuiSelfCheck {
         C 'dv run with the window working: same answer as the normal call' ([bool](Dv-Exe) -and $pa.Code -eq $pb.Code -and (($pa.Lines -join "`n") -ceq ($pb.Lines -join "`n"))) ('' + $pa.Code + '/' + $pb.Code + ' ' + @($pa.Lines).Count + '/' + @($pb.Lines).Count + ' ' + (Dv-Exe))
         $sj = (Settings-Json 'x' $null) | ConvertFrom-Json
         C 'settings: place, maximized, open shelves and closed changelists kept' ($null -ne $sj.x -and $null -ne $sj.y -and $null -ne $sj.max -and $null -ne $sj.PSObject.Properties['openShelves'] -and $null -ne $sj.PSObject.Properties['closedCls'])
+        # OFPA: a level's actor files as one line; selecting it = all its files
+        $svP = $script:Pending; $svG = $script:GroupOfpa; $script:GroupOfpa = $true
+        $tp = 'dvcl-selfcheck/Content/__ExternalActors__/Maps/T'
+        $script:Pending = @(@($svP) + @([pscustomobject]@{ Index = 0; Kind = 'Modified'; Path = ($tp + '/0/AB/a1.uasset'); Old = $null }, [pscustomobject]@{ Index = 0; Kind = 'Modified'; Path = ($tp + '/1/CD/a2.uasset'); Old = $null }, [pscustomobject]@{ Index = 0; Kind = 'New'; Path = ($tp + '/2/EF/a3.uasset'); Old = $null }))
+        try {
+            Build-Tree
+            $on = $null; foreach ($cn in $tv.Nodes) { foreach ($x in $cn.Nodes) { if ($x.Tag.Type -eq 'ofpa' -and $x.Tag.Folder -eq $tp) { $on = $x } } }
+            $fnl = File-Nodes; $ofx = @($fnl | Where-Object { $_.Tag.Item.Path -like ($tp + '/*') }).Count
+            if ($on) { Select-Click $on ([System.Windows.Forms.Keys]::None) }
+            $ti = Target-Items
+            C 'OFPA: a level''s actor files on one line, selecting it selects them all' ($on -and $ofx -eq 0 -and @($on.Tag.Items).Count -eq 3 -and $ti.Count -eq 3 -and (Is-Sel $on) -and $on.Text -like 'T   OFPA actors, 3 files*') ($(if ($on) { $on.Text + ' | rows ' + $ofx + ', items ' + @($on.Tag.Items).Count + ', selected ' + @($ti).Count + ', line selected ' + (Is-Sel $on) } else { 'no line' }))
+            $script:GroupOfpa = $false; Build-Tree
+            $fnl = File-Nodes
+            C 'OFPA: off = one row per file' (@($fnl | Where-Object { $_.Tag.Item.Path -like ($tp + '/*') }).Count -eq 3) ([string]@($fnl | Where-Object { $_.Tag.Item.Path -like ($tp + '/*') }).Count)
+        } finally { $script:Pending = $svP; $script:GroupOfpa = $svG; $script:Sel.Clear(); Build-Tree }
         $us = Ue-LinkStatus
         C 'unreal link: status read (engine / installed / up to date / editor)' ($null -ne $us -and $null -ne $us.PSObject.Properties['UpToDate'] -and $null -ne $us.PSObject.Properties['Editor'])
         [void]$r.Add('INFO  unreal link status: engine found ' + [bool]$us.Engine + ', installed ' + $us.Installed + ', up to date ' + $us.UpToDate + ', editor open ' + $us.Editor)

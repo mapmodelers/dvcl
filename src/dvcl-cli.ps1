@@ -261,6 +261,12 @@ function Run-SelfTest {
             T "get latest: files of the newer commits only, once each" ($inc.Count -eq 3 -and @($inc | Where-Object { $_ -ieq 'Game/OLD.uasset' }).Count -eq 0 -and @($inc | Where-Object { $_ -ieq 'Game/X.uasset' }).Count -eq 1)
             # ---- Diversion shelves, revert (dv simulated)
             T "kinds: letters kept" ((Kind-Letter 'M') -eq 'M' -and (Kind-Letter 'a') -eq 'A' -and (Kind-Letter 'Modified') -eq 'M' -and (Kind-Letter 'New') -eq 'A')
+            $og = Ofpa-Group 'Game/Content/__ExternalActors__/Maps/Town/0/AB/X1Y2Z3.uasset'; $oo = Ofpa-Group 'Game/Content/__ExternalObjects__/Maps/Town/C/D1/K9.uasset'
+            $o2 = Ofpa-Group 'Game/Content/__ExternalActors__/Maps/T/0/AB/X1.uasset'
+            T "OFPA: a level with a short name keeps it" ($o2.Name -eq 'T')
+            T "OFPA: actor file grouped under its level, plain asset not" ($og.Folder -eq 'Game/Content/__ExternalActors__/Maps/Town' -and $og.Name -eq 'Town' -and $oo.What -eq 'objects' -and $oo.Name -eq 'Town' -and $null -eq (Ofpa-Group 'Game/Content/Maps/Town.umap'))
+            $so = Split-Ofpa @([pscustomobject]@{ Kind = 'M'; Path = 'Game/Content/A.uasset' }, [pscustomobject]@{ Kind = 'M'; Path = 'Game/Content/__ExternalActors__/Maps/Town/0/AB/a.uasset' }, [pscustomobject]@{ Kind = 'A'; Path = 'Game/Content/__ExternalActors__/Maps/Town/1/CD/b.uasset' }, [pscustomobject]@{ Kind = 'M'; Path = 'Game/Content/__ExternalActors__/Maps/Farm/2/EF/c.uasset' })
+            T "OFPA: one group per level, counts by kind" ($so.Plain.Count -eq 1 -and $so.Groups.Count -eq 2 -and $so.Groups[0].Items.Count -eq 2 -and (Kinds-Text $so.Groups[0].Items) -eq '2 files: 1 M, 1 A')
             $sfl = Parse-Status @('Shelf mansion_20261108-0755 contains 3 change(s):', '', 'Modified:', "`t Game/S/a.uasset", "`t Game/S/b.uasset", 'New:', "`t Game/S/n.uasset")
             Save-ShelfFiles 'dv.shelf.t1' $sfl; $rb = Read-ShelfFiles 'dv.shelf.t1'
             T "shelf files: dv shelf show parsed and kept" ($rb.Count -eq 3 -and $rb[0].Kind -eq 'M' -and $rb[2].Kind -eq 'A' -and $rb[2].Path -eq 'Game/S/n.uasset' -and $null -eq (Read-ShelfFiles 'dv.shelf.none'))
