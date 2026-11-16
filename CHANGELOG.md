@@ -2,6 +2,15 @@
 
 Versions follow [semver](https://semver.org). Tags: `vX.Y.Z`.
 
+## 0.24.0 - 2026-11-16
+
+- Stay offline (Tools, on by default): sync is on only during an action (submit, shelve, revert, unshelve, get latest) and never left on. A dvcl that stopped while online (killed, crashed), sync on for more than 30 min, or sync turned on elsewhere: the window pauses it within 15 s, any dvcl command pauses it first. "Go online" is hidden while it is on. Command line: `dvcl safety on|off`.
+- Command line: `dvcl submit` works offline (online for the submit only, then offline again, as the window does); `dvcl shelf delete <shelf>`.
+
+## 0.23.1 - 2026-11-16
+
+- Fix: the window could freeze while files changed a lot (every file event went through the window). The folder watcher now filters events on its own thread; the window only asks once a second whether something changed, and refreshes at most every 10 s. The log says which file triggered a refresh.
+
 ## 0.23.0 - 2026-11-16
 
 - Up to date by itself: files saved, added, deleted or renamed in the workspace (Unreal, Explorer) refresh the list 2 s after the last change, in the background: no lock, the tree is redrawn only if the list changed. Unreal's busy folders (Saved, Intermediate, DerivedDataCache) are left out.

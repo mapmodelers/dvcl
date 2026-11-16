@@ -48,6 +48,9 @@ Run inside a Diversion workspace (any subfolder).
   dvcl get                      get latest: pull the branch's new commits into the workspace
   dvcl sync on|off              go online (resume sync) / offline (pause sync). Offline, dvcl finds
                                 your changes by scanning the folder; shelve makes a local copy
+  dvcl safety on|off            stay offline (default on): sync is on only during an action, never left
+                                on; a dvcl that stopped while online is undone by the next dvcl
+  dvcl shelf delete <shelf>     delete a shelf (local or Diversion)
   dvcl clean [cl]               remove entries that are no longer pending (all changelists or one)
   dvcl recover                  restore changelist entries dropped by dvcl 0.2.x (from the log)
   dvcl history <file>           last 50 commits touching <file>
@@ -267,6 +270,16 @@ function Run-SelfTest {
             T "OFPA: actor file grouped under its level, plain asset not" ($og.Folder -eq 'Game/Content/__ExternalActors__/Maps/Town' -and $og.Name -eq 'Town' -and $oo.What -eq 'objects' -and $oo.Name -eq 'Town' -and $null -eq (Ofpa-Group 'Game/Content/Maps/Town.umap'))
             $so = Split-Ofpa @([pscustomobject]@{ Kind = 'M'; Path = 'Game/Content/A.uasset' }, [pscustomobject]@{ Kind = 'M'; Path = 'Game/Content/__ExternalActors__/Maps/Town/0/AB/a.uasset' }, [pscustomobject]@{ Kind = 'A'; Path = 'Game/Content/__ExternalActors__/Maps/Town/1/CD/b.uasset' }, [pscustomobject]@{ Kind = 'M'; Path = 'Game/Content/__ExternalActors__/Maps/Farm/2/EF/c.uasset' })
             T "OFPA: one group per level, counts by kind" ($so.Plain.Count -eq 1 -and $so.Groups.Count -eq 2 -and $so.Groups[0].Items.Count -eq 2 -and (Kinds-Text $so.Groups[0].Items) -eq '2 files: 1 M, 1 A')
+            # stay offline: sync left on by a dvcl that is gone is paused; this process during its action is not
+            $script:Paused1 = @(); $origPause = ${function:Pause-Now}
+            Set-Item function:script:Pause-Now { param($w) $script:Paused1 += $w; Clear-OnlineMark }
+            try {
+                [System.IO.File]::WriteAllText((Dvcl-File 'online.json'), '{"pid":999999,"at":"2026-01-01T00:00:00"}')
+                $r1 = Safety-Check $false $false
+                Write-OnlineMark; $r2 = Safety-Check $true $false; $r3 = Safety-Check $false $false
+                Set-Safety $false; Write-OnlineMark; $r4 = Safety-Check $false $false; Set-Safety $true; Clear-OnlineMark
+            } finally { Set-Item function:script:Pause-Now $origPause }
+            T "stay offline: a dvcl that stopped online is paused, own action left alone, off = nothing" ($r1 -like 'left on by a dvcl that stopped' -and $r2 -eq '' -and $r3 -like 'left on after*' -and $r4 -eq '' -and $script:Paused1.Count -eq 2 -and (Safety-On))
             $sfl = Parse-Status @('Shelf mansion_20261108-0755 contains 3 change(s):', '', 'Modified:', "`t Game/S/a.uasset", "`t Game/S/b.uasset", 'New:', "`t Game/S/n.uasset")
             Save-ShelfFiles 'dv.shelf.t1' $sfl; $rb = Read-ShelfFiles 'dv.shelf.t1'
             T "shelf files: dv shelf show parsed and kept" ($rb.Count -eq 3 -and $rb[0].Kind -eq 'M' -and $rb[2].Kind -eq 'A' -and $rb[2].Path -eq 'Game/S/n.uasset' -and $null -eq (Read-ShelfFiles 'dv.shelf.none'))
@@ -314,6 +327,24 @@ function Current-Pending {
     return $st
 }
 
+function Submit-Cli([string]$name, $argv, [bool]$yes) {
+    $st = Get-Pending
+            if ($name -ieq 'default') {
+                $desc = (@($argv | Select-Object -Skip 1) -join ' ').Trim()
+                if (-not $desc) { Fail "default needs a message: dvcl submit default ""your message""" }
+            } else {
+                $c = Find-CL $name; if (-not $c) { Fail ("no changelist '" + $name + "'") }
+                if (-not $c.desc) { Fail ("'" + $name + "' has no description: dvcl desc " + $name + " ""what you did""") }
+                $desc = $c.desc
+            }
+            $items = Get-CLItems $st.Files $name
+            if ($items.Count -eq 0) { Fail "no pending files in this changelist" }
+            Say ("Submit '" + $name + "' : """ + $desc + """") 'Cyan'
+            foreach ($p in $items) { Say ("   {0}  {1}" -f (Kind-Letter $p.Kind), $p.Path) }
+            Confirm-Or-Exit ("Commit these " + $items.Count + " path(s)?") $yes
+            Submit-Items $name $items $desc $st.Files
+}
+
 # Diversion exchanges files only with sync on: on for this command only, then back off
 function With-Sync([scriptblock]$sb) {
     $was = (Test-OfflineFlag) -or (Get-Pending $false).Paused
@@ -344,6 +375,8 @@ if ($cmd -in 'desc', 'add', 'move', 'mv', 'delete', 'submit', 'revert', 'shelve'
     Load-Db; $c = Find-CL $argv[0]; if ($c) { $argv[0] = $c.name }
 }
 Write-Log ("==== dvcl " + $cmd + " " + ($argv -join ' '))
+# stay offline: sync left on by a dvcl that stopped (or turned on elsewhere) is paused first
+if ($cmd -notin 'safety', 'sync') { try { [void](Safety-Check $false $true) } catch { Write-Host ("Stay offline check: " + $_.Exception.Message) -ForegroundColor Yellow } }
 
 try {
     switch ($cmd) {
@@ -393,23 +426,30 @@ try {
 
         'submit' {
             $name = $argv[0]; if (-not $name) { Fail "usage: dvcl submit <cl>  |  dvcl submit default ""message""" }
-            $st = Get-Pending
-            if ($st.Paused -or (Test-OfflineFlag)) { Fail "offline: submit needs Diversion online. Run: dvcl sync on" }
-            if ($name -ieq 'default') {
-                $desc = (@($argv | Select-Object -Skip 1) -join ' ').Trim()
-                if (-not $desc) { Fail "default needs a message: dvcl submit default ""your message""" }
-            } else {
-                $c = Find-CL $name; if (-not $c) { Fail ("no changelist '" + $name + "'") }
-                if (-not $c.desc) { Fail ("'" + $name + "' has no description: dvcl desc " + $name + " ""what you did""") }
-                $desc = $c.desc
-            }
-            $items = Get-CLItems $st.Files $name
-            if ($items.Count -eq 0) { Fail "no pending files in this changelist" }
-            Say ("Submit '" + $name + "' : """ + $desc + """") 'Cyan'
-            foreach ($p in $items) { Say ("   {0}  {1}" -f (Kind-Letter $p.Kind), $p.Path) }
-            Confirm-Or-Exit ("Commit these " + $items.Count + " path(s)?") $yes
-            Submit-Items $name $items $desc $st.Files
+            # offline: online for this submit only, then offline again (as the window does)
+            $script:SubName = $name; $script:SubArgs = $argv; $script:SubYes = $yes
+            With-Sync { Submit-Cli $script:SubName $script:SubArgs $script:SubYes }
         }
+
+        'safety' {
+            $a = ([string]$argv[0]).ToLowerInvariant()
+            if ($a -eq 'on') { Set-Safety $true; [void](Safety-Check $false $true) } elseif ($a -eq 'off') { Set-Safety $false } elseif ($a) { Fail "usage: dvcl safety on|off" }
+            Say ("Stay offline: " + $(if (Safety-On) { 'on (sync only during an action, never left on)' } else { 'off (dvcl sync on keeps sync on)' }))
+        }
+
+        'shelf' {
+            if (([string]$argv[0]).ToLowerInvariant() -ne 'delete' -or -not $argv[1]) { Fail "usage: dvcl shelf delete <shelf name or id>" }
+            $loc = @(Get-LocalShelves | Where-Object { $_.Id -ieq $argv[1] })
+            if ($loc.Count) { Confirm-Or-Exit ("Delete local shelf '" + $loc[0].Id + "'?") $yes; Delete-LocalShelf $loc[0].Id; Say ("Deleted local shelf '" + $loc[0].Id + "'.") 'Green' }
+            else {
+                $sh = @(Get-Shelves | Where-Object { $_.Id -ieq $argv[1] -or $_.Name -ieq $argv[1] })
+                if ($sh.Count -eq 0) { Fail ("no shelf '" + $argv[1] + "' (dvcl shelves)") }
+                Confirm-Or-Exit ("Delete Diversion shelf '" + $sh[0].Name + "'? Cannot be undone.") $yes
+                $script:DelShelf = $sh[0].Id
+                With-Sync { Delete-Shelf $script:DelShelf }
+            }
+        }
+
 
         'revert' {
             $name = $argv[0]; if (-not $name) { Fail "usage: dvcl revert <cl>" }
@@ -447,6 +487,7 @@ try {
 
         'sync' {
             $a = ([string]$argv[0]).ToLowerInvariant()
+            if ($a -in 'on', 'resume' -and (Safety-On)) { Fail "stay offline is on: dvcl goes online only for an action and pauses after it (dvcl safety off to keep sync on)" }
             if ($a -in 'on', 'resume') { Set-Sync $true } elseif ($a -in 'off', 'pause') { Set-Sync $false } else { Fail "usage: dvcl sync on|off" }
         }
 

@@ -905,7 +905,7 @@ $script:ModeText = @{
 function Set-Mode([string]$state, [string]$desc) {
     $script:Mode = $state
     switch ($state) {
-        'offline' { $modeBar.BackColor = $script:Pal.offline; $modeLbl.Text = 'OFFLINE'; $btnMode.Text = 'Go online'; $btnMode.Tag = 'on'; $btnMode.Visible = $true }
+        'offline' { $modeBar.BackColor = $script:Pal.offline; $modeLbl.Text = 'OFFLINE'; $btnMode.Text = 'Go online'; $btnMode.Tag = 'on'; $btnMode.Visible = -not (Safety-On) }
         'online'  { $modeBar.BackColor = $script:Pal.online; $modeLbl.Text = 'ONLINE'; $btnMode.Text = 'Go offline'; $btnMode.Tag = 'off'; $btnMode.Visible = $true }
         'busy'    { $modeBar.BackColor = $script:Pal.busy; $modeLbl.Text = 'BUSY'; $btnMode.Visible = $false }
         'down'    { $modeBar.BackColor = $script:Pal.down; $modeLbl.Text = 'NO DIVERSION'; $btnMode.Text = 'Retry'; $btnMode.Tag = 'retry'; $btnMode.Visible = $true }
@@ -958,52 +958,85 @@ function Refresh-All([bool]$quiet = $false) {
 }
 
 # ---------------------------------------------------------------- up to date by itself
-# A watcher on the workspace folder: files saved, added, deleted or renamed (Unreal, Explorer, ...)
-# refresh the list 2 s after the last change, in the background (no lock; the tree is redrawn only
-# if the list changed). Unreal's own busy folders (Saved, Intermediate, DerivedDataCache) and dvcl /
-# Diversion data are left out. Hidden window: refreshed when shown again.
+# A watcher on the workspace folder (compiled helper: every file event is filtered off the window's
+# thread, nothing per event reaches the window). Unreal's busy folders (Saved, Intermediate,
+# DerivedDataCache) and dvcl / Diversion data are left out. Every second the window asks "anything
+# changed?"; 2 s after the last change (and at most every 10 s) the list is refreshed in the
+# background: no lock, the tree is redrawn only if the list changed. Hidden window: when shown.
 $script:FsNoise = @('/.dvcl/', '/.diversion/', '/saved/', '/intermediate/', '/deriveddatacache/', '/.vs/', '/.git/')
-$script:FsDirty = $false; $script:FsWatch = $null
+$script:FsDirty = $false; $script:FsWatch = $null; $script:FsLast = [datetime]::MinValue; $script:FsRefreshed = [datetime]::MinValue
+$script:FsSource = @'
+using System; using System.IO; using System.Threading;
+namespace DvclNative {
+  public class FolderWatch : IDisposable {
+    FileSystemWatcher w; string root; string[] noise; int dirty; public string LastPath = "";
+    public string Path { get { return root; } }
+    public FolderWatch(string root, string[] noise) {
+      this.root = root; this.noise = noise;
+      w = new FileSystemWatcher(root); w.IncludeSubdirectories = true; w.InternalBufferSize = 65536;
+      w.NotifyFilter = NotifyFilters.FileName | NotifyFilters.DirectoryName | NotifyFilters.LastWrite | NotifyFilters.Size;
+      w.Changed += On; w.Created += On; w.Deleted += On;
+      w.Renamed += (s, e) => { Check(e.FullPath); Check(e.OldFullPath); };
+      w.Error += (s, e) => { LastPath = "(too many changes at once)"; Interlocked.Exchange(ref dirty, 1); };
+      w.EnableRaisingEvents = true;
+    }
+    void On(object s, FileSystemEventArgs e) { Check(e.FullPath); }
+    public static bool IsNoise(string rel, string[] noise) {
+      string r = "/" + rel.Replace('\\', '/').ToLowerInvariant() + "/";
+      foreach (var n in noise) if (r.Contains(n)) return true;
+      return false;
+    }
+    void Check(string full) {
+      string rel = full.StartsWith(root, StringComparison.OrdinalIgnoreCase) ? full.Substring(root.Length) : full;
+      if (IsNoise(rel, noise)) return;
+      LastPath = rel; Interlocked.Exchange(ref dirty, 1);
+    }
+    public bool Take() { return Interlocked.Exchange(ref dirty, 0) == 1; }
+    public void Dispose() { try { w.EnableRaisingEvents = false; w.Dispose(); } catch { } }
+  }
+}
+'@
 function Fs-Noise([string]$rel) {
     $r = '/' + $rel.ToLowerInvariant().Replace('\', '/') + '/'
     foreach ($d in $script:FsNoise) { if ($r.Contains($d)) { return $true } }
     return $false
 }
-function Stop-FsWatch { if ($script:FsWatch) { try { $script:FsWatch.EnableRaisingEvents = $false; $script:FsWatch.Dispose() } catch {}; $script:FsWatch = $null } }
+function Stop-FsWatch { if ($script:FsWatch) { try { $script:FsWatch.Dispose() } catch {}; $script:FsWatch = $null } }
 function Start-FsWatch {
     Stop-FsWatch
     if (-not $script:Root -or -not (Test-Path -LiteralPath $script:Root)) { return }
+    if (-not (Ensure-Native 'DvclNative.FolderWatch' 'dvclwatch' $script:FsSource)) { Write-Log 'folder watcher not available: refresh by hand'; return }
     try {
-        $w = New-Object System.IO.FileSystemWatcher($script:Root)
-        $w.IncludeSubdirectories = $true; $w.InternalBufferSize = 65536
-        $w.NotifyFilter = [System.IO.NotifyFilters]'FileName, DirectoryName, LastWrite, Size'
-        $w.SynchronizingObject = $form
-        $w.Add_Changed({ param($s, $e) Fs-Event $e.FullPath }); $w.Add_Created({ param($s, $e) Fs-Event $e.FullPath })
-        $w.Add_Deleted({ param($s, $e) Fs-Event $e.FullPath }); $w.Add_Renamed({ param($s, $e) Fs-Event $e.FullPath; Fs-Event $e.OldFullPath })
-        # too many changes at once (big copy): one full refresh
-        $w.Add_Error({ param($s, $e) $script:FsDirty = $true; $fsTimer.Stop(); $fsTimer.Start() })
-        $w.EnableRaisingEvents = $true
-        $script:FsWatch = $w
+        $script:FsWatch = [DvclNative.FolderWatch]::new($script:Root, [string[]]$script:FsNoise)
         Write-Log 'watching the workspace folder for changes'
     } catch { Write-Log ('folder watcher not started: ' + $_.Exception.Message) }
 }
-function Fs-Event([string]$full) {
-    # an action writes files itself and refreshes when done
-    if ($script:OpDepth -gt 0) { return }
-    $rel = $full; if ($full.StartsWith($script:Root, [StringComparison]::OrdinalIgnoreCase)) { $rel = $full.Substring($script:Root.Length) }
-    if (Fs-Noise $rel) { return }
-    $script:FsDirty = $true
-    $fsTimer.Stop(); $fsTimer.Start()
-}
+# Stay offline: every 15 s, sync left on (a dvcl that stopped, or turned on elsewhere) is paused
+$safeTimer = New-Object System.Windows.Forms.Timer
+$safeTimer.Interval = 15000
+$safeTimer.Add_Tick({
+    if (-not $script:Root -or $script:OpDepth -gt 0 -or $script:BusyDepth -gt 0 -or $script:WentOnline) { return }
+    if (-not (Safety-On)) { return }
+    $script:SafeDeep = ($script:Mode -eq 'online')
+    if (-not $script:SafeDeep -and -not (Read-OnlineMark)) { return }
+    $script:SafeDid = ''
+    Run-Busy { $script:SafeDid = Safety-Check $false $script:SafeDeep } 'Stay offline: pausing sync'
+    if ($script:SafeDid) { & $script:OnSay ('Stay offline: sync paused (' + $script:SafeDid + ').') 'Yellow'; Refresh-All $true }
+})
 $fsTimer = New-Object System.Windows.Forms.Timer
-$fsTimer.Interval = 2000
+$fsTimer.Interval = 1000
 $fsTimer.Add_Tick({
-    $fsTimer.Stop()
+    $w = $script:FsWatch; if (-not $w) { return }
+    if ($w.Take()) {
+        # an action writes files itself and refreshes when done
+        if ($script:OpDepth -eq 0) { $script:FsDirty = $true; $script:FsLast = Get-Date; $script:FsWhat = $w.LastPath }
+    }
     if (-not $script:FsDirty -or -not $form.Visible) { return }
-    # busy: try again shortly
-    if ($script:OpDepth -gt 0 -or $script:BusyDepth -gt 0 -or $script:StatusRunning) { $fsTimer.Start(); return }
-    $script:FsDirty = $false
-    Write-Log 'files changed: list refreshed'
+    $now = Get-Date
+    if (($now - $script:FsLast).TotalSeconds -lt 2 -or ($now - $script:FsRefreshed).TotalSeconds -lt 10) { return }
+    if ($script:OpDepth -gt 0 -or $script:BusyDepth -gt 0 -or $script:StatusRunning) { return }
+    $script:FsDirty = $false; $script:FsRefreshed = $now
+    Write-Log ('files changed (' + $script:FsWhat + '): list refreshed')
     Refresh-All $true
 })
 
@@ -1352,6 +1385,7 @@ function Selected-Rel {
 # State bar button. Going offline waits until Diversion has synced, then records the folder.
 function Do-Sync([bool]$on) {
     if (Op-Busy) { return }
+    if ($on -and (Safety-On)) { [void][System.Windows.Forms.MessageBox]::Show($form, "Stay offline is on (Tools > Stay offline): dvcl goes online only for an action, then pauses sync again.", 'Go online', 'OK', 'Information'); return }
     Begin-Op $(if ($on) { 'Going online' } else { 'Going offline' })
     try {
         Set-Mode 'busy' ''
@@ -2037,6 +2071,13 @@ $btnGet = Add-Btn 'Get latest' "Pull the branch's new commits into your workspac
 $ddTools = Add-DropBtn 'Tools' 'Changelist maintenance'
 [void](Add-DropItem $ddTools 'Remove all not-pending entries' 'Drop entries Diversion no longer reports (committed elsewhere)' { Do-CleanStale '' })
 [void](Add-DropItem $ddTools 'Recover entries lost by dvcl 0.2' 'Put back files that dvcl 0.2 dropped from changelists while sync was paused' { Do-Recover })
+$miSafe = Add-DropItem $ddTools 'Stay offline (safety)' 'Sync is on only during an action (submit, shelve, revert, unshelve, get latest), never left on. A dvcl that stopped while online is undone within 15 s. Uploads only happen during those actions.' {
+    if (Op-Busy) { return }
+    Set-Safety (-not (Safety-On)); $miSafe.Checked = (Safety-On)
+    & $script:OnSay ('Stay offline: ' + $(if (Safety-On) { 'on' } else { 'off' })) 'Gray'
+    if ($script:Mode) { Set-Mode $script:Mode $modeDesc.Text }
+}
+$ddTools.Add_DropDownOpening({ if ($script:Root) { $miSafe.Checked = (Safety-On) } })
 [void](Add-DropItem $ddTools 'Unreal link...' 'Revert / unshelve / get latest with Unreal open: status, install or update the dvcl link plugin' { Do-UeLink })
 [void]$tool.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
 $ddView = Add-DropBtn 'View' 'Panels: drag a tab to move it, out of the window for its own window; right-click a tab for more'
@@ -2315,7 +2356,7 @@ $form.Add_Shown({
     if ($settings.max -and -not $SelfCheck -and -not $Shot) { $form.WindowState = 'Maximized' }
     # dv / Unreal calls keep the window working (repaint, scroll, browse) while they run
     if (-not $script:SyncMode) { $script:PumpUi = { [System.Windows.Forms.Application]::DoEvents() } }
-    if (-not $SelfCheck -and -not $Shot) { $saveTimer.Start() }
+    if (-not $SelfCheck -and -not $Shot) { $saveTimer.Start(); $fsTimer.Start(); $safeTimer.Start() }
     if ($Shot -or $settings.ui -ne 'light') { Apply-Theme $true $false }   # dark unless chosen light (screenshot: dark)
     if (-not $SelfCheck -and -not $Shot) { $watchTimer.Start() }
     if ($root) {
@@ -2323,6 +2364,11 @@ $form.Add_Shown({
         Write-Log ("==== dvcl window " + (Get-LocalVersion))
         try { Write-Timing 'powershell-start-to-script' ($script:ScriptStart - (Get-Process -Id $PID).StartTime).TotalMilliseconds } catch {}
         Write-Timing 'script-start-to-window' $script:Clock.Elapsed.TotalMilliseconds
+        # stay offline: sync left on (a dvcl that stopped while online) is paused before anything else
+        if (-not $SelfCheck -and -not $Shot -and (Safety-On) -and ((Read-OnlineMark) -or -not (Test-OfflineFlag))) {
+            Run-Busy { $script:SafeDid = Safety-Check $false $true } 'Stay offline: checking sync'
+            if ($script:SafeDid) { & $script:OnSay ('Stay offline: sync paused (' + $script:SafeDid + ').') 'Yellow' }
+        }
         Refresh-All
     } else { Do-ChangeRepo }
     if ($SelfCheck) { Run-GuiSelfCheck; $form.Close() }
@@ -2580,7 +2626,10 @@ function Run-GuiSelfCheck {
         if ($fr) { C 'rows: file name first, folder after (muted), full path in the tooltip' ($fr.Tag.Main -eq (Path-Leaf $fr.Tag.Item.Path) -and $fr.Tag.Sub -eq (Path-Dir $fr.Tag.Item.Path) -and $fr.ToolTipText -eq $fr.Tag.Item.Path) $fr.Text }
         C 'rows: one text grey for files in both themes' ($script:PalDark.Row -and $script:PalLight.Row)
         C 'up to date by itself: Unreal busy folders and dvcl data ignored, assets watched' ((Fs-Noise 'mapping-x/Saved/Logs/a.log') -and (Fs-Noise '\.dvcl\dvcl.log') -and (Fs-Noise 'g/Intermediate/x') -and -not (Fs-Noise 'g/Content/Maps/A.umap') -and -not (Fs-Noise 'g/Content/__ExternalActors__/M/0/AB/x.uasset'))
+        $fw = Ensure-Native 'DvclNative.FolderWatch' 'dvclwatch' $script:FsSource
+        C 'up to date by itself: folder watcher compiled, filters off the window thread' ($fw -and [DvclNative.FolderWatch]::IsNoise('g\Saved\Logs\a.log', [string[]]$script:FsNoise) -and -not [DvclNative.FolderWatch]::IsNoise('g\Content\A.uasset', [string[]]$script:FsNoise))
         C 'legend: on the Changelists tab, not above the list' ($script:LegendTip -and $script:LegendTip.OwnerDraw -and $padPending.Controls.Count -eq 1)
+        C 'stay offline: on by default, in Tools, Go online hidden while offline' ((Safety-On) -and @($ddTools.DropDownItems | Where-Object { $_.Text -eq 'Stay offline (safety)' }).Count -eq 1 -and (-not $script:Offline -or -not $btnMode.Visible))
         $us = Ue-LinkStatus
         C 'unreal link: status read (engine / installed / up to date / editor)' ($null -ne $us -and $null -ne $us.PSObject.Properties['UpToDate'] -and $null -ne $us.PSObject.Properties['Editor'])
         [void]$r.Add('INFO  unreal link status: engine found ' + [bool]$us.Engine + ', installed ' + $us.Installed + ', up to date ' + $us.UpToDate + ', editor open ' + $us.Editor)
@@ -2619,7 +2668,6 @@ function Show-FromTray {
     $form.Show(); Show-Floats
     if ($form.WindowState -eq 'Minimized') { $form.WindowState = 'Normal' }
     $form.Activate(); $form.BringToFront()
-    if ($script:FsDirty) { $fsTimer.Stop(); $fsTimer.Start() }
 }
 function Exit-Dvcl { $script:ReallyExit = $true; $form.Close() }
 $script:SelfPath = $PSCommandPath
@@ -2656,7 +2704,7 @@ $form.Add_FormClosing({
         return
     }
     Save-Settings
-    $jobTimer.Stop(); $pollTimer.Stop(); $watchTimer.Stop(); $instTimer.Stop(); $saveTimer.Stop(); $fsTimer.Stop(); Stop-FsWatch
+    $jobTimer.Stop(); $pollTimer.Stop(); $watchTimer.Stop(); $instTimer.Stop(); $saveTimer.Stop(); $fsTimer.Stop(); $safeTimer.Stop(); Stop-FsWatch
     foreach ($j in @($script:Jobs)) { try { $j.PS.Stop(); $j.PS.Dispose() } catch {} }
     $notify.Visible = $false; $notify.Dispose()
     if ($script:InstMutex) { try { $script:InstMutex.ReleaseMutex() } catch {}; $script:InstMutex.Dispose(); $script:InstMutex = $null }

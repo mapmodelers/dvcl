@@ -9,6 +9,7 @@ Changelists for [Diversion](https://diversion.dev). [Site](https://mapmodelers.g
 - Numbered changelists: group pending files, submit, shelve, revert.
 - Shelves belong to their changelist, files always listed; unshelve into any changelist (menu or drag), all or selected files.
 - Unreal OFPA actor files: one line per level instead of thousands of rows (View menu).
+- Stay offline (default): sync is on only during an action, never left on, even if dvcl is killed mid-way.
 - Local and Depot trees, state icons, path bars. Drop a file on a tree to find it.
 - Submitted and History: commits, their files, what you have not got yet.
 - Unreal: revert, unshelve and get latest without restarting the editor (dvcl link plugin: Tools > Unreal link, install once).

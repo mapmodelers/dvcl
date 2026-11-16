@@ -308,6 +308,8 @@ function Set-Sync([bool]$on) {
         else { Fail ("dv workspace " + $sub + " failed: " + ($r.Lines -join ' ')) }
     }
     Set-OfflineFlag (-not $on)
+    # who has sync on: a dvcl that dies before pausing again is found and undone (Safety-Check)
+    if ($on) { Write-OnlineMark } else { Clear-OnlineMark }
     if ($on) { Say "Online: sync resumed. Diversion now uploads your offline changes to your private workspace (nothing is submitted)." 'Green' }
     else { Say "Offline: sync paused. dvcl tracks your changes by scanning the folder. Changelists and local shelves keep working." 'Yellow' }
 }
@@ -979,6 +981,59 @@ function Full-Path([string]$rel) { if (-not $rel) { return $script:Root }; retur
 $script:Utf8 = New-Object System.Text.UTF8Encoding($false)
 
 function Test-OfflineFlag { return (Test-Path -LiteralPath (Dvcl-File 'offline.flag')) }
+
+# ---------------------------------------------------------------- stay offline (safety)
+# On by default: sync is never left on. dvcl goes online only for an action (submit, shelve, revert,
+# unshelve, get latest) and pauses again after it. .dvcl\online.json says which dvcl has sync on;
+# if that process is gone (killed, crashed) or holds it too long, or sync was turned on elsewhere,
+# the next dvcl (window every 15 s, any command at start) pauses it at once.
+# Off: .dvcl\allow-online.flag (dvcl safety off).
+function Safety-On { return -not (Test-Path -LiteralPath (Dvcl-File 'allow-online.flag')) }
+function Set-Safety([bool]$on) {
+    $f = Dvcl-File 'allow-online.flag'
+    if ($on) { if (Test-Path -LiteralPath $f) { Remove-Item -LiteralPath $f -Force } }
+    else { [System.IO.File]::WriteAllText($f, (Get-Date -Format s), $script:Utf8) }
+}
+function Write-OnlineMark {
+    try { [System.IO.File]::WriteAllText((Dvcl-File 'online.json'), ([pscustomobject]@{ pid = $PID; at = (Get-Date -Format s) } | ConvertTo-Json -Compress), $script:Utf8) } catch {}
+}
+function Clear-OnlineMark { $f = Dvcl-File 'online.json'; if (Test-Path -LiteralPath $f) { Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue } }
+function Read-OnlineMark {
+    $f = Dvcl-File 'online.json'
+    if (-not (Test-Path -LiteralPath $f)) { return $null }
+    try { return (Get-Content -LiteralPath $f -Raw | ConvertFrom-Json) } catch { return [pscustomobject]@{ pid = 0; at = '' } }
+}
+# Pause now, without waiting for uploads to finish (the pending list is read as it is)
+function Pause-Now([string]$why) {
+    $r = Invoke-Dv @('workspace', 'pause')
+    if ($r.Code -ne 0 -and ($r.Lines -join ' ') -notmatch 'already') { Fail ("dv workspace pause failed: " + ($r.Lines -join ' ')) }
+    $st = Get-Pending $false
+    Write-Baseline $st.Files $st.Commit
+    if ($st.Branch) { Save-LastHead $st.Branch $st.Commit }
+    Set-OfflineFlag $true; Clear-OnlineMark
+    Say ("Stay offline: sync paused (" + $why + ").") 'Yellow'
+}
+# $busy: this process is in an action that went online itself. $deep: also ask Diversion when dvcl
+# thinks it is online (start of the window / of a command). Returns what it did ('' = nothing).
+function Safety-Check([bool]$busy, [bool]$deep, [int]$maxMinutes = 30) {
+    if (-not (Safety-On)) { return '' }
+    $m = Read-OnlineMark
+    if ($m) {
+        $p = [int]$m.pid
+        $alive = ($p -gt 0) -and [bool](Get-Process -Id $p -ErrorAction SilentlyContinue)
+        $age = 0; try { $age = ((Get-Date) - [datetime]$m.at).TotalMinutes } catch {}
+        if ($p -eq $PID -and $busy) { return '' }
+        if ($alive -and $p -ne $PID -and $age -lt $maxMinutes) { return '' }
+        $why = $(if (-not $alive) { 'left on by a dvcl that stopped' } elseif ($p -eq $PID) { 'left on after an action' } else { 'on for more than ' + $maxMinutes + ' min' })
+        Pause-Now $why; return $why
+    }
+    if ($deep -and -not (Test-OfflineFlag)) {
+        $st = Get-Pending $false
+        if (-not $st.Paused) { Pause-Now 'sync was on'; return 'sync was on' }
+        Set-OfflineFlag $true
+    }
+    return ''
+}
 function Set-OfflineFlag([bool]$on) {
     $f = Dvcl-File 'offline.flag'
     if ($on) { [System.IO.File]::WriteAllText($f, (Get-Date -Format s), $script:Utf8) }
