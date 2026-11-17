@@ -2,6 +2,11 @@
 
 Versions follow [semver](https://semver.org). Tags: `vX.Y.Z`.
 
+## 0.25.0 - 2026-11-17
+
+- First run on a new PC: dvcl asks for your Diversion workspace (lists the ones found on the PC, or Browse) and checks it with Diversion before using it. A folder Diversion does not know is refused instead of being scanned (a new PC could hang on "Scanning folder": the user folder's .diversion settings folder was taken for a workspace). Repo... opens the same choice.
+- install.cmd says when the Diversion dv command is missing and opens dvcl at the end. README: install steps.
+
 ## 0.24.1 - 2026-11-17
 
 - Unreal link installed as an installed engine plugin (Engine\Plugins\Marketplace\DvclLink, prebuilt, on by default): in Engine\Plugins it broke C++ project builds. Tools > Unreal link shows "old place" and Update moves it. tests\check-build.ps1 builds a project's editor target to check.

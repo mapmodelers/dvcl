@@ -1052,6 +1052,13 @@ function Apply-Status($r) {
     $unreachable = $false
     try { $st = Read-Status $r }
     catch {
+        # not a workspace (wrong folder picked): nothing to scan, ask for the right one
+        if ($_.Exception.Message -match 'not a diversion repository') {
+            & $script:OnSay ('Not a Diversion workspace: ' + $script:Root) 'Red'
+            $tv.Nodes.Clear(); Set-Mode 'down' 'Not a Diversion workspace: Repo... to pick yours'
+            $statusLbl.Text = 'Not a Diversion workspace: ' + $script:Root
+            $setupTimer.Start(); return
+        }
         # Diversion not answering (app closed, no network): work offline from the folder scan
         & $script:OnSay ('ERROR: ' + $_.Exception.Message) 'Red'
         $unreachable = $true
@@ -1352,17 +1359,55 @@ function Do-Shelves {
     Refresh-All
 }
 
-function Do-ChangeRepo {
-    if (Op-Busy) { return }
-    $fb = New-Object System.Windows.Forms.FolderBrowserDialog
-    $fb.Description = 'Pick a folder inside a Diversion workspace'
-    if ($script:Root) { $fb.SelectedPath = $script:Root }
-    if ($fb.ShowDialog($form) -ne 'OK') { return }
-    $root = Find-DvRoot $fb.SelectedPath
-    if (-not $root) { [void][System.Windows.Forms.MessageBox]::Show($form, 'No Diversion workspace (.diversion folder) found at or above this folder.', 'dvcl', 'OK', 'Warning'); return }
-    Set-DvRoot $root; Save-Settings
-    Refresh-All
+function Do-ChangeRepo { if (Op-Busy) { return }; Do-Setup '' }
+# First run / Repo...: pick the Diversion workspace (found on this PC, or browse); checked with dv
+function Do-Setup([string]$why) {
+    $script:InSetup = $true
+    try {
+        $hasDv = [bool](Get-Command dv -ErrorAction SilentlyContinue)
+        $script:SetupList = @(); Run-Busy { $script:SetupList = @(Find-Workspaces) } 'Looking for Diversion workspaces'
+        $d = New-Object System.Windows.Forms.Form
+        $d.Text = 'dvcl - your Diversion workspace'; $d.Font = $fontUi; $d.FormBorderStyle = 'FixedDialog'; $d.MaximizeBox = $false; $d.MinimizeBox = $false
+        $d.StartPosition = 'CenterParent'; $d.Width = 640; $d.Height = 400; $d.ShowInTaskbar = $false
+        $l = New-Object System.Windows.Forms.Label; $l.Left = 14; $l.Top = 12; $l.Width = 600; $l.Height = 64
+        $l.Text = $(if ($why) { $why + "`r`n" } else { '' }) + "Pick the folder of your Diversion workspace (the one Diversion Desktop synced / cloned). dvcl remembers it." +
+            $(if (-not $hasDv) { "`r`nDiversion's dv command was not found: install Diversion Desktop, sign in, then reopen dvcl." } else { '' })
+        if (-not $hasDv) { $l.ForeColor = [System.Drawing.Color]::FromArgb(230, 120, 60) }
+        $lb = New-Object System.Windows.Forms.ListBox; $lb.Left = 14; $lb.Top = 82; $lb.Width = 596; $lb.Height = 210
+        foreach ($w in $script:SetupList) { [void]$lb.Items.Add($w) }
+        if ($lb.Items.Count) { $lb.SelectedIndex = 0 } else { [void]$lb.Items.Add('(none found: Browse... to pick it)') }
+        $bu = New-Object System.Windows.Forms.Button; $bu.Text = 'Use this workspace'; $bu.Left = 14; $bu.Top = 304; $bu.Width = 150; $bu.Enabled = ($script:SetupList.Count -gt 0)
+        $bb = New-Object System.Windows.Forms.Button; $bb.Text = 'Browse...'; $bb.Left = 172; $bb.Top = 304; $bb.Width = 110
+        $bc = New-Object System.Windows.Forms.Button; $bc.Text = 'Cancel'; $bc.Left = 510; $bc.Top = 304; $bc.Width = 100; $bc.DialogResult = 'Cancel'
+        $d.Controls.AddRange(@($l, $lb, $bu, $bb, $bc)); $d.CancelButton = $bc; $d.AcceptButton = $bu
+        $script:SetupPick = ''
+        $bu.Add_Click({ if ($lb.SelectedIndex -ge 0 -and $script:SetupList.Count) { $script:SetupPick = [string]$lb.SelectedItem; $d.Close() } })
+        $lb.Add_DoubleClick({ if ($lb.SelectedIndex -ge 0 -and $script:SetupList.Count) { $script:SetupPick = [string]$lb.SelectedItem; $d.Close() } })
+        $bb.Add_Click({
+            $fb = New-Object System.Windows.Forms.FolderBrowserDialog; $fb.Description = 'Your Diversion workspace folder (it holds a .diversion folder)'
+            if ($fb.ShowDialog($d) -eq 'OK') { $script:SetupPick = $fb.SelectedPath; $d.Close() }
+        })
+        Theme-Walk $d
+        [void]$d.ShowDialog($form)
+        if (-not $script:SetupPick) { if (-not $script:Root) { $statusLbl.Text = 'No Diversion workspace picked: Repo... to pick it' }; return }
+        $root = Find-DvRoot $script:SetupPick
+        if (-not $root) { [void][System.Windows.Forms.MessageBox]::Show($form, 'No Diversion workspace (.diversion folder) at or above this folder.', 'dvcl', 'OK', 'Warning'); Do-Setup ''; return }
+        $script:SetupRoot = $root; $script:SetupCheck = ''
+        Run-Busy { $script:SetupCheck = Test-DvWorkspace $script:SetupRoot } 'Asking Diversion about this workspace'
+        if ($script:SetupCheck -ne 'ok') {
+            $msg = switch -Wildcard ($script:SetupCheck) { 'nodv' { "Diversion's dv command was not found: install Diversion Desktop and sign in." } 'notrepo' { "Diversion does not know this folder as a workspace. Open Diversion Desktop, sign in with the account that has it, and check the workspace is synced to this folder." } default { 'Diversion answered: ' + $script:SetupCheck } }
+            [void][System.Windows.Forms.MessageBox]::Show($form, ($root + "`r`n`r`n" + $msg), 'dvcl', 'OK', 'Warning')
+            Do-Setup ''; return
+        }
+        Set-DvRoot $root; Save-Settings
+        Write-Log ('==== dvcl window ' + (Get-LocalVersion) + ': workspace picked')
+        Refresh-All
+    } finally { $script:InSetup = $false }
 }
+# Diversion said "not a workspace" during a refresh: ask once the refresh is over
+$setupTimer = New-Object System.Windows.Forms.Timer
+$setupTimer.Interval = 200
+$setupTimer.Add_Tick({ $setupTimer.Stop(); if (-not $script:InSetup -and -not $script:SyncMode) { Do-Setup ('Diversion says ' + $script:Root + ' is not a workspace.') } })
 
 function Do-ShowInExplorer {
     $rel = Selected-Rel
@@ -2093,7 +2138,7 @@ foreach ($pid0 in @($script:Pads.Keys)) {
 $miOfpa = Add-DropItem $ddView 'OFPA files: one line per level' "Unreal's one-file-per-actor files (__ExternalActors__) shown as one line per level, in changelists and shelves. Selecting the line selects all its files." { $script:GroupOfpa = -not $script:GroupOfpa; $miOfpa.Checked = $script:GroupOfpa; $script:Sel.Clear(); Build-Tree; Save-Settings }
 $miOfpa.Checked = $script:GroupOfpa
 [void](Add-DropItem $ddView 'Reset layout' 'Panels back to their places' { Reset-Layout })
-[void](Add-Btn 'Repo...' 'Pick another Diversion workspace' { Do-ChangeRepo })
+[void](Add-Btn 'Repo...' 'Pick your Diversion workspace' { Do-ChangeRepo })
 $bBug = Add-Btn 'Report bug' 'Open a new issue on GitHub' { Do-ReportBug }; $bBug.Alignment = 'Right'
 $bUpd = Add-Btn 'Update' 'Check GitHub for a new version and update' { Do-Update }; $bUpd.Alignment = 'Right'
 $btnTheme = Add-Btn 'Dark' 'Dark / light theme' { Apply-Theme (-not $script:Dark) }; $btnTheme.Alignment = 'Right'
@@ -2356,6 +2401,12 @@ $form.Add_Shown({
     $root = $null
     if ($StartDir) { $root = Find-DvRoot $StartDir }
     if (-not $root -and $settings.lastRepo) { $root = Find-DvRoot $settings.lastRepo }
+    # a workspace dvcl never used here: Diversion confirms it first (else: setup)
+    $setupWhy = ''
+    if ($root -and -not $SelfCheck -and -not $Shot -and -not (Test-Path -LiteralPath (Join-Path $root '.dvcl'))) {
+        $v = Test-DvWorkspace $root
+        if ($v -ne 'ok') { $setupWhy = $(if ($v -eq 'nodv') { "Diversion's dv command was not found." } else { $root + ' is not a Diversion workspace (' + $v + ').' }); $root = $null }
+    }
     $script:SyncMode = [bool]$SelfCheck -or [bool]$Shot
     if ($settings.max -and -not $SelfCheck -and -not $Shot) { $form.WindowState = 'Maximized' }
     # dv / Unreal calls keep the window working (repaint, scroll, browse) while they run
@@ -2374,7 +2425,7 @@ $form.Add_Shown({
             if ($script:SafeDid) { & $script:OnSay ('Stay offline: sync paused (' + $script:SafeDid + ').') 'Yellow' }
         }
         Refresh-All
-    } else { Do-ChangeRepo }
+    } else { Do-Setup $setupWhy }
     if ($SelfCheck) { Run-GuiSelfCheck; $form.Close() }
     if ($Shot) { Take-Shot $Shot; $form.Close() }
 })
@@ -2465,7 +2516,11 @@ function Run-GuiSelfCheck {
         C 'toolbar: Get latest + Tools + Locks' ((@($tool.Items | Where-Object { $_.Text -like 'Get latest*' -or $_.Text -in 'Tools', 'Locks' })).Count -eq 3)
         C 'state bar: label and button match the state' ((($script:Offline -and $modeLbl.Text -eq 'OFFLINE' -and $btnMode.Text -eq 'Go online') -or (-not $script:Offline -and $modeLbl.Text -eq 'ONLINE' -and $btnMode.Text -eq 'Go offline')) -or $script:Mode -eq 'down') ($modeLbl.Text + ' / ' + $btnMode.Text)
         [void]$r.Add('INFO  state bar: ' + $modeLbl.Text + ' | ' + $modeDesc.Text + ' | ' + $branchLbl.Text)
-        if (Test-OfflineFlag) { C 'offline launch: Diversion not asked' (@($script:LastStatusArgs) -join ' ' -like '*offline*') (@($script:LastStatusArgs) -join ' ') }
+        # another dvcl (command line, another session) online right now: the workspace state is
+        # changing under this check, the offline / online round trip is skipped
+        $other = [bool](Read-OnlineMark)
+        if ($other) { [void]$r.Add('SKIP  offline / online checks (another dvcl has sync on right now)') }
+        elseif (Test-OfflineFlag) { C 'offline launch: Diversion not asked' (@($script:LastStatusArgs) -join ' ' -like '*offline*') (@($script:LastStatusArgs) -join ' ') }
         else { C 'status read without waiting for sync (--nowait)' (@($script:LastStatusArgs) -contains '--nowait') (@($script:LastStatusArgs) -join ' ') }
         C 'log panel: no dv status dump' (-not $logBox.Text.Contains('dv | In repo'))
         [void]$r.Add('INFO  workspace ' + $script:WsCommit + '   branch head ' + $script:Head + '   button: ' + $btnGet.Text)
@@ -2510,7 +2565,8 @@ function Run-GuiSelfCheck {
         C 'not-pending entries shown, not dropped' ($staleShown -eq $staleReal) ("" + $staleShown + ' / ' + $staleReal)
         foreach ($c in $script:CLs) { [void]$r.Add('INFO  changelist ' + $c.name + ': ' + (Get-CLItems $script:Pending $c.name).Count + ' pending, ' + (Stale-Of $script:Pending $c).Count + ' not pending') }
         # offline view without touching Diversion: dvcl's offline flag only, then back
-        if (-not $script:Offline) {
+        if ($other) { }
+        elseif (-not $script:Offline) {
             $onl = @($script:Pending | ForEach-Object { $_.Path.ToLowerInvariant() } | Sort-Object)
             $te = Total-Entries
             Set-OfflineFlag $true
@@ -2634,6 +2690,9 @@ function Run-GuiSelfCheck {
         C 'up to date by itself: folder watcher compiled, filters off the window thread' ($fw -and [DvclNative.FolderWatch]::IsNoise('g\Saved\Logs\a.log', [string[]]$script:FsNoise) -and -not [DvclNative.FolderWatch]::IsNoise('g\Content\A.uasset', [string[]]$script:FsNoise))
         C 'legend: on the Changelists tab, not above the list' ($script:LegendTip -and $script:LegendTip.OwnerDraw -and $padPending.Controls.Count -eq 1)
         C 'stay offline: on by default, in Tools, Go online hidden while offline' ((Safety-On) -and @($ddTools.DropDownItems | Where-Object { $_.Text -eq 'Stay offline (safety)' }).Count -eq 1 -and (-not $script:Offline -or -not $btnMode.Visible))
+        $fws = @(Find-Workspaces)
+        C 'setup: workspaces found on this PC include this one, not the user folder' (@($fws | Where-Object { $_ -ieq $script:Root }).Count -eq 1 -and @($fws | Where-Object { $_ -ieq $env:USERPROFILE }).Count -eq 0) ([string]$fws.Count)
+        C 'setup: Diversion confirms this workspace' ((Test-DvWorkspace $script:Root) -eq 'ok')
         $us = Ue-LinkStatus
         C 'unreal link: status read (engine / installed / up to date / editor)' ($null -ne $us -and $null -ne $us.PSObject.Properties['UpToDate'] -and $null -ne $us.PSObject.Properties['Editor'])
         [void]$r.Add('INFO  unreal link status: engine found ' + [bool]$us.Engine + ', installed ' + $us.Installed + ', up to date ' + $us.UpToDate + ', editor open ' + $us.Editor)

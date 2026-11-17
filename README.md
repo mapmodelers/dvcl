@@ -14,10 +14,16 @@ Changelists for [Diversion](https://diversion.dev). [Site](https://mapmodelers.g
 - Submitted and History: commits, their files, what you have not got yet.
 - Unreal: revert, unshelve and get latest without restarting the editor (dvcl link plugin: Tools > Unreal link, install once).
 - Panels you arrange: drag tabs together, to an edge, or out into their own window.
-- Offline mode: nothing syncs. Submit and Get latest go online, then back.
 - Command line: `dvcl help`.
 
-Windows + Diversion `dv` CLI. Download, run `install.cmd`.
+## Install
+
+1. Windows 10 / 11 with [Diversion Desktop](https://diversion.dev) installed and signed in, your workspace synced (the `dv` command works in a terminal).
+2. [Download](https://github.com/mapmodelers/dvcl/archive/refs/heads/main.zip), unzip anywhere (not inside your workspace), run `install.cmd`: desktop and Start menu shortcuts, then dvcl opens.
+3. First run: pick your Diversion workspace (dvcl lists the ones it finds, or Browse). It is remembered; Repo... changes it.
+4. Optional, Unreal: Tools > Unreal link > Install (needs Visual Studio and Python 3; in Unreal, Python Editor Script plugin with Remote Execution on).
+
+Settings are per Windows user (`%APPDATA%\dvcl`); each workspace keeps its changelists in its own `.dvcl` folder. Update: toolbar Update.
 
 No telemetry: GitHub is contacted only by Update and Report bug.
 

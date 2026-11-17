@@ -19,8 +19,10 @@ function Find-DvRoot([string]$start) {
     # GetFullPath normalizes 'D:\repo.' (trailing dot from dvcl-gui.cmd) and relative paths
     $d = [System.IO.Path]::GetFullPath($start).TrimEnd('\')
     if ($d -match '^[A-Za-z]:$') { $d += '\' }
+    # the user folder's .diversion is Diversion's own settings, not a workspace
+    $prof = ([string]$env:USERPROFILE).TrimEnd('\')
     while ($d) {
-        if (Test-Path -LiteralPath (Join-Path $d '.diversion') -PathType Container) { return $d }
+        if ($d.TrimEnd('\') -ine $prof -and (Test-Path -LiteralPath (Join-Path $d '.diversion') -PathType Container)) { return $d }
         $p = Split-Path -Parent $d
         if (-not $p -or $p -eq $d) { break }
         $d = $p
@@ -979,6 +981,44 @@ function Delete-Shelf([string]$shelf) {
 function Dvcl-File([string]$name) { return [System.IO.Path]::Combine($script:Root, '.dvcl', $name) }
 function Full-Path([string]$rel) { if (-not $rel) { return $script:Root }; return [System.IO.Path]::Combine([string[]](@($script:Root) + @($rel.Split('/')))) }
 $script:Utf8 = New-Object System.Text.UTF8Encoding($false)
+
+# Does Diversion know this folder as a workspace? ok | nodv (dv not installed) | notrepo | error: <text>
+function Test-DvWorkspace([string]$root) {
+    if (-not (Get-Command dv -ErrorAction SilentlyContinue)) { return 'nodv' }
+    $prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+    Push-Location -LiteralPath $root
+    try { $out = @(& dv status --nowait 2>&1 | ForEach-Object { "$_" }); $code = $LASTEXITCODE }
+    catch { return 'nodv' }
+    finally { Pop-Location; $ErrorActionPreference = $prev }
+    $t = ($out -join ' ')
+    if ($t -match 'not a diversion repository') { return 'notrepo' }
+    if ($code -ne 0) { return ('error: ' + (@($out | Where-Object { $_.Trim() }) | Select-Object -First 1)) }
+    return 'ok'
+}
+# Diversion workspaces on this PC: folders with a .diversion folder, two levels under each fixed
+# drive, the user folder and Documents (the user folder itself is Diversion's settings, skipped)
+function Find-Workspaces {
+    $res = New-Object System.Collections.ArrayList
+    $prof = ([string]$env:USERPROFILE).TrimEnd('\')
+    $skip = @('windows', 'program files', 'program files (x86)', 'programdata', '$recycle.bin', 'system volume information', 'appdata', 'recovery', 'perflogs', 'node_modules', '.git')
+    $roots = @(); foreach ($dr in [System.IO.DriveInfo]::GetDrives()) { try { if ($dr.DriveType -eq 'Fixed' -and $dr.IsReady) { $roots += $dr.RootDirectory.FullName } } catch {} }
+    $roots += @($prof, [Environment]::GetFolderPath('MyDocuments'))
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    foreach ($r in $roots) {
+        $level = @($r)
+        for ($depth = 0; $depth -lt 3 -and $sw.ElapsedMilliseconds -lt 4000; $depth++) {
+            $next = @()
+            foreach ($dir in $level) {
+                if ($depth -gt 0 -and $dir.TrimEnd('\') -ine $prof -and (Test-Path -LiteralPath (Join-Path $dir '.diversion') -PathType Container)) {
+                    if (-not ($res -icontains $dir)) { [void]$res.Add($dir) }; continue
+                }
+                if ($depth -lt 2) { try { foreach ($s in [System.IO.Directory]::GetDirectories($dir)) { if ($skip -notcontains ([System.IO.Path]::GetFileName($s)).ToLowerInvariant() -and -not ([System.IO.Path]::GetFileName($s)).StartsWith('.')) { $next += $s } } } catch {} }
+            }
+            $level = $next
+        }
+    }
+    return ,$res
+}
 
 function Test-OfflineFlag { return (Test-Path -LiteralPath (Dvcl-File 'offline.flag')) }
 

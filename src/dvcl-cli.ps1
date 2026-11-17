@@ -280,6 +280,13 @@ function Run-SelfTest {
                 Set-Safety $false; Write-OnlineMark; $r4 = Safety-Check $false $false; Set-Safety $true; Clear-OnlineMark
             } finally { Set-Item function:script:Pause-Now $origPause }
             T "stay offline: a dvcl that stopped online is paused, own action left alone, off = nothing" ($r1 -like 'left on by a dvcl that stopped' -and $r2 -eq '' -and $r3 -like 'left on after*' -and $r4 -eq '' -and $script:Paused1.Count -eq 2 -and (Safety-On))
+            # the user folder's .diversion (Diversion's own settings) is not a workspace
+            $svProf = $env:USERPROFILE
+            try {
+                $env:USERPROFILE = Full-Path 'fakehome'; MkF 'fakehome/.diversion/x' 'x'; MkF 'fakehome/Downloads/dvcl/a.txt' 'x'
+                $fr = Find-DvRoot (Full-Path 'fakehome/Downloads/dvcl')
+            } finally { $env:USERPROFILE = $svProf }
+            T "setup: the user folder is not taken for a workspace" ($fr -ne (Full-Path 'fakehome'))
             $sfl = Parse-Status @('Shelf mansion_20261108-0755 contains 3 change(s):', '', 'Modified:', "`t Game/S/a.uasset", "`t Game/S/b.uasset", 'New:', "`t Game/S/n.uasset")
             Save-ShelfFiles 'dv.shelf.t1' $sfl; $rb = Read-ShelfFiles 'dv.shelf.t1'
             T "shelf files: dv shelf show parsed and kept" ($rb.Count -eq 3 -and $rb[0].Kind -eq 'M' -and $rb[2].Kind -eq 'A' -and $rb[2].Path -eq 'Game/S/n.uasset' -and $null -eq (Read-ShelfFiles 'dv.shelf.none'))
