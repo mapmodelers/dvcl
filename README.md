@@ -23,8 +23,10 @@ Changelists for [Diversion](https://diversion.dev). [Site](https://mapmodelers.g
 3. First run: pick your Diversion workspace (dvcl lists the ones it finds, or Browse). It is remembered; Repo... changes it.
 4. Optional, Unreal: Tools > Unreal link > Install (needs Visual Studio and Python 3; in Unreal, Python Editor Script plugin with Remote Execution on).
 
+Uninstall: `uninstall.cmd` (closes dvcl, removes the shortcuts and dvcl.exe, asks about your settings; remove the Unreal link first in Tools > Unreal link > Remove).
+
 Settings are per Windows user (`%APPDATA%\dvcl`); each workspace keeps its changelists in its own `.dvcl` folder. Update: toolbar Update.
 
-No telemetry: GitHub is contacted only by Update and Report bug.
+No telemetry: GitHub is contacted only by Update and Report bug. Report bug writes `dvcl-bug-report.txt` on your desktop (dvcl's own log lines; your folders, user name, PC name, e-mail and Diversion ids replaced) and opens a GitHub issue to attach it; review it first.
 
 MIT, as is. Not affiliated with or endorsed by Diversion; Diversion is a trademark of its owner.

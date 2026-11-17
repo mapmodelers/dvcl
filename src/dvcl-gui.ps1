@@ -91,6 +91,15 @@ $colKind = @{
 # ---------------------------------------------------------------- main window
 # Layout: toolbar / state bar / zones [left | center | right] over [bottom] / status bar.
 # Panels (Local, Depot, Changelists, Submitted, History, Log) are tabs in those zones (DvclDock.ps1).
+# Taskbar: dvcl's own app id (before any window), so Windows shows dvcl's icon, not PowerShell's
+$script:AppIdSource = @'
+using System; using System.Runtime.InteropServices;
+namespace DvclNative { public static class AppId {
+  [DllImport("shell32.dll", SetLastError = true)] static extern int SetCurrentProcessExplicitAppUserModelID([MarshalAs(UnmanagedType.LPWStr)] string id);
+  public static int Set(string id) { return SetCurrentProcessExplicitAppUserModelID(id); }
+} }
+'@
+try { if (Ensure-Native 'DvclNative.AppId' 'dvclappid' $script:AppIdSource) { [void][DvclNative.AppId]::Set('MapModelers.dvcl') } } catch {}
 $form = New-Object System.Windows.Forms.Form
 $form.Text = 'dvcl (experimental)'
 $form.Font = $fontUi
@@ -1580,9 +1589,11 @@ function Do-UeLink {
     $bi = New-Object System.Windows.Forms.Button; $bi.Text = $(if (-not $st.Installed) { 'Install' } elseif ($st.UpToDate) { 'Reinstall' } else { 'Update' }); $bi.Left = 14; $bi.Top = 214; $bi.Width = 110; $bi.Enabled = [bool]$st.Engine
     $be = New-Object System.Windows.Forms.Button; $be.Text = 'Choose engine...'; $be.Left = 132; $be.Top = 214; $be.Width = 130
     $bc = New-Object System.Windows.Forms.Button; $bc.Text = 'Close'; $bc.Left = 474; $bc.Top = 214; $bc.Width = 100; $bc.DialogResult = 'Cancel'
-    $d.Controls.AddRange(@($bi, $be, $bc)); $d.CancelButton = $bc
+    $br = New-Object System.Windows.Forms.Button; $br.Text = 'Remove'; $br.Left = 270; $br.Top = 214; $br.Width = 90; $br.Enabled = [bool]$st.Installed
+    $d.Controls.AddRange(@($bi, $be, $br, $bc)); $d.CancelButton = $bc
     $script:UeLinkPick = ''
     $bi.Add_Click({ $d.Tag = 'install'; $d.Close() })
+    $br.Add_Click({ $d.Tag = 'remove'; $d.Close() })
     $be.Add_Click({
         $fb = New-Object System.Windows.Forms.FolderBrowserDialog; $fb.Description = 'Unreal engine folder (the one with Engine inside, e.g. UE_5.8)'
         if ($fb.ShowDialog($d) -eq 'OK') {
@@ -1593,6 +1604,16 @@ function Do-UeLink {
     Theme-Walk $d
     [void]$d.ShowDialog($form)
     if ($d.Tag -eq 'again') { Do-UeLink; return }
+    if ($d.Tag -eq 'remove') {
+        if (Get-Process UnrealEditor -ErrorAction SilentlyContinue) { [void][System.Windows.Forms.MessageBox]::Show($form, 'Close Unreal first, then Remove again.', 'Unreal link', 'OK', 'Warning'); return }
+        if (-not (Ask-YesNo ('Remove the dvcl link from ' + $st.Engine + '?') 'Unreal link')) { return }
+        $gone = @()
+        foreach ($pd in @((Join-Path $st.Engine 'Engine\Plugins\Marketplace\DvclLink'), (Join-Path $st.Engine 'Engine\Plugins\DvclLink'))) {
+            if (Test-Path -LiteralPath $pd) { try { Remove-Item -LiteralPath $pd -Recurse -Force; $gone += $pd } catch { & $script:OnSay ('Could not remove ' + $pd + ': ' + $_.Exception.Message) 'Red' } }
+        }
+        & $script:OnSay ('Unreal link removed (' + $gone.Count + ' folder(s)).') 'Gray'
+        return
+    }
     if ($d.Tag -ne 'install') { return }
     if (Get-Process UnrealEditor -ErrorAction SilentlyContinue) {
         [void][System.Windows.Forms.MessageBox]::Show($form, "Close Unreal first (save your work), then Install again.`r`nThe engine's plugin files cannot be replaced while it runs.", 'Unreal link', 'OK', 'Warning'); return
@@ -1934,7 +1955,38 @@ function Get-BugUrl {
     $body = "What happened:`n`n`nSteps to reproduce:`n1. `n`n---`ndvcl " + (Get-LocalVersion) + ' / Windows ' + [Environment]::OSVersion.Version + ' / PowerShell ' + $PSVersionTable.PSVersion
     return ('https://github.com/' + $script:GhRepo + '/issues/new?body=' + [Uri]::EscapeDataString($body))
 }
-function Do-ReportBug { Start-Process (Get-BugUrl) }
+# Text safe to post publicly: your folders, user, PC, e-mail and Diversion ids replaced
+function Sanitize-Text([string]$t) {
+    if (-not $t) { return $t }
+    $pairs = @()
+    if ($script:Root) { $pairs += ,@($script:Root.TrimEnd('\'), '<workspace>'); $pairs += ,@(($script:Root.TrimEnd('\') -replace '\\', '/'), '<workspace>') }
+    if ($env:USERPROFILE) { $pairs += ,@($env:USERPROFILE, '<home>') }
+    if ($script:ToolDir) { $pairs += ,@($script:ToolDir.TrimEnd('\'), '<dvcl>') }
+    foreach ($pv in $pairs) { if ($pv[0]) { $t = [regex]::Replace($t, [regex]::Escape($pv[0]), $pv[1], 'IgnoreCase') } }
+    if ($script:Root) { $leaf = Split-Path -Leaf $script:Root.TrimEnd('\'); if ($leaf.Length -ge 3) { $t = [regex]::Replace($t, ('\b' + [regex]::Escape($leaf) + '\b'), '<ws>', 'IgnoreCase') } }
+    foreach ($w in @($env:USERNAME, $env:COMPUTERNAME)) { if ($w -and $w.Length -ge 3) { $t = [regex]::Replace($t, ('\b' + [regex]::Escape($w) + '\b'), '<user-or-pc>', 'IgnoreCase') } }
+    $t = [regex]::Replace($t, '[\w.+-]+@[\w-]+\.[\w.-]+', '<email>')
+    $t = [regex]::Replace($t, 'dv\.(ws|repo|branch|commit|shelf)\.[0-9a-f-]{8,}', 'dv.$1.<id>')
+    return $t
+}
+# Report bug: a report file (version, system, dvcl's own log lines, cleaned) on the desktop, shown
+# in Explorer, and a new GitHub issue with the summary filled in: drag the file into it.
+function Do-ReportBug {
+    $dvv = ''; try { $dvv = ((@(& dv version 2>&1 | ForEach-Object { "$_" }) | Select-Object -First 1)) } catch {}
+    $lines = @()
+    if ($script:Log -and (Test-Path -LiteralPath $script:Log)) {
+        # dvcl's own lines only: Diversion's answers (file lists, commit texts) and ignore rules left out
+        $lines = @(Get-Content -LiteralPath $script:Log -Tail 3000 | Where-Object { $_ -notmatch '^\[[^\]]+\]\s+(\||sample \|)' -and $_ -notmatch 'ignore file ' } | Select-Object -Last 400)
+    }
+    $sum = 'dvcl ' + (Get-LocalVersion) + ' / Windows ' + [Environment]::OSVersion.Version + ' / PowerShell ' + $PSVersionTable.PSVersion + ' / dv ' + $dvv + ' / ' + $(if ($script:Offline) { 'offline' } else { 'online' }) + ' / stay offline ' + $(if ($script:Root) { [string](Safety-On) } else { '?' })
+    $rep = @('dvcl bug report ' + (Get-Date -Format s), $sum, '', 'Review before attaching: file paths from your project can appear below.', '', '---- dvcl log (last lines) ----') + $lines
+    $f = Join-Path ([Environment]::GetFolderPath('Desktop')) 'dvcl-bug-report.txt'
+    [System.IO.File]::WriteAllText($f, (Sanitize-Text ($rep -join "`r`n")), $script:Utf8)
+    Start-Process explorer.exe ('/select,"' + $f + '"')
+    $body = "What happened:`n`n`nSteps to reproduce:`n1. `n`nReport file: drag dvcl-bug-report.txt (on your desktop) here.`n`n---`n" + (Sanitize-Text $sum)
+    Start-Process ('https://github.com/' + $script:GhRepo + '/issues/new?body=' + [Uri]::EscapeDataString($body))
+    & $script:OnSay 'Bug report: dvcl-bug-report.txt on your desktop (cleaned of your paths, user and ids); a GitHub issue is open to attach it.' 'Gray'
+}
 
 # ---------------------------------------------------------------- theme
 # Dark toolbars / menus without white outlines, dark scrollbars, dark title bar (compiled once, cached)
@@ -2705,6 +2757,9 @@ function Run-GuiSelfCheck {
         $u = Get-BugUrl
         C 'bug report: GitHub issue URL' ($u.StartsWith('https://github.com/' + $script:GhRepo + '/issues/new'))
         C 'bug report: no local path in it' (-not ([Uri]::UnescapeDataString($u)).ToLower().Contains(([string]$script:Root).ToLower()))
+        $san = Sanitize-Text ($script:Root + '\a.uasset ' + $env:USERPROFILE + '\x mail me@test.org dv.ws.d447b521-dbf2-40a6 ' + $env:COMPUTERNAME)
+        C 'bug report: report cleaned (workspace, home, e-mail, ids, PC)' (-not $san.ToLower().Contains(([string]$script:Root).ToLower()) -and $san -like '*<workspace>*' -and $san -like '*<email>*' -and $san -like '*dv.ws.<id>*' -and $san -notlike ('*' + $env:USERPROFILE + '*')) $san
+        C 'taskbar: dvcl app id (own icon, not PowerShell)' ([bool]('DvclNative.AppId' -as [type]))
         try {
             [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
             $wc = New-Object System.Net.WebClient; $wc.Headers['User-Agent'] = 'dvcl'

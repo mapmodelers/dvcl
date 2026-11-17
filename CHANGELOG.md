@@ -2,6 +2,12 @@
 
 Versions follow [semver](https://semver.org). Tags: `vX.Y.Z`.
 
+## 0.26.0 - 2026-11-17
+
+- Taskbar shows dvcl's icon (own app id), not PowerShell's.
+- uninstall.cmd: closes dvcl, removes the shortcuts and dvcl.exe, asks before removing your settings (workspaces keep their changelists). Tools > Unreal link > Remove.
+- Report bug: a report file on the desktop (version, Windows, PowerShell, dv, dvcl's own log lines; your folders, user, PC, e-mail and Diversion ids replaced), shown in Explorer, and a GitHub issue opened with the summary to attach it.
+
 ## 0.25.0 - 2026-11-17
 
 - First run on a new PC: dvcl asks for your Diversion workspace (lists the ones found on the PC, or Browse) and checks it with Diversion before using it. A folder Diversion does not know is refused instead of being scanned (a new PC could hang on "Scanning folder": the user folder's .diversion settings folder was taken for a workspace). Repo... opens the same choice.
