@@ -2,6 +2,10 @@
 
 Versions follow [semver](https://semver.org). Tags: `vX.Y.Z`.
 
+## 0.24.1 - 2026-11-17
+
+- Unreal link installed as an installed engine plugin (Engine\Plugins\Marketplace\DvclLink, prebuilt, on by default): in Engine\Plugins it broke C++ project builds. Tools > Unreal link shows "old place" and Update moves it. tests\check-build.ps1 builds a project's editor target to check.
+
 ## 0.24.0 - 2026-11-16
 
 - Stay offline (Tools, on by default): sync is on only during an action (submit, shelve, revert, unshelve, get latest) and never left on. A dvcl that stopped while online (killed, crashed), sync on for more than 30 min, or sync turned on elsewhere: the window pauses it within 15 s, any dvcl command pauses it first. "Go online" is hidden while it is on. Command line: `dvcl safety on|off`.

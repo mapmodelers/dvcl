@@ -1,18 +1,19 @@
 # ue\install.ps1 [<engine folder>] - builds the dvcl link plugin for your Unreal and installs it in
-# the engine (Engine\Plugins\DvclLink), on by default, so it loads in every project without touching
-# them. Restart Unreal once afterwards. Report: ue\install.log
+# the engine as an installed plugin (Engine\Plugins\Marketplace\DvclLink: prebuilt, its own rules, so
+# C++ projects still build), on by default, so it loads in every project without touching them.
+# Restart Unreal once afterwards. Report: ue\install.log
 param([string]$Engine = '')
 $ErrorActionPreference = 'Stop'
 $log = Join-Path $PSScriptRoot 'install.log'
 Set-Content -LiteralPath $log -Value ('dvcl link install ' + (Get-Date -Format s)) -Encoding UTF8
 function Note([string]$t) { Add-Content -LiteralPath $log -Value $t -Encoding UTF8; Write-Output $t }
 
-# Packaging drops EnabledByDefault and marks the plugin Installed (= off until enabled per project):
-# an engine plugin on by default instead
+# Packaging drops EnabledByDefault (without it the plugin stays off): put it back, keep Installed
+# (an installed plugin is prebuilt; a plain one in Engine\Plugins broke C++ project builds)
 function Set-PluginOn([string]$file) {
     $j = Get-Content -LiteralPath $file -Raw | ConvertFrom-Json
     $j | Add-Member -NotePropertyName EnabledByDefault -NotePropertyValue $true -Force
-    $j | Add-Member -NotePropertyName Installed -NotePropertyValue $false -Force
+    $j | Add-Member -NotePropertyName Installed -NotePropertyValue $true -Force
     Set-Content -LiteralPath $file -Value ($j | ConvertTo-Json -Depth 6) -Encoding UTF8
 }
 
@@ -47,8 +48,9 @@ if ($LASTEXITCODE -ne 0 -or -not (Test-Path (Join-Path $out 'Binaries\Win64'))) 
     Note ('FAIL build (exit ' + $LASTEXITCODE + '): ' + ((@($b | Where-Object { $_ -match 'error|Error|ERROR' }) | Select-Object -First 12) -join ' | '))
     exit 1
 }
-$dst = Join-Path $Engine 'Engine\Plugins\DvclLink'
-foreach ($old in @($dst, (Join-Path $Engine 'Engine\Plugins\Marketplace\DvclLink'))) {
+$dst = Join-Path $Engine 'Engine\Plugins\Marketplace\DvclLink'
+# older dvcl put it in Engine\Plugins\DvclLink: removed (it broke C++ project builds)
+foreach ($old in @($dst, (Join-Path $Engine 'Engine\Plugins\DvclLink'))) {
     if (Test-Path $old) {
         try { Remove-Item -LiteralPath $old -Recurse -Force } catch { Note ('FAIL the installed dvcl link is in use: close Unreal, run this again (' + $_.Exception.Message + ')'); exit 1 }
     }

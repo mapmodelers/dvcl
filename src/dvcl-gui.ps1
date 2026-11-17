@@ -1497,11 +1497,15 @@ function Ue-EnginePath {
 function Ue-LinkStatus {
     $eng = Ue-EnginePath
     $src = Join-Path $script:ToolDir 'ue\DvclLink\Source\DvclLink\Private\DvclLinkLibrary.cpp'
-    $inst = $(if ($eng) { Join-Path $eng 'Engine\Plugins\DvclLink' } else { '' })
+    $inst = $(if ($eng) { Join-Path $eng 'Engine\Plugins\Marketplace\DvclLink' } else { '' })
     $installed = [bool]($inst -and (Test-Path -LiteralPath (Join-Path $inst 'DvclLink.uplugin')))
+    # dvcl 0.24 and older installed it in Engine\Plugins (broke C++ project builds): needs Update
+    $oldPlace = [bool]($eng -and (Test-Path -LiteralPath (Join-Path $eng 'Engine\Plugins\DvclLink\DvclLink.uplugin')))
+    if ($oldPlace) { $installed = $true; $inst = Join-Path $eng 'Engine\Plugins\DvclLink' }
     $cpp = $(if ($inst) { Join-Path $inst 'Source\DvclLink\Private\DvclLinkLibrary.cpp' } else { '' })
     $same = $installed -and (Test-Path -LiteralPath $cpp) -and (Test-Path -LiteralPath $src) -and ((Get-FileHash -LiteralPath $cpp -Algorithm MD5).Hash -eq (Get-FileHash -LiteralPath $src -Algorithm MD5).Hash)
-    return [pscustomobject]@{ Engine = $eng; Installed = $installed; UpToDate = [bool]$same; Editor = [bool](Find-UeEngine) }
+    if ($oldPlace) { $same = $false }
+    return [pscustomobject]@{ Engine = $eng; Installed = $installed; UpToDate = [bool]$same; Editor = [bool](Find-UeEngine); OldPlace = $oldPlace }
 }
 function Do-UeLink {
     if (Op-Busy) { return }
@@ -1517,7 +1521,7 @@ function Do-UeLink {
         elseif ($a.State -eq 'nopython') { $ans = 'open, but Python 3 is not found on this PC (needed to talk to Unreal)' }
         else { $ans = 'open, does not answer: Project Settings > Plugins > Python > Enable Remote Execution' }
     } else { $ans = 'not open' }
-    $plug = $(if (-not $st.Engine) { '?' } elseif (-not $st.Installed) { 'not installed' } elseif ($st.UpToDate) { 'installed, up to date' } else { 'installed, update available' })
+    $plug = $(if (-not $st.Engine) { '?' } elseif (-not $st.Installed) { 'not installed' } elseif ($st.OldPlace) { 'installed in the old place (breaks C++ project builds): Update' } elseif ($st.UpToDate) { 'installed, up to date' } else { 'installed, update available' })
     $d = New-Object System.Windows.Forms.Form
     $d.Text = 'Unreal link'; $d.Font = $fontUi; $d.FormBorderStyle = 'FixedDialog'; $d.MaximizeBox = $false; $d.MinimizeBox = $false
     $d.StartPosition = 'CenterParent'; $d.Width = 600; $d.Height = 300; $d.ShowInTaskbar = $false
