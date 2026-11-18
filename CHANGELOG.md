@@ -2,6 +2,11 @@
 
 Versions follow [semver](https://semver.org). Tags: `vX.Y.Z`.
 
+## 0.28.0 - 2026-11-18
+
+- Unreal revision control "dvcl" (dvcl link 5): Revert and Submit Content work from Unreal (Content Browser right-click, Revision Control menu). They run dvcl's command line (new commands `dvcl revert-files`, `dvcl submit-files @list @message`), online for that action only, with a progress dialog showing dvcl's steps. New files are not revertable (delete them). Update the link once (Tools > Unreal link > Update, Unreal closed).
+- Another dvcl online for its own action (an agent's submit, another window): the window says so in the mode bar (what, since when), and no dvcl pauses sync under it; the one that turned sync on pauses it when done. The online mark (.dvcl\online.json) now records what and since when.
+
 ## 0.27.0 - 2026-11-17
 
 - Unreal revision control "dvcl" (dvcl link 4, phase 1): pick dvcl as the provider in Unreal (Revision Control > Connect). The Content Browser (tile view, or the Revision Control column in list view) and World Partition actors show dvcl's states (modified, added, deleted; changelist in the tooltip), offline, no login, no Check Out window (every file counts as checked out: Diversion has no locks). States follow the dvcl window (.dvcl\pending.tsv). Check in, revert and get latest stay in dvcl for now. Update the link once (Tools > Unreal link > Update, Unreal closed).

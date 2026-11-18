@@ -1025,7 +1025,16 @@ function Start-FsWatch {
 $safeTimer = New-Object System.Windows.Forms.Timer
 $safeTimer.Interval = 15000
 $safeTimer.Add_Tick({
-    if (-not $script:Root -or $script:OpDepth -gt 0 -or $script:BusyDepth -gt 0 -or $script:WentOnline) { return }
+    if (-not $script:Root) { return }
+    # another dvcl (an agent's command, another window) is online for its action: say so, never pause it
+    $oth = $null; try { $oth = Get-OtherOnline } catch {}
+    if ($oth -and $script:OpDepth -eq 0) {
+        $since = ''; try { $since = ' since ' + ([datetime]$oth.since).ToString('HH:mm') } catch {}
+        $t = 'Another dvcl is online: ' + $oth.what + $since + '. Its upload goes on; it pauses sync when done.'
+        if ($modeDesc.Text -ne $t) { $modeDesc.Text = $t; Write-Log ('shown: ' + $t) }
+        $script:OtherShown = $true
+    } elseif ($script:OtherShown -and $script:OpDepth -eq 0) { $script:OtherShown = $false; Set-Mode $script:Mode '' }
+    if ($script:OpDepth -gt 0 -or $script:BusyDepth -gt 0 -or $script:WentOnline) { return }
     if (-not (Safety-On)) { return }
     $script:SafeDeep = ($script:Mode -eq 'online')
     if (-not $script:SafeDeep -and -not (Read-OnlineMark)) { return }

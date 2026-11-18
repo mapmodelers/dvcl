@@ -213,5 +213,5 @@ FString UDvclLinkLibrary::ReloadFiles(const TArray<FString>& Files)
 
 FString UDvclLinkLibrary::Version()
 {
-	return TEXT("dvcl link 4");
+	return TEXT("dvcl link 5");
 }

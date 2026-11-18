@@ -2,7 +2,9 @@
 
 #include "DvclSourceControlState.h"
 #include "HAL/FileManager.h"
+#include "HAL/PlatformProcess.h"
 #include "HAL/PlatformTime.h"
+#include "Misc/ScopedSlowTask.h"
 #include "ISourceControlModule.h"
 #include "Logging/MessageLog.h"
 #include "Misc/FileHelper.h"
@@ -171,7 +173,7 @@ void FDvclSourceControlProvider::UnregisterSourceControlStateChanged_Handle(FDel
 bool FDvclSourceControlProvider::CanExecuteOperation(const FSourceControlOperationRef& InOperation) const
 {
 	const FName Op = InOperation->GetName();
-	return Op == "Connect" || Op == "UpdateStatus" || Op == "CheckOut" || Op == "MarkForAdd" || Op == "Delete";
+	return Op == "Connect" || Op == "UpdateStatus" || Op == "CheckOut" || Op == "MarkForAdd" || Op == "Delete" || Op == "Revert" || Op == "CheckIn";
 }
 
 ECommandResult::Type FDvclSourceControlProvider::Execute(const FSourceControlOperationRef& InOperation, FSourceControlChangelistPtr InChangelist, const TArray<FString>& InFiles, EConcurrency::Type InConcurrency, const FSourceControlOperationComplete& InOperationCompleteDelegate)
@@ -199,6 +201,28 @@ ECommandResult::Type FDvclSourceControlProvider::Execute(const FSourceControlOpe
 	{
 		// Diversion sees every change by itself: nothing to do
 	}
+	else if (Op == "Revert")
+	{
+		Result = RunFilesCommand(TEXT("revert-files"), InFiles, FString(), LOCTEXT("Reverting", "dvcl: reverting (online for this only, then back offline)..."), InOperation);
+	}
+	else if (Op == "CheckIn")
+	{
+		TSharedRef<FCheckIn, ESPMode::ThreadSafe> CheckIn = StaticCastSharedRef<FCheckIn>(InOperation);
+		const FString Description = CheckIn->GetDescription().ToString().TrimStartAndEnd();
+		if (Description.IsEmpty())
+		{
+			InOperation->AddErrorMessge(LOCTEXT("NoDescription", "dvcl: a description is required to submit."));
+			Result = ECommandResult::Failed;
+		}
+		else
+		{
+			Result = RunFilesCommand(TEXT("submit-files"), InFiles, Description, LOCTEXT("Submitting", "dvcl: submitting (waits for Diversion's upload, then back offline)..."), InOperation);
+			if (Result == ECommandResult::Succeeded)
+			{
+				CheckIn->SetSuccessMessage(LOCTEXT("Submitted", "Submitted with dvcl."));
+			}
+		}
+	}
 	else if (Op == "Delete")
 	{
 		// Diversion sees the file gone; dvcl lists it as deleted
@@ -209,7 +233,7 @@ ECommandResult::Type FDvclSourceControlProvider::Execute(const FSourceControlOpe
 	}
 	else
 	{
-		const FText Message = FText::Format(LOCTEXT("InDvcl", "'{0}': do it in the dvcl window for now (dvcl revision control shows states only)."), FText::FromName(Op));
+		const FText Message = FText::Format(LOCTEXT("InDvcl", "'{0}': not in Unreal yet, use the dvcl window."), FText::FromName(Op));
 		FMessageLog("SourceControl").Warning(Message);
 		InOperation->AddErrorMessge(Message);
 		Result = ECommandResult::Failed;
@@ -221,6 +245,105 @@ ECommandResult::Type FDvclSourceControlProvider::Execute(const FSourceControlOpe
 	}
 	InOperationCompleteDelegate.ExecuteIfBound(InOperation, Result);
 	return Result;
+}
+
+ECommandResult::Type FDvclSourceControlProvider::RunFilesCommand(const FString& Command, const TArray<FString>& InFiles, const FString& Message, const FText& What, const FSourceControlOperationRef& InOperation)
+{
+	if (Root.IsEmpty())
+	{
+		InOperation->AddErrorMessge(GetStatusText());
+		return ECommandResult::Failed;
+	}
+	TArray<FString> Files = SourceControlHelpers::AbsoluteFilenames(InFiles);
+	if (Files.Num() == 0)
+	{
+		InOperation->AddErrorMessge(LOCTEXT("NoFiles", "dvcl: no file given (changelists from Unreal come later: use the dvcl window)."));
+		return ECommandResult::Failed;
+	}
+	const FString ListFile = Root / TEXT(".dvcl/ue-files.txt");
+	FFileHelper::SaveStringArrayToFile(Files, *ListFile, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
+	FString Args = Command + TEXT(" \"@") + ListFile + TEXT("\"");
+	if (!Message.IsEmpty())
+	{
+		const FString MessageFile = Root / TEXT(".dvcl/ue-message.txt");
+		FFileHelper::SaveStringToFile(Message, *MessageFile, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
+		Args += TEXT(" \"@") + MessageFile + TEXT("\"");
+	}
+	Args += TEXT(" -y");
+	FString Log;
+	const bool bOk = RunDvcl(Args, What, Log);
+	// the files changed: states from dvcl's new list (written by the command)
+	Reload(true);
+	OnStateChanged.Broadcast();
+	if (!bOk)
+	{
+		// the last lines of dvcl's output say why
+		TArray<FString> Lines;
+		Log.ParseIntoArrayLines(Lines);
+		const int32 First = FMath::Max(0, Lines.Num() - 8);
+		FString Tail;
+		for (int32 i = First; i < Lines.Num(); ++i)
+		{
+			Tail += Lines[i].TrimEnd() + TEXT("\n");
+		}
+		InOperation->AddErrorMessge(FText::Format(LOCTEXT("DvclFailed", "dvcl {0} failed:\n{1}"), FText::FromString(Command), FText::FromString(Tail)));
+		return ECommandResult::Failed;
+	}
+	return ECommandResult::Succeeded;
+}
+
+bool FDvclSourceControlProvider::RunDvcl(const FString& Args, const FText& What, FString& OutLog) const
+{
+	FString Tool;
+	if (!FFileHelper::LoadFileToString(Tool, *(Root / TEXT(".dvcl/tool.txt"))))
+	{
+		OutLog = TEXT("dvcl not found: open this workspace in dvcl once (it writes .dvcl/tool.txt).");
+		return false;
+	}
+	Tool.TrimStartAndEndInline();
+	const FString Script = Tool / TEXT("src/dvcl-cli.ps1");
+	if (!FPaths::FileExists(Script))
+	{
+		OutLog = FString::Printf(TEXT("dvcl not found at %s (reinstall dvcl, then open the workspace in it once)."), *Tool);
+		return false;
+	}
+	const FString Params = FString::Printf(TEXT("-NoProfile -ExecutionPolicy Bypass -File \"%s\" %s"), *Script, *Args);
+	void* ReadPipe = nullptr;
+	void* WritePipe = nullptr;
+	FPlatformProcess::CreatePipe(ReadPipe, WritePipe);
+	FProcHandle Proc = FPlatformProcess::CreateProc(TEXT("powershell.exe"), *Params, false, true, true, nullptr, 0, *Root, WritePipe, nullptr);
+	if (!Proc.IsValid())
+	{
+		FPlatformProcess::ClosePipe(ReadPipe, WritePipe);
+		OutLog = TEXT("powershell.exe could not be started.");
+		return false;
+	}
+	// progress dialog with dvcl's last line (Unreal stays drawn while dvcl works)
+	FScopedSlowTask Task(0.f, What);
+	Task.MakeDialog(false);
+	FString Last;
+	while (FPlatformProcess::IsProcRunning(Proc))
+	{
+		const FString Chunk = FPlatformProcess::ReadPipe(ReadPipe);
+		if (!Chunk.IsEmpty())
+		{
+			OutLog += Chunk;
+			TArray<FString> Lines;
+			Chunk.ParseIntoArrayLines(Lines);
+			if (Lines.Num() > 0)
+			{
+				Last = Lines.Last().TrimStartAndEnd();
+			}
+		}
+		Task.EnterProgressFrame(0.f, Last.IsEmpty() ? What : FText::FromString(Last));
+		FPlatformProcess::Sleep(0.1f);
+	}
+	OutLog += FPlatformProcess::ReadPipe(ReadPipe);
+	int32 Code = -1;
+	FPlatformProcess::GetProcReturnCode(Proc, &Code);
+	FPlatformProcess::CloseProc(Proc);
+	FPlatformProcess::ClosePipe(ReadPipe, WritePipe);
+	return Code == 0;
 }
 
 void FDvclSourceControlProvider::Tick()

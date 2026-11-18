@@ -40,6 +40,8 @@ Run inside a Diversion workspace (any subfolder).
   dvcl delete <cl>              delete <cl> (its files go back to default)
   dvcl submit <cl> [-y]         commit ONLY <cl>'s files with its description, then close it
   dvcl submit default "msg"     commit the unassigned files
+  dvcl submit-files @list @msg  commit exactly these files (one path per line) with this message (used by Unreal)
+  dvcl revert-files <file...>   discard these files' changes, whatever their changelist (used by Unreal)
   dvcl revert <cl> [-y]         discard <cl>'s local changes (your versions copied to .dvcl\revert-backup)
   dvcl shelve <cl>              Diversion shelf of <cl>'s files, workspace untouched
   dvcl shelves                  list shelves and their files
@@ -297,6 +299,24 @@ function Run-SelfTest {
                 Set-Safety $false; Write-OnlineMark; $r4 = Safety-Check $false $false; Set-Safety $true; Clear-OnlineMark
             } finally { Set-Item function:script:Pause-Now $origPause }
             T "stay offline: a dvcl that stopped online is paused, own action left alone, off = nothing" ($r1 -like 'left on by a dvcl that stopped' -and $r2 -eq '' -and $r3 -like 'left on after*' -and $r4 -eq '' -and $script:Paused1.Count -eq 2 -and (Safety-On))
+            # the online mark says who, for what, since when
+            $script:OnlineWhat = 'command: selftest'; Write-OnlineMark; $wm = Read-OnlineMark; Clear-OnlineMark; $script:OnlineWhat = ''
+            T "online mark: pid, what, since, at" ([int]$wm.pid -eq $PID -and $wm.what -eq 'command: selftest' -and $wm.since -and $wm.at)
+            # another dvcl online for its own action (running, fresh mark): seen, its sync left on
+            $pp = Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\ping.exe') -ArgumentList @('-n', '30', '127.0.0.1') -WindowStyle Hidden -PassThru
+            try {
+                [System.IO.File]::WriteAllText((Dvcl-File 'online.json'), ('{"pid":' + $pp.Id + ',"at":"' + (Get-Date -Format s) + '","since":"' + (Get-Date -Format s) + '","what":"command: submit big"}'))
+                $o1 = Get-OtherOnline; $fl = Test-OfflineFlag
+                Set-Sync $false
+                $o2 = Read-OnlineMark; $sc2 = Safety-Check $false $false
+            } finally { Stop-Process -Id $pp.Id -Force -ErrorAction SilentlyContinue }
+            Start-Sleep -Milliseconds 300
+            $o3 = Get-OtherOnline; Clear-OnlineMark
+            T "another dvcl online: seen, its sync not paused, its mark kept; gone once it stops" ($o1 -and $o1.what -eq 'command: submit big' -and [int]$o2.pid -eq $pp.Id -and (Test-OfflineFlag) -eq $fl -and $sc2 -eq '' -and $null -eq $o3)
+            # files from Unreal: @listfile (absolute, / or \) + plain paths, made relative to the workspace
+            $lf = Full-Path 'ue-list.txt'; [System.IO.File]::WriteAllLines($lf, [string[]]@((Full-Path 'Game/Content/A.uasset'), '', ((Full-Path 'Game/Content/New/D.uasset') -replace '\\', '/')))
+            $ra = Read-PathArgs @(('@' + $lf), 'Game\Content\C.uasset'); Remove-Item -LiteralPath $lf
+            T "file list for Unreal: @listfile + paths, made relative" ($ra.Count -eq 3 -and $ra[0] -eq 'Game/Content/A.uasset' -and $ra[1] -eq 'Game/Content/New/D.uasset' -and $ra[2] -eq 'Game/Content/C.uasset') ((@($ra) -join ','))
             # the user folder's .diversion (Diversion's own settings) is not a workspace
             $svProf = $env:USERPROFILE
             try {
@@ -349,6 +369,22 @@ function Current-Pending {
     $st = Get-Pending
     if ($st.Paused) { $st.Files = Get-OfflinePending }
     return $st
+}
+
+# File arguments: paths, or @listfile (one path per line, UTF-8; the Unreal revision control uses it)
+function Read-PathArgs($items) {
+    $out = New-Object System.Collections.Generic.List[string]
+    foreach ($a in @($items)) {
+        $a = [string]$a
+        if ($a.StartsWith('@')) { foreach ($l in [System.IO.File]::ReadAllLines($a.Substring(1), [System.Text.Encoding]::UTF8)) { if ($l.Trim()) { $out.Add((Norm $l)) } } }
+        elseif ($a) { $out.Add((Norm $a)) }
+    }
+    return ,$out.ToArray()
+}
+function Path-Set($paths) {
+    $s = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($p in @($paths)) { [void]$s.Add([string]$p) }
+    return ,$s
 }
 
 function Submit-Cli([string]$name, $argv, [bool]$yes) {
@@ -405,6 +441,8 @@ if ($cmd -in 'desc', 'add', 'move', 'mv', 'delete', 'submit', 'revert', 'shelve'
     Load-Db; $c = Find-CL $argv[0]; if ($c) { $argv[0] = $c.name }
 }
 Write-Log ("==== dvcl " + $cmd + " " + ($argv -join ' '))
+# what this command goes online for (shown by other dvcl while it runs)
+$script:OnlineWhat = ('command: ' + $cmd + ' ' + ((@($argv | Select-Object -First 1) | ForEach-Object { if ([string]$_ -like '@*') { '(files)' } else { [string]$_ } }) -join '')).Trim()
 # stay offline: sync left on by a dvcl that stopped (or turned on elsewhere) is paused first
 if ($cmd -notin 'safety', 'sync') { try { [void](Safety-Check $false $true) } catch { Write-Host ("Stay offline check: " + $_.Exception.Message) -ForegroundColor Yellow } }
 
@@ -490,6 +528,41 @@ try {
             foreach ($p in $pre) { Say ("   {0}  {1}" -f (Kind-Letter $p.Kind), $p.Path) }
             Confirm-Or-Exit ("Revert these " + $pre.Count + " path(s)?") $yes
             With-Sync { $items = Get-CLItems (Get-Pending).Files $name; [void](Revert-Items $name $items) }
+        }
+
+        # used by Unreal's revision control "dvcl": files given by path (or @listfile), whatever changelist
+        'revert-files' {
+            $want = Read-PathArgs $argv
+            if ($want.Count -eq 0) { Fail "usage: dvcl revert-files <file...|@listfile> [-y]" }
+            $script:RfSet = Path-Set $want
+            $pre = @((Current-Pending).Files | Where-Object { $script:RfSet.Contains($_.Path) })
+            if ($pre.Count -eq 0) { Fail "none of these files has a pending change" }
+            Say ('Revert ' + $pre.Count + ' file(s): local changes will be DISCARDED (your versions copied to .dvcl\revert-backup)') 'Cyan'
+            foreach ($p in $pre) { Say ("   {0}  {1}" -f (Kind-Letter $p.Kind), $p.Path) }
+            Confirm-Or-Exit ("Revert these " + $pre.Count + " path(s)?") $yes
+            try { With-Sync { $items = @((Get-Pending).Files | Where-Object { $script:RfSet.Contains($_.Path) }); [void](Revert-Items '' $items) } }
+            finally { try { Write-PendingFile (Current-Pending).Files } catch {} }
+        }
+
+        'submit-files' {
+            if ($argv.Count -lt 2) { Fail "usage: dvcl submit-files <@listfile> <@messagefile|message> [-y]" }
+            $want = Read-PathArgs @($argv[0])
+            $m = [string]$argv[1]; if ($m.StartsWith('@')) { $m = [System.IO.File]::ReadAllText($m.Substring(1), [System.Text.Encoding]::UTF8) }
+            $script:SfDesc = $m.Trim(); if (-not $script:SfDesc) { Fail "a description is required to submit" }
+            if ($want.Count -eq 0) { Fail "no file to submit" }
+            $script:SfSet = Path-Set $want; $script:SfYes = $yes
+            try {
+                With-Sync {
+                    $st = Wait-Upload
+                    if ($st.Paused) { Fail "sync was paused before Diversion finished uploading: nothing submitted. Submit again." }
+                    $items = @($st.Files | Where-Object { $script:SfSet.Contains($_.Path) })
+                    if ($items.Count -eq 0) { Fail "none of these files is in Diversion's pending list: nothing submitted" }
+                    Say ('Submit ' + $items.Count + ' file(s): "' + $script:SfDesc + '"') 'Cyan'
+                    foreach ($p in $items) { Say ("   {0}  {1}" -f (Kind-Letter $p.Kind), $p.Path) }
+                    Confirm-Or-Exit ("Commit these " + $items.Count + " path(s)?") $script:SfYes
+                    Submit-Items '' $items $script:SfDesc $st.Files
+                }
+            } finally { try { Write-PendingFile (Current-Pending).Files } catch {} }
         }
 
         'shelve' {

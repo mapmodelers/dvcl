@@ -38,6 +38,8 @@ function Set-DvRoot([string]$root) {
     if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir | Out-Null }
     $script:Db  = Join-Path $dir 'changelists.json'
     $script:Log = Join-Path $dir 'dvcl.log'
+    # where dvcl is installed, for the Unreal revision control "dvcl" (it runs dvcl's command line)
+    try { $tf = Join-Path $dir 'tool.txt'; $tool = Split-Path -Parent $PSScriptRoot; if (-not (Test-Path -LiteralPath $tf) -or ([System.IO.File]::ReadAllText($tf)).Trim() -ne $tool) { [System.IO.File]::WriteAllText($tf, $tool, (New-Object System.Text.UTF8Encoding($false))) } } catch {}
     # keep the log small: above 2 MB it becomes dvcl.old.log (previous one replaced)
     try { if ((Test-Path -LiteralPath $script:Log) -and (Get-Item -LiteralPath $script:Log).Length -gt 2MB) { Move-Item -LiteralPath $script:Log -Destination (Join-Path $dir 'dvcl.old.log') -Force } } catch {}
     Load-Db
@@ -295,6 +297,15 @@ function Set-FolderSync([string]$folder, [bool]$on) {
 # Going offline = pause sync. Before pausing, dvcl records a baseline of the folder (sizes + dates)
 # and the current pending list, so it can find offline edits by itself (dv reports nothing while paused).
 function Set-Sync([bool]$on) {
+    # another dvcl (window or command) is online for its own action: its sync is left as it is,
+    # that dvcl pauses it when done (else its upload would be cut)
+    $other = Get-OtherOnline
+    if ($other) {
+        Write-Log ('sync ' + $(if ($on) { 'on' } else { 'off' }) + ': left to dvcl pid ' + $other.pid + ' (' + $other.what + '), online for its own action')
+        if ($on) { Set-OfflineFlag $false; Say ("Online: another dvcl is online (" + $other.what + "), sync is already on.") 'Green' }
+        else { Say ("Sync left on: another dvcl is online (" + $other.what + ") and pauses it when its action ends.") 'Yellow' }
+        return
+    }
     if (-not $on) {
         # Diversion's list from a sync wait seconds ago (after unshelve; nothing written since): reused
         if ($script:SyncedSt -and $script:SyncedAt -and ((Get-Date) - $script:SyncedAt).TotalSeconds -lt 15) { $st = $script:SyncedSt; Write-Log 'sync wait reused (just synced)' }
@@ -1064,13 +1075,28 @@ function Set-Safety([bool]$on) {
     if ($on) { if (Test-Path -LiteralPath $f) { Remove-Item -LiteralPath $f -Force } }
     else { [System.IO.File]::WriteAllText($f, (Get-Date -Format s), $script:Utf8) }
 }
-function Write-OnlineMark {
-    try { [System.IO.File]::WriteAllText((Dvcl-File 'online.json'), ([pscustomobject]@{ pid = $PID; at = (Get-Date -Format s) } | ConvertTo-Json -Compress), $script:Utf8) } catch {}
+# .dvcl\online.json: which dvcl turned sync on (pid), for what, since when, last sign of life (at)
+function Write-OnlineMark([string]$since = '') {
+    if (-not $since) { $since = (Get-Date -Format s) }
+    $what = $(if ($script:OnlineWhat) { $script:OnlineWhat } elseif ($script:OpTitle) { $script:OpTitle } else { 'dvcl' })
+    try { [System.IO.File]::WriteAllText((Dvcl-File 'online.json'), ([pscustomobject]@{ pid = $PID; at = (Get-Date -Format s); since = $since; what = $what } | ConvertTo-Json -Compress), $script:Utf8) } catch {}
+}
+# another dvcl, still running, that has sync on for an action (mark fresh): $null if none
+function Get-OtherOnline {
+    $m = Read-OnlineMark
+    if (-not $m) { return $null }
+    $p = 0; try { $p = [int]$m.pid } catch {}
+    if ($p -le 0 -or $p -eq $PID) { return $null }
+    if (-not (Get-Process -Id $p -ErrorAction SilentlyContinue)) { return $null }
+    $age = 999; try { $age = ((Get-Date) - [datetime]$m.at).TotalMinutes } catch {}
+    if ($age -ge 90) { return $null }
+    if (-not $m.what) { $m | Add-Member -NotePropertyName what -NotePropertyValue 'dvcl' -Force }
+    return $m
 }
 # keeps our own mark fresh during a long online action (others pause sync only when it is old)
 function Touch-OnlineMark {
     $m = Read-OnlineMark
-    if ($m -and [int]$m.pid -eq $PID) { Write-OnlineMark }
+    if ($m -and [int]$m.pid -eq $PID) { Write-OnlineMark ([string]$m.since) }
 }
 # Big uploads: polls "dv status --nowait" until Diversion shows no transfer lines, instead of one
 # "dv status" that waits without a word and can be cut. Keeps the online mark fresh, so other dvcl

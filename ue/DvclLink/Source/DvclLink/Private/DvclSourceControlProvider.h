@@ -51,6 +51,10 @@ public:
 private:
 	// re-reads .dvcl\pending.tsv if it changed (or always); true = the states changed
 	bool Reload(bool bForce);
+	// runs dvcl's command line on these files (revert-files / submit-files), with a progress dialog;
+	// errors go to the operation. Message: the submit description ('' = none).
+	ECommandResult::Type RunFilesCommand(const FString& Command, const TArray<FString>& InFiles, const FString& Message, const FText& What, const FSourceControlOperationRef& InOperation);
+	bool RunDvcl(const FString& Args, const FText& What, FString& OutLog) const;
 	static FString Key(const FString& File);
 
 	FString Root;

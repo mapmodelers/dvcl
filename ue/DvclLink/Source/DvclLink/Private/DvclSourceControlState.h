@@ -26,9 +26,9 @@ public:
 	virtual FText GetDisplayTooltip() const override;
 	virtual const FString& GetFilename() const override { return Filename; }
 	virtual const FDateTime& GetTimeStamp() const override { return TimeStamp; }
-	// check in / revert: in dvcl for now
+	// check in / revert run dvcl's command line (submit-files / revert-files)
 	// Diversion has no locks: every file is always editable, so it counts as checked out (no Check Out prompt in Unreal)
-	virtual bool CanCheckIn() const override { return false; }
+	virtual bool CanCheckIn() const override { return Kind != 0 && Kind != TEXT('!'); }
 	virtual bool CanCheckout() const override { return false; }
 	virtual bool IsCheckedOut() const override { return true; }
 	virtual bool IsCheckedOutOther(FString* Who = nullptr) const override { return false; }
@@ -49,7 +49,8 @@ public:
 	virtual bool IsModified() const override { return Kind != 0; }
 	virtual bool CanAdd() const override { return false; }
 	virtual bool IsConflicted() const override { return Kind == TEXT('!'); }
-	virtual bool CanRevert() const override { return false; }
+	// a new file has nothing to go back to (dvcl skips it): delete it instead
+	virtual bool CanRevert() const override { return Kind != 0 && Kind != TEXT('A'); }
 	// the blue line in Content Browser tooltips: only for files with a pending change (all files count as checked out)
 	virtual TOptional<FText> GetStatusText() const override
 	{
