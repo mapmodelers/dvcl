@@ -529,6 +529,7 @@ $script:GroupOfpa = ($settings.groupOfpa -ne $false)
 function Build-Tree {
     if ($script:OpDepth -gt 0) { $script:TreeDirty = $true; return }
     $script:BuildCount++
+    Write-PendingFile $script:Pending
     # keep what the user selected across rebuilds (refresh, theme, outside changes)
     $keepSel = $null; if ($tv.SelectedNode -and $tv.SelectedNode.Tag) { $t = $tv.SelectedNode.Tag; $keepSel = [string]$t.Type + '|' + $(if ($t.Type -eq 'file') { $t.Item.Path } elseif ($t.Type -eq 'cl') { $t.Name } else { [string]$t.Path + [string]$t.Cl }) }
     $script:InBuild = $true; $tv.BeginUpdate()
@@ -2745,6 +2746,8 @@ function Run-GuiSelfCheck {
         $fws = @(Find-Workspaces)
         C 'setup: workspaces found on this PC include this one, not the user folder' (@($fws | Where-Object { $_ -ieq $script:Root }).Count -eq 1 -and @($fws | Where-Object { $_ -ieq $env:USERPROFILE }).Count -eq 0) ([string]$fws.Count)
         C 'setup: Diversion confirms this workspace' ((Test-DvWorkspace $script:Root) -eq 'ok')
+        $pf = Dvcl-File 'pending.tsv'
+        C 'Unreal revision control: pending list written for it (one line per pending file)' ((Test-Path -LiteralPath $pf) -and (@(Get-Content -LiteralPath $pf | Where-Object { $_ -and -not $_.StartsWith('#') }).Count -eq @($script:Pending).Count)) ([string]@($script:Pending).Count)
         $us = Ue-LinkStatus
         C 'unreal link: status read (engine / installed / up to date / editor)' ($null -ne $us -and $null -ne $us.PSObject.Properties['UpToDate'] -and $null -ne $us.PSObject.Properties['Editor'])
         [void]$r.Add('INFO  unreal link status: engine found ' + [bool]$us.Engine + ', installed ' + $us.Installed + ', up to date ' + $us.UpToDate + ', editor open ' + $us.Editor)

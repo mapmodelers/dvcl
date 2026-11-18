@@ -6,6 +6,6 @@ public class DvclLink : ModuleRules
 	{
 		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
 		PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine" });
-		PrivateDependencyModuleNames.AddRange(new string[] { "UnrealEd", "AssetRegistry" });
+		PrivateDependencyModuleNames.AddRange(new string[] { "UnrealEd", "AssetRegistry", "SourceControl", "Slate", "SlateCore" });
 	}
 }

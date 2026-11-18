@@ -2,6 +2,15 @@
 
 Versions follow [semver](https://semver.org). Tags: `vX.Y.Z`.
 
+## 0.27.0 - 2026-11-17
+
+- Unreal revision control "dvcl" (dvcl link 4, phase 1): pick dvcl as the provider in Unreal (Revision Control > Connect). The Content Browser (tile view, or the Revision Control column in list view) and World Partition actors show dvcl's states (modified, added, deleted; changelist in the tooltip), offline, no login, no Check Out window (every file counts as checked out: Diversion has no locks). States follow the dvcl window (.dvcl\pending.tsv). Check in, revert and get latest stay in dvcl for now. Update the link once (Tools > Unreal link > Update, Unreal closed).
+- Offline view: "!" lines of .dvignore / .gitignore are honoured like Diversion does (a file brought back inside a hidden folder is listed again); * stays inside one folder name, ** crosses folders. Before, such files were missing from the offline list and only showed while online.
+- Offline view: a pause in the middle of an upload no longer loses the pending files dvcl knew (the list read without waiting is completed with them). A submit whose upload was cut by a pause says so and commits nothing.
+- Offline view: a file that is only hidden by the ignore rules now (still on disk) is never listed as deleted.
+- Submit (command line) waits for big uploads: it polls Diversion every 15 s while files are still compressing / uploading (progress in the log, up to 5 h), then submits. Meanwhile its online mark stays fresh, so a dvcl window or another command does not pause sync under it (the window does the same during its own long online actions).
+- Stay offline pauses sync left on by another dvcl only when that dvcl stopped, or its online mark is more than 90 min old (was 30 min from the start: big uploads were cut).
+
 ## 0.26.0 - 2026-11-17
 
 - Taskbar shows dvcl's icon (own app id), not PowerShell's.

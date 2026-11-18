@@ -86,8 +86,8 @@ function Run-SelfTest {
         ''
     )
     $script:ok = 0; $script:ko = 0
-    function T([string]$name, [bool]$cond) {
-        if ($cond) { Write-Host ("PASS  " + $name) -ForegroundColor Green; $script:ok++ } else { Write-Host ("FAIL  " + $name) -ForegroundColor Red; $script:ko++ }
+    function T([string]$name, [bool]$cond, [string]$detail = '') {
+        if ($cond) { Write-Host ("PASS  " + $name) -ForegroundColor Green; $script:ok++ } else { Write-Host ("FAIL  " + $name + $(if ($detail) { '  :: ' + $detail } else { '' })) -ForegroundColor Red; $script:ko++ }
     }
     $script:Root = 'C:\FakeRepo'
     $script:Log  = $null
@@ -139,6 +139,9 @@ function Run-SelfTest {
         T "args: Windows backslash rules" ($cb[1] -eq 'D:\x y\' -and $cb[2] -eq 'b"c')
         $fr = Finish-Dv @('status') (@('Sync in progress {{spinner}}') + $sample) 0 $true $false 5
         T "dv output: sync progress detected and filtered" ($fr.SyncBusy -and $fr.Lines.Count -eq $sample.Count)
+        $fu = Finish-Dv @('status') @('  Compressing Game/Content/T_Big_Normal.uasset', 'On branch main') 0 $true $false 5
+        $fi = Finish-Dv @('status') @('Recently synced 3 files', 'On branch main') 0 $true $false 5
+        T "dv output: upload still running detected (compressing / uploading), idle lines not" ($fu.Upload -like '*Compressing*' -and -not $fi.Upload)
         $st = Read-Status $fr
         T "status: branch, commit, 8 files, not paused" ($st.Branch -eq 'main' -and $st.Commit -eq 'dv.commit.43' -and $st.Files.Count -eq 8 -and -not $st.Paused -and $st.Syncing)
         T "status: 'paused' header detected" ((Read-Status (Finish-Dv @('status') @('Workspace sync is paused') 0 $true $false 1)).Paused)
@@ -196,17 +199,20 @@ function Run-SelfTest {
             function MkF([string]$rel, [string]$txt) { $f = Full-Path $rel; [void][System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($f)); [System.IO.File]::WriteAllText($f, $txt) }
             [void][System.IO.Directory]::CreateDirectory((Full-Path '.dvcl'))
             [void][System.IO.Directory]::CreateDirectory((Full-Path '.diversion'))
-            MkF '.dvignore' "# ue`nSaved/*`nIntermediate/*`n*.tmp`n/artsource`n"
+            MkF '.dvignore' "# ue`nSaved/*`nIntermediate/*`n*.tmp`n/artsource`n/art/*`n!/art/keep/`n!/art/more/**`n/lvl/*/*_check.json`n**/gen/`n"
             MkF 'Game/.gitignore' "Cache/`n"; MkF 'Game/Cache/c.bin' 'x'; MkF 'Game/Sub/artsource/keep.txt' 'x'
             MkF 'Game/Content/A.uasset' 'a1'; MkF 'Game/Content/B.uasset' 'b1'; MkF 'Game/Content/C.uasset' 'c1'
+            MkF 'art/top.txt' 'x'; MkF 'art/drop/x.txt' 'x'; MkF 'art/keep/scripts/y.py' 'x'; MkF 'art/more/sub/z.txt' 'x'; MkF 'lvl/a/b_check.json' 'x'; MkF 'lvl/a/b/c_check.json' 'x'; MkF 'Game/x/gen/f.txt' 'x'
             MkF 'Game/Saved/log.txt' 'x'; MkF 'Game/Intermediate/x.obj' 'x'; MkF 'Game/Content/t.tmp' 'x'; MkF 'artsource/big.blend' 'x'
             $sc = Scan-Workspace
             $ps = Scan-WorkspacePs
             $same = ($sc.Count -eq $ps.Count) -and (@($ps.Keys | Where-Object { -not $sc.ContainsKey($_) -or $sc[$_] -ne $ps[$_] }).Count -eq 0)
-            T "scan: compiled scanner = PowerShell scan (same entries)" ((Ensure-Scanner) -and $same) ("native " + $sc.Count + " / ps " + $ps.Count)
+            $dif = @(@($ps.Keys | Where-Object { -not $sc.ContainsKey($_) -or $sc[$_] -ne $ps[$_] } | ForEach-Object { 'ps:' + $_ + '=' + $ps[$_] }) + @($sc.Keys | Where-Object { -not $ps.ContainsKey($_) } | ForEach-Object { 'native:' + $_ }))
+            T "scan: compiled scanner = PowerShell scan (same entries)" ((Ensure-Scanner) -and $same) ("native " + $sc.Count + " / ps " + $ps.Count + " | " + (($dif | Select-Object -First 6) -join ' '))
             T "scan: Saved/* and Intermediate/* hidden at any depth" (-not $sc.ContainsKey('Game/Saved/log.txt') -and -not $sc.ContainsKey('Game/Intermediate/x.obj'))
             T "scan: wildcard, /anchored, nested .gitignore, .diversion" (-not $sc.ContainsKey('Game/Content/t.tmp') -and -not $sc.ContainsKey('artsource') -and $sc.ContainsKey('Game/Sub/artsource/keep.txt') -and -not $sc.ContainsKey('Game/Cache') -and -not $sc.ContainsKey('.diversion'))
             T "scan: normal files and folders kept" ($sc.ContainsKey('Game/Content/A.uasset') -and $sc['Game/Content'] -eq 'D')
+            T "scan: ! rules bring files back inside a hidden folder, * stays in one folder, ** crosses folders" (-not $sc.ContainsKey('art/top.txt') -and -not $sc.ContainsKey('art/drop') -and $sc.ContainsKey('art/keep/scripts/y.py') -and $sc.ContainsKey('art/more/sub/z.txt') -and $sc['art/more'] -eq 'D' -and -not $sc.ContainsKey('lvl/a/b_check.json') -and $sc.ContainsKey('lvl/a/b/c_check.json') -and -not $sc.ContainsKey('Game/x/gen') -and $sc.ContainsKey('Game/x'))
             $known = @([pscustomobject]@{ Index = 1; Kind = 'Modified'; Path = 'Game/Content/C.uasset'; Old = $null })
             Write-Baseline $known 'dv.commit.1'
             T "offline: no change = only the known pending file" ((@(Get-OfflinePending)).Count -eq 1)
@@ -218,6 +224,17 @@ function Run-SelfTest {
             T "offline: modified, deleted, new file + new folder, known pending kept" ($k['Game/Content/A.uasset'] -eq 'Modified' -and $k['Game/Content/B.uasset'] -eq 'Deleted' -and $k['Game/Content/New/D.uasset'] -eq 'New' -and $k['Game/Content/New'] -eq 'New' -and $k['Game/Content/C.uasset'] -eq 'Modified' -and $off.Count -eq 5)
             T "offline: ignored files never pending" (-not $k.ContainsKey('Game/Saved/other.txt'))
             T "offline: indexes 1..n" ($off[0].Index -eq 1 -and $off[$off.Count - 1].Index -eq $off.Count)
+            # baseline written by older ignore rules (no matcher tag, a now visible file missing)
+            $bl = Dvcl-File 'baseline.tsv'; $bt = @([System.IO.File]::ReadAllLines($bl)); $bt[0] = (@($bt[0].Split("`t"))[0..2] -join "`t")
+            $bt = @($bt | Where-Object { -not $_.StartsWith("art/keep/scripts/y.py`t") -and -not $_.StartsWith("art/more/sub/z.txt`t") }) + @("art/drop/x.txt`t1|1"); [System.IO.File]::WriteAllLines($bl, [string[]]$bt)
+            $origDep = ${function:Get-DepotPaths}
+            Set-Item function:script:Get-DepotPaths { return ,@('art/', 'art/keep/', 'art/keep/scripts/', 'art/keep/scripts/y.py') }
+            try { $k3 = @{}; $l3 = Get-OfflinePending; foreach ($x in $l3) { $k3[$x.Path] = $x.Kind } } finally { Set-Item function:script:Get-DepotPaths $origDep }
+            T "offline: baseline from older ignore rules: newly visible committed file unchanged, uncommitted one new, hidden file on disk not deleted, earlier edits kept" (-not $k3.ContainsKey('art/keep/scripts/y.py') -and -not $k3.ContainsKey('art/drop/x.txt') -and $k3['art/more/sub/z.txt'] -eq 'New' -and $k3['Game/Content/A.uasset'] -eq 'Modified' -and $k3['Game/Content/B.uasset'] -eq 'Deleted' -and ([System.IO.File]::ReadAllLines($bl)[0]).EndsWith("`tm2")) ((@($k3.Keys) -join ','))
+            # a baseline written from a list read without waiting (stay offline pause mid-upload) keeps what was pending
+            Write-Baseline @() 'dv.commit.2' $false
+            $k4 = @{}; $l4 = Get-OfflinePending; foreach ($x in $l4) { $k4[$x.Path] = $x.Kind }
+            T "offline: baseline from an incomplete Diversion list keeps the pending files dvcl knew" ($k4['Game/Content/A.uasset'] -eq 'Modified' -and $k4['Game/Content/B.uasset'] -eq 'Deleted' -and $k4['Game/Content/C.uasset'] -eq 'Modified' -and $k4['Game/Content/New/D.uasset'] -eq 'New') ((@($k4.Keys) -join ','))
             Remove-Item -LiteralPath (Dvcl-File 'baseline.tsv')
             [void](Get-OfflinePending)
             # a baseline listing many paths the scan no longer sees (ignore rules changed) is retaken, not 1000s of deletes
@@ -335,7 +352,9 @@ function Current-Pending {
 }
 
 function Submit-Cli([string]$name, $argv, [bool]$yes) {
-    $st = Get-Pending
+    $st = Wait-Upload
+    # paused while dv was waiting for the upload (stay offline, another dvcl): the list is not complete
+    if ($st.Paused) { Fail "sync was paused before Diversion finished uploading: nothing submitted. Run the submit again (big uploads can take a while)." }
             if ($name -ieq 'default') {
                 $desc = (@($argv | Select-Object -Skip 1) -join ' ').Trim()
                 if (-not $desc) { Fail "default needs a message: dvcl submit default ""your message""" }
@@ -345,7 +364,11 @@ function Submit-Cli([string]$name, $argv, [bool]$yes) {
                 $desc = $c.desc
             }
             $items = Get-CLItems $st.Files $name
-            if ($items.Count -eq 0) { Fail "no pending files in this changelist" }
+            if ($items.Count -eq 0) {
+                $c2 = Find-CL $name
+                if ($c2 -and $c2.files.Count) { Fail ("none of the " + $c2.files.Count + " file(s) of '" + $name + "' is in Diversion's pending list yet (upload not finished?): nothing submitted, try again later") }
+                Fail "no pending files in this changelist"
+            }
             Say ("Submit '" + $name + "' : """ + $desc + """") 'Cyan'
             foreach ($p in $items) { Say ("   {0}  {1}" -f (Kind-Letter $p.Kind), $p.Path) }
             Confirm-Or-Exit ("Commit these " + $items.Count + " path(s)?") $yes

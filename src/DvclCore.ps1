@@ -11,7 +11,9 @@ $script:OnSay = $null    # optional scriptblock { param($text, $color) } (GUI lo
 $script:OnDv  = $null    # optional scriptblock { param($line) } (GUI: live dv output)
 
 # dv prints progress lines while it waits for sync: kept out of logs and UI
-$script:DvNoise = '\{\{spinner\}\}|^Sync in progress|^Queued filesystem events|^Inbound changes|^Outbound changes|^Currently syncing|active blob transfers|^Downloading |^Uploading |^Recently synced'
+# lines that mean "your files are still going up" (Wait-Upload)
+$script:DvUpload = '^\s*Compressing |^Uploading |^Outbound changes|active blob transfers|^Sync in progress|^Currently syncing|^Queued filesystem events'
+$script:DvNoise = '\{\{spinner\}\}|^\s*Compressing |^Sync in progress|^Queued filesystem events|^Inbound changes|^Outbound changes|^Currently syncing|active blob transfers|^Downloading |^Uploading |^Recently synced'
 
 # ---------------------------------------------------------------- repo / logging
 function Find-DvRoot([string]$start) {
@@ -97,7 +99,12 @@ function Invoke-Pumped([string]$exe, [string[]]$a, [string]$cwd) {
     try { $psi.StandardOutputEncoding = [Console]::OutputEncoding; $psi.StandardErrorEncoding = [Console]::OutputEncoding } catch {}
     $p = [System.Diagnostics.Process]::Start($psi)
     $o = $p.StandardOutput.ReadToEndAsync(); $e = $p.StandardError.ReadToEndAsync()
-    while (-not $p.WaitForExit(25)) { if ($script:PumpUi) { & $script:PumpUi } }
+    $beat = [Diagnostics.Stopwatch]::StartNew()
+    while (-not $p.WaitForExit(25)) {
+        if ($script:PumpUi) { & $script:PumpUi }
+        # a long online action keeps its online mark fresh: other dvcl do not pause sync under it
+        if ($beat.ElapsedMilliseconds -gt 60000) { $beat.Restart(); Touch-OnlineMark }
+    }
     $p.WaitForExit()
     $lines = New-Object System.Collections.ArrayList
     foreach ($t in @($o.Result, $e.Result)) {
@@ -118,7 +125,7 @@ function Dv-Exe {
     return $script:DvExe
 }
 
-function Invoke-Dv([string[]]$a, [bool]$quiet = $false) {
+function Invoke-Dv([string[]]$a, [bool]$quiet = $false, [bool]$brief = $false) {
     if (-not $script:Root) { Fail "no Diversion repo selected" }
     Write-Log ("RUN dv " + ($a -join ' '))
     $t0 = [Diagnostics.Stopwatch]::StartNew()
@@ -137,7 +144,7 @@ function Invoke-Dv([string[]]$a, [bool]$quiet = $false) {
         Pop-Location
         $ErrorActionPreference = $prev
     }
-    return (Finish-Dv $a $out $code $quiet $true $t0.Elapsed.TotalMilliseconds)
+    return (Finish-Dv $a $out $code $quiet (-not $brief) $t0.Elapsed.TotalMilliseconds)
 }
 
 # Shared by Invoke-Dv and the window's background runner: filters progress noise, logs, reports.
@@ -145,12 +152,13 @@ function Invoke-Dv([string[]]$a, [bool]$quiet = $false) {
 function Finish-Dv([string[]]$a, [string[]]$out, [int]$code, [bool]$quiet, [bool]$logLines, [double]$ms) {
     $out = @($out | Where-Object { $null -ne $_ })
     $busy = (@($out | Where-Object { $_ -match $script:DvNoise })).Count -gt 0
+    $upl = @($out | Where-Object { $_ -match $script:DvUpload } | Select-Object -First 1)
     $clean = @($out | Where-Object { $_ -notmatch $script:DvNoise })
     if ($logLines) { Write-LogLines @($clean | ForEach-Object { '  | ' + $_ }) }
     else { Write-LogLines @(@('  (' + $clean.Count + ' lines, first 5:)') + @($clean | Select-Object -First 5 | ForEach-Object { '  sample | ' + $_ })) }
     if (-not $quiet -and $script:OnDv) { foreach ($l in $clean) { if ($l.Trim()) { & $script:OnDv $l } } }
     Write-Log ("  exit=" + $code + "  " + [int]$ms + "ms  dv " + ($a -join ' '))
-    return [pscustomobject]@{ Code = $code; Lines = $clean; SyncBusy = $busy }
+    return [pscustomobject]@{ Code = $code; Lines = $clean; SyncBusy = $busy; Upload = $(if ($upl.Count) { [string]$upl[0] } else { '' }) }
 }
 
 # ---------------------------------------------------------------- depot listing (dv ls)
@@ -295,7 +303,7 @@ function Set-Sync([bool]$on) {
         if ($st.Paused) {
             # already paused (Diversion app): keep an existing baseline, else start one from the last online list
             if (-not (Test-Path -LiteralPath (Dvcl-File 'baseline.tsv'))) { Write-Baseline (Read-LastStatus) $st.Commit }
-            Set-OfflineFlag $true
+            Set-OfflineFlag $true; Clear-OnlineMark
             Say "Sync was already paused: dvcl is in offline mode." 'Yellow'
             return
         }
@@ -1020,6 +1028,28 @@ function Find-Workspaces {
     return ,$res
 }
 
+# Pending files for Unreal's "dvcl" revision control (dvcl link): .dvcl\pending.tsv, one line per file:
+# <kind letter> TAB <path> TAB <changelist>. Rewritten only when it changes (Unreal re-reads it then).
+function Write-PendingFile($pending) {
+    if (-not $script:Root) { return }
+    try {
+        $own = @{}
+        foreach ($c in $script:CLs) { foreach ($f in $c.files) { $own[[string]$f.ToLowerInvariant()] = '#' + $c.id + ' ' + $c.name } }
+        $sb = New-Object System.Text.StringBuilder
+        [void]$sb.Append("#dvcl-pending1`n")
+        foreach ($p in @($pending)) {
+            $cl = $own[[string]$p.Path.ToLowerInvariant()]; if (-not $cl) { $cl = 'default' }
+            [void]$sb.Append((Kind-Letter $p.Kind) + "`t" + $p.Path + "`t" + $cl + "`n")
+        }
+        $text = $sb.ToString()
+        if ($text -eq $script:PendingFileText) { return }
+        $f = Dvcl-File 'pending.tsv'; $tmp = $f + '.tmp'
+        [System.IO.File]::WriteAllText($tmp, $text, $script:Utf8)
+        Move-Item -LiteralPath $tmp -Destination $f -Force
+        $script:PendingFileText = $text
+    } catch { Write-Log ('pending.tsv not written: ' + $_.Exception.Message) }
+}
+
 function Test-OfflineFlag { return (Test-Path -LiteralPath (Dvcl-File 'offline.flag')) }
 
 # ---------------------------------------------------------------- stay offline (safety)
@@ -1037,6 +1067,31 @@ function Set-Safety([bool]$on) {
 function Write-OnlineMark {
     try { [System.IO.File]::WriteAllText((Dvcl-File 'online.json'), ([pscustomobject]@{ pid = $PID; at = (Get-Date -Format s) } | ConvertTo-Json -Compress), $script:Utf8) } catch {}
 }
+# keeps our own mark fresh during a long online action (others pause sync only when it is old)
+function Touch-OnlineMark {
+    $m = Read-OnlineMark
+    if ($m -and [int]$m.pid -eq $PID) { Write-OnlineMark }
+}
+# Big uploads: polls "dv status --nowait" until Diversion shows no transfer lines, instead of one
+# "dv status" that waits without a word and can be cut. Keeps the online mark fresh, so other dvcl
+# windows / commands see the upload as alive and do not pause sync under it. Ends with the waited list.
+function Wait-Upload([int]$maxMin = 300) {
+    $sw = [Diagnostics.Stopwatch]::StartNew(); $last = -1
+    while ($true) {
+        Touch-OnlineMark
+        $r = Invoke-Dv (Status-Args $false) $true $true
+        $st = Read-Status $r
+        if ($st.Paused) { Write-Log 'upload wait: sync is paused'; return $st }
+        if (-not $r.Upload) { break }
+        $min = [int][Math]::Floor($sw.Elapsed.TotalMinutes)
+        if ($min -ne $last) { $last = $min; Say ("Diversion is still uploading (" + $min + " min): " + $r.Upload.Trim()) 'Gray'; Write-Log ('upload wait: ' + $min + ' min: ' + $r.Upload.Trim()) }
+        if ($sw.Elapsed.TotalMinutes -ge $maxMin) { Fail ("Diversion was still uploading after " + $maxMin + " min: nothing submitted. Run the submit again later (the upload goes on from where it is).") }
+        Start-Sleep -Seconds 15
+    }
+    Write-Log ('upload wait: done after ' + [int]$sw.Elapsed.TotalSeconds + ' s')
+    Touch-OnlineMark
+    return (Get-Pending $true)
+}
 function Clear-OnlineMark { $f = Dvcl-File 'online.json'; if (Test-Path -LiteralPath $f) { Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue } }
 function Read-OnlineMark {
     $f = Dvcl-File 'online.json'
@@ -1048,14 +1103,14 @@ function Pause-Now([string]$why) {
     $r = Invoke-Dv @('workspace', 'pause')
     if ($r.Code -ne 0 -and ($r.Lines -join ' ') -notmatch 'already') { Fail ("dv workspace pause failed: " + ($r.Lines -join ' ')) }
     $st = Get-Pending $false
-    Write-Baseline $st.Files $st.Commit
+    Write-Baseline $st.Files $st.Commit $false
     if ($st.Branch) { Save-LastHead $st.Branch $st.Commit }
     Set-OfflineFlag $true; Clear-OnlineMark
     Say ("Stay offline: sync paused (" + $why + ").") 'Yellow'
 }
 # $busy: this process is in an action that went online itself. $deep: also ask Diversion when dvcl
 # thinks it is online (start of the window / of a command). Returns what it did ('' = nothing).
-function Safety-Check([bool]$busy, [bool]$deep, [int]$maxMinutes = 30) {
+function Safety-Check([bool]$busy, [bool]$deep, [int]$maxMinutes = 90) {
     if (-not (Safety-On)) { return '' }
     $m = Read-OnlineMark
     if ($m) {
@@ -1082,9 +1137,45 @@ function Set-OfflineFlag([bool]$on) {
 
 # Ignore files, read like Diversion's default matcher: .dvignore and .gitignore in any folder,
 # rules relative to that folder. "/x" = only at that folder; anything else matches at any depth
-# below it (so "Saved/*" also hides MyGame/Saved/...). Trailing / = folders only, ** = *.
-# Negation (!) is not supported (logged once).
+# below it (so "Saved/*" also hides MyGame/Saved/...). Trailing / = folders only.
+# * and ? stay inside one folder name, ** crosses folders. A rule matching a folder hides what is in
+# it; "!x" brings back what an earlier rule hid, even inside a hidden folder; the last rule that
+# matches wins (as Diversion does online). Same rules in the compiled scanner (ScanSource): change both.
 $script:IgnoreLogged = @{}
+$script:IgnoreMatcher = 'm2'
+function Ignore-Regex([string]$p, [bool]$anch) {
+    $sb = New-Object System.Text.StringBuilder
+    $i = 0
+    while ($i -lt $p.Length) {
+        $c = $p[$i]
+        if ($c -eq [char]'*') {
+            if ($i + 1 -lt $p.Length -and $p[$i + 1] -eq [char]'*') {
+                if ($i + 2 -lt $p.Length -and $p[$i + 2] -eq [char]'/') { [void]$sb.Append('(?:.*/)?'); $i += 3; continue }
+                [void]$sb.Append('.*'); $i += 2; continue
+            }
+            [void]$sb.Append('[^/]*')
+        }
+        elseif ($c -eq [char]'?') { [void]$sb.Append('[^/]') }
+        elseif ($c -eq [char]'[') {
+            $j = $p.IndexOf(']', $i + 1)
+            if ($j -gt $i + 1) {
+                $cls = $p.Substring($i + 1, $j - $i - 1).Replace('\', '\\')
+                if ($cls.StartsWith('!')) { $cls = '^' + $cls.Substring(1) }
+                [void]$sb.Append('[' + $cls + ']'); $i = $j + 1; continue
+            }
+            [void]$sb.Append('\[')
+        }
+        else { [void]$sb.Append([regex]::Escape([string]$c)) }
+        $i++
+    }
+    $pre = '^(?:.*/)?'; if ($anch) { $pre = '^' }
+    return New-Object System.Text.RegularExpressions.Regex (($pre + $sb.ToString() + '$'), ([System.Text.RegularExpressions.RegexOptions]'IgnoreCase, CultureInvariant'))
+}
+function New-IgnoreRule([string]$p, [bool]$dirOnly, [bool]$anch, [bool]$neg, [string]$base) {
+    $full = $p; if ($base) { $full = $base + '/' + $p }
+    $w = $full.IndexOfAny([char[]]@('*', '?', '[')); $pre = $full; if ($w -ge 0) { $pre = $full.Substring(0, $w) }
+    return [pscustomobject]@{ P = $p; DirOnly = $dirOnly; Anchored = $anch; Neg = $neg; Base = $base; R = (Ignore-Regex $p $anch); Prefix = $pre }
+}
 function Read-IgnoreFiles([string]$dirRel) {
     $rules = New-Object System.Collections.ArrayList
     foreach ($fn in @('.gitignore', '.dvignore')) {
@@ -1093,16 +1184,16 @@ function Read-IgnoreFiles([string]$dirRel) {
         foreach ($l in [System.IO.File]::ReadAllLines($f)) {
             $t = $l.Trim()
             if (-not $t -or $t.StartsWith('#')) { continue }
-            if ($t.StartsWith('!')) { continue }
+            $neg = $t.StartsWith('!'); if ($neg) { $t = $t.Substring(1).Trim() }
             $dirOnly = $t.EndsWith('/')
             $t = ($t -replace '\\', '/').TrimEnd('/')
             $anch = $t.StartsWith('/')
-            $t = $t.TrimStart('/') -replace '\*\*', '*'
-            if ($t) { [void]$rules.Add([pscustomobject]@{ P = $t; DirOnly = $dirOnly; Anchored = $anch; Base = $dirRel }) }
+            $t = $t.TrimStart('/')
+            if ($t) { [void]$rules.Add((New-IgnoreRule $t $dirOnly $anch $neg $dirRel)) }
         }
         if (-not $script:IgnoreLogged.ContainsKey($f)) {
             $script:IgnoreLogged[$f] = 1
-            Write-Log ("ignore file " + $(if ($dirRel) { $dirRel + '/' } else { '' }) + $fn + ": " + (@($rules | Where-Object { $_.Base -eq $dirRel } | ForEach-Object { $(if ($_.Anchored) { '/' } else { '' }) + $_.P + $(if ($_.DirOnly) { '/' } else { '' }) }) -join '  '))
+            Write-Log ("ignore file " + $(if ($dirRel) { $dirRel + '/' } else { '' }) + $fn + ": " + (@($rules | Where-Object { $_.Base -eq $dirRel } | ForEach-Object { $(if ($_.Neg) { '!' } else { '' }) + $(if ($_.Anchored) { '/' } else { '' }) + $_.P + $(if ($_.DirOnly) { '/' } else { '' }) }) -join '  '))
         }
     }
     return ,$rules.ToArray()
@@ -1110,21 +1201,42 @@ function Read-IgnoreFiles([string]$dirRel) {
 
 # Root rules + always-ignored dvcl / Diversion folders (kept for callers and tests)
 function Read-Ignore {
-    $fixed = @([pscustomobject]@{ P = '.diversion'; DirOnly = $false; Anchored = $true; Base = '' }, [pscustomobject]@{ P = '.dvcl'; DirOnly = $false; Anchored = $true; Base = '' })
+    $fixed = @((New-IgnoreRule '.diversion' $false $true $false ''), (New-IgnoreRule '.dvcl' $false $true $false ''))
     $fromFiles = Read-IgnoreFiles ''
     return ,(@($fixed) + @($fromFiles))
 }
 
-# Called for each entry while walking; ignored folders are not entered, so ancestors need no check.
-function Test-Ignored([string]$rel, [string]$name, [bool]$isDir, $rules) {
+# Diversion's matcher (same as the compiled scanner): a rule hides an entry when it matches the entry
+# or one of its folders, the last matching rule wins, a "!" rule can bring back a file inside a hidden
+# folder. $hit[i] = rule i matches the entry or a folder above it.
+function Test-RuleHit($r, [string]$rel, [bool]$isDir) {
+    if ($r.DirOnly -and -not $isDir) { return $false }
+    $sub = $rel
+    if ($r.Base) { if ($rel.Length -le $r.Base.Length) { return $false }; $sub = $rel.Substring($r.Base.Length + 1) }
+    return $r.R.IsMatch($sub)
+}
+function Test-LastHit($rules, [bool[]]$hit) {
+    for ($k = $rules.Count - 1; $k -ge 0; $k--) { if ($hit[$k]) { return (-not $rules[$k].Neg) } }
+    return $false
+}
+function Test-CouldBringBack([string]$dir, $rules) {
+    $d = $dir + '/'
     foreach ($r in $rules) {
-        if ($r.DirOnly -and -not $isDir) { continue }
-        $sub = $rel
-        if ($r.Base) { if ($rel.Length -le $r.Base.Length) { continue }; $sub = $rel.Substring($r.Base.Length + 1) }
-        if ($sub -like $r.P) { return $true }
-        if (-not $r.Anchored -and $sub -like ('*/' + $r.P)) { return $true }
+        if (-not $r.Neg) { continue }
+        if (-not $r.Anchored) { return $true }
+        if ($r.Prefix.StartsWith($d, [StringComparison]::OrdinalIgnoreCase) -or $d.StartsWith($r.Prefix, [StringComparison]::OrdinalIgnoreCase)) { return $true }
     }
     return $false
+}
+# One path checked on its own (its folders evaluated too): $true = hidden
+function Test-Ignored([string]$rel, [string]$name, [bool]$isDir, $rules) {
+    $parts = $rel.Split('/'); $hit = New-Object 'bool[]' $rules.Count; $cur = ''
+    for ($n = 0; $n -lt $parts.Count; $n++) {
+        if ($cur) { $cur += '/' + $parts[$n] } else { $cur = $parts[$n] }
+        $d = $isDir -or $n -lt $parts.Count - 1
+        for ($k = 0; $k -lt $rules.Count; $k++) { if (-not $hit[$k] -and (Test-RuleHit $rules[$k] $cur $d)) { $hit[$k] = $true } }
+    }
+    return (Test-LastHit $rules $hit)
 }
 
 # Snapshot of the workspace: rel path -> "size|ticks" for files, "D" for folders (ignored ones skipped).
@@ -1143,13 +1255,43 @@ $script:ScanSource = @'
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Management.Automation;
+using System.Text;
+using System.Text.RegularExpressions;
 namespace DvclNative {
   public static class Scanner {
-    class Rule { public WildcardPattern P; public WildcardPattern Any; public bool DirOnly; public bool Anchored; public string Base; }
-    static Rule Make(string p, bool dirOnly, bool anchored, string bas) {
-      var o = WildcardOptions.IgnoreCase;
-      return new Rule { P = new WildcardPattern(p, o), Any = new WildcardPattern("*/" + p, o), DirOnly = dirOnly, Anchored = anchored, Base = bas };
+    class Rule { public Regex R; public bool DirOnly; public bool Neg; public bool Anchored; public string Base; public string Prefix; }
+    // same conversion as Ignore-Regex: * ? inside one name, ** across folders, [..] kept
+    static Regex ToRegex(string p, bool anchored) {
+      var sb = new StringBuilder();
+      int i = 0;
+      while (i < p.Length) {
+        char c = p[i];
+        if (c == '*') {
+          if (i + 1 < p.Length && p[i + 1] == '*') {
+            if (i + 2 < p.Length && p[i + 2] == '/') { sb.Append("(?:.*/)?"); i += 3; continue; }
+            sb.Append(".*"); i += 2; continue;
+          }
+          sb.Append("[^/]*");
+        }
+        else if (c == '?') sb.Append("[^/]");
+        else if (c == '[') {
+          int j = p.IndexOf(']', i + 1);
+          if (j > i + 1) {
+            var cls = p.Substring(i + 1, j - i - 1).Replace("\\", "\\\\");
+            if (cls.StartsWith("!")) cls = "^" + cls.Substring(1);
+            sb.Append("[" + cls + "]"); i = j + 1; continue;
+          }
+          sb.Append("\\[");
+        }
+        else sb.Append(Regex.Escape(c.ToString()));
+        i++;
+      }
+      return new Regex((anchored ? "^" : "^(?:.*/)?") + sb.ToString() + "$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    }
+    static Rule Make(string p, bool dirOnly, bool anchored, bool neg, string bas) {
+      var full = bas.Length > 0 ? bas + "/" + p : p;
+      int w = full.IndexOfAny(new[] { '*', '?', '[' });
+      return new Rule { R = ToRegex(p, anchored), DirOnly = dirOnly, Neg = neg, Anchored = anchored, Base = bas, Prefix = w < 0 ? full : full.Substring(0, w) };
     }
     static string Full(string root, string rel) { return rel.Length == 0 ? root : Path.Combine(root, rel.Replace('/', Path.DirectorySeparatorChar)); }
     // .gitignore + .dvignore of one folder, rules relative to it (same parsing as Read-IgnoreFiles)
@@ -1161,46 +1303,75 @@ namespace DvclNative {
         var shown = new List<string>();
         foreach (var l0 in File.ReadAllLines(f)) {
           var t = l0.Trim();
-          if (t.Length == 0 || t.StartsWith("#") || t.StartsWith("!")) continue;
+          if (t.Length == 0 || t.StartsWith("#")) continue;
+          bool neg = t.StartsWith("!"); if (neg) t = t.Substring(1).Trim();
           bool dirOnly = t.EndsWith("/");
           t = t.Replace('\\', '/').TrimEnd('/');
           bool anch = t.StartsWith("/");
-          t = t.TrimStart('/').Replace("**", "*");
+          t = t.TrimStart('/');
           if (t.Length == 0) continue;
-          res.Add(Make(t, dirOnly, anch, rel));
-          shown.Add((anch ? "/" : "") + t + (dirOnly ? "/" : ""));
+          res.Add(Make(t, dirOnly, anch, neg, rel));
+          shown.Add((neg ? "!" : "") + (anch ? "/" : "") + t + (dirOnly ? "/" : ""));
         }
         log.Add("ignore file " + (rel.Length > 0 ? rel + "/" : "") + fn + ": " + string.Join("  ", shown));
       }
       return res;
     }
-    static bool Ignored(string rel, bool isDir, List<Rule> rules) {
+    // Diversion's matcher: a rule hides an entry when it matches the entry or one of its folders, the
+    // last matching rule wins, and a "!" rule can bring back a file inside a hidden folder. So a hidden
+    // folder is still entered when a "!" rule could match below it (else skipped: Saved, caches...).
+    // Hit[i] = rule i matches this entry or a folder above it (inherited from the parent).
+    static bool Matches(Rule r, string rel, bool isDir) {
+      if (r.DirOnly && !isDir) return false;
+      var sub = rel;
+      if (r.Base.Length > 0) { if (rel.Length <= r.Base.Length) return false; sub = rel.Substring(r.Base.Length + 1); }
+      return r.R.IsMatch(sub);
+    }
+    static bool Last(List<Rule> rules, bool[] hit) {
+      for (int k = rules.Count - 1; k >= 0; k--) if (hit[k]) return !rules[k].Neg;
+      return false;
+    }
+    static bool CouldBringBack(string dir, List<Rule> rules) {
+      var d = dir + "/";
       foreach (var r in rules) {
-        if (r.DirOnly && !isDir) continue;
-        var sub = rel;
-        if (r.Base.Length > 0) { if (rel.Length <= r.Base.Length) continue; sub = rel.Substring(r.Base.Length + 1); }
-        if (r.P.IsMatch(sub)) return true;
-        if (!r.Anchored && r.Any.IsMatch(sub)) return true;
+        if (!r.Neg) continue;
+        if (!r.Anchored) return true;
+        if (r.Prefix.StartsWith(d, StringComparison.OrdinalIgnoreCase) || d.StartsWith(r.Prefix, StringComparison.OrdinalIgnoreCase)) return true;
       }
       return false;
     }
+    class Frame { public string Rel; public List<Rule> Rules; public bool[] Hit; public bool Hidden; }
     public static Dictionary<string, string> Scan(string root, out string[] logOut) {
       var log = new List<string>();
       var res = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-      var rootRules = new List<Rule> { Make(".diversion", false, true, ""), Make(".dvcl", false, true, "") };
+      var rootRules = new List<Rule> { Make(".diversion", false, true, false, ""), Make(".dvcl", false, true, false, "") };
       rootRules.AddRange(ReadIgnore(root, "", log));
-      var stack = new Stack<KeyValuePair<string, List<Rule>>>();
-      stack.Push(new KeyValuePair<string, List<Rule>>("", rootRules));
+      var stack = new Stack<Frame>();
+      stack.Push(new Frame { Rel = "", Rules = rootRules, Hit = new bool[rootRules.Count], Hidden = false });
       while (stack.Count > 0) {
-        var top = stack.Pop(); var rel = top.Key; var rules = top.Value;
-        if (rel.Length > 0) { var more = ReadIgnore(root, rel, log); if (more.Count > 0) { rules = new List<Rule>(rules); rules.AddRange(more); } }
+        var top = stack.Pop(); var rel = top.Rel; var rules = top.Rules; var hit = top.Hit;
+        if (rel.Length > 0 && !top.Hidden) {
+          var more = ReadIgnore(root, rel, log);
+          if (more.Count > 0) { rules = new List<Rule>(rules); rules.AddRange(more); var h2 = new bool[rules.Count]; Array.Copy(hit, h2, hit.Length); hit = h2; }
+        }
         try {
           foreach (var i in new DirectoryInfo(Full(root, rel)).EnumerateFileSystemInfos()) {
             if ((i.Attributes & FileAttributes.ReparsePoint) != 0) continue;
             var r = rel.Length > 0 ? rel + "/" + i.Name : i.Name;
             bool isDir = (i.Attributes & FileAttributes.Directory) != 0;
-            if (Ignored(r, isDir, rules)) continue;
-            if (isDir) { res[r] = "D"; stack.Push(new KeyValuePair<string, List<Rule>>(r, rules)); }
+            var h = new bool[rules.Count];
+            for (int k = 0; k < rules.Count; k++) h[k] = hit[k] || Matches(rules[k], r, isDir);
+            bool ignored = Last(rules, h);
+            if (ignored) {
+              if (isDir && CouldBringBack(r, rules)) stack.Push(new Frame { Rel = r, Rules = rules, Hit = h, Hidden = true });
+              continue;
+            }
+            if (top.Hidden) {
+              // brought back inside a hidden folder: list the folders above it too
+              var up = rel;
+              while (up.Length > 0 && !res.ContainsKey(up)) { res[up] = "D"; int s = up.LastIndexOf('/'); up = s < 0 ? "" : up.Substring(0, s); }
+            }
+            if (isDir) { res[r] = "D"; stack.Push(new Frame { Rel = r, Rules = rules, Hit = h, Hidden = false }); }
             else { var fi = (FileInfo)i; res[r] = fi.Length.ToString() + "|" + fi.LastWriteTimeUtc.Ticks.ToString(); }
           }
         } catch (Exception e) { log.Add("scan: cannot read " + rel + " (" + e.Message + ")"); }
@@ -1250,17 +1421,30 @@ function Ensure-Scanner {
 function Scan-WorkspacePs {
     $res = New-Object 'System.Collections.Generic.Dictionary[string,string]' ([StringComparer]::OrdinalIgnoreCase)
     $stack = New-Object System.Collections.Stack
-    $stack.Push(@('', (Read-Ignore)))
+    $r0 = Read-Ignore
+    $stack.Push(@('', $r0, (New-Object 'bool[]' $r0.Count), $false))
     while ($stack.Count -gt 0) {
-        $top = $stack.Pop(); $rel = $top[0]; $rules = $top[1]
-        if ($rel) { $more = Read-IgnoreFiles $rel; if ($more.Count -gt 0) { $rules = @($rules) + @($more) } }
+        $top = $stack.Pop(); $rel = $top[0]; $rules = $top[1]; $hit = $top[2]; $hidden = $top[3]
+        if ($rel -and -not $hidden) {
+            $more = Read-IgnoreFiles $rel
+            if ($more.Count -gt 0) { $rules = @($rules) + @($more); $h2 = New-Object 'bool[]' $rules.Count; [Array]::Copy($hit, $h2, $hit.Length); $hit = $h2 }
+        }
         try {
             foreach ($i in ([System.IO.DirectoryInfo](Full-Path $rel)).EnumerateFileSystemInfos()) {
+                if ($i.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { continue }
                 $r = $i.Name; if ($rel) { $r = $rel + '/' + $i.Name }
                 $isDir = ($i.Attributes -band [System.IO.FileAttributes]::Directory) -ne 0
-                if ($i.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { continue }
-                if (Test-Ignored $r $i.Name $isDir $rules) { continue }
-                if ($isDir) { $res[$r] = 'D'; $stack.Push(@($r, $rules)) }
+                $h = New-Object 'bool[]' $rules.Count
+                for ($k = 0; $k -lt $rules.Count; $k++) { $h[$k] = $hit[$k] -or (Test-RuleHit $rules[$k] $r $isDir) }
+                if (Test-LastHit $rules $h) {
+                    if ($isDir -and (Test-CouldBringBack $r $rules)) { $stack.Push(@($r, $rules, $h, $true)) }
+                    continue
+                }
+                if ($hidden) {
+                    $up = $rel
+                    while ($up -and -not $res.ContainsKey($up)) { $res[$up] = 'D'; $s = $up.LastIndexOf('/'); if ($s -lt 0) { $up = '' } else { $up = $up.Substring(0, $s) } }
+                }
+                if ($isDir) { $res[$r] = 'D'; $stack.Push(@($r, $rules, $h, $false)) }
                 else { $res[$r] = ([string]$i.Length + '|' + [string]$i.LastWriteTimeUtc.Ticks) }
             }
         } catch { Write-Log ("scan: cannot read " + $rel + " (" + $_.Exception.Message + ")") }
@@ -1285,14 +1469,30 @@ function Read-LastStatus {
     return ,$res.ToArray()
 }
 
-function Write-Baseline($pendingFiles, [string]$commit) {
-    $sw = [Diagnostics.Stopwatch]::StartNew()
-    $scan = Scan-Workspace
+function Save-Baseline($scan, [string]$commit) {
     $lines = New-Object System.Collections.Generic.List[string]
-    $lines.Add("#dvcl-baseline2`t" + $commit + "`t" + (Get-Date -Format s))
+    $lines.Add("#dvcl-baseline2`t" + $commit + "`t" + (Get-Date -Format s) + "`t" + $script:IgnoreMatcher)
     foreach ($k in $scan.Keys) { $lines.Add($k + "`t" + $scan[$k]) }
     [System.IO.File]::WriteAllLines((Dvcl-File 'baseline.tsv'), $lines, $script:Utf8)
-    Save-LastStatus $pendingFiles
+}
+
+# $trusted = $false: Diversion's list may be incomplete (read without waiting, or while an upload was
+# cut by a pause): the files dvcl already knew as pending are kept, else the new snapshot would hide them.
+function Write-Baseline($pendingFiles, [string]$commit, [bool]$trusted = $true) {
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    $files = @($pendingFiles)
+    if (-not $trusted -and (Test-Path -LiteralPath (Dvcl-File 'baseline.tsv'))) {
+        try {
+            $have = @{}; foreach ($p in $files) { $have[([string]$p.Path).ToLowerInvariant()] = 1 }
+            $prev = Get-OfflinePending
+            $add = @($prev | Where-Object { -not $have.ContainsKey(([string]$_.Path).ToLowerInvariant()) })
+            if ($add.Count) { $files = @($files) + $add }
+            Write-Log ('baseline: list read without waiting, ' + $add.Count + ' pending file(s) dvcl knew kept')
+        } catch { Write-Log ('baseline: earlier pending files not read: ' + $_.Exception.Message) }
+    }
+    $scan = Scan-Workspace
+    Save-Baseline $scan $commit
+    Save-LastStatus $files
     Write-Timing ('baseline (' + $scan.Count + ' entries)') $sw.Elapsed.TotalMilliseconds
 }
 
@@ -1303,12 +1503,17 @@ function Read-Baseline {
     $all = [System.IO.File]::ReadAllLines($f)
     # older format (0.4.0 dev: ignore rules applied differently) -> not trusted, a new one is taken
     if ($all.Count -eq 0 -or -not $all[0].StartsWith("#dvcl-baseline2`t")) { Write-Log "baseline: old format, retaken"; return $null }
+    $h = $all[0].Split("`t")
+    $script:BaselineCommit = $(if ($h.Count -gt 1) { $h[1] } else { '' })
+    $script:BaselineMatcher = $(if ($h.Count -gt 3) { $h[3] } else { '' })
     foreach ($l in $all) {
         if ($l.StartsWith('#')) { continue }
         $i = $l.LastIndexOf("`t"); if ($i -gt 0) { $res[$l.Substring(0, $i)] = $l.Substring($i + 1) }
     }
     return ,$res
 }
+
+function Test-OnDisk([string]$rel) { $f = Full-Path $rel; return ([System.IO.File]::Exists($f) -or [System.IO.Directory]::Exists($f)) }
 
 # Pending files while offline: last pending list read online + what changed since the baseline.
 # No baseline (sync paused outside dvcl): one is taken now; earlier offline edits are then unknown
@@ -1320,10 +1525,28 @@ function Get-OfflinePending {
     $base = Read-Baseline
     if ($null -eq $base) { Write-Baseline $known ''; $base = Read-Baseline; $script:BaselineFresh = $true }
     $now = Scan-Workspace
+    # baseline taken with older ignore rules: what the rules now show was not in it. Those files are
+    # taken as unchanged (Diversion's own pending list still marks the ones really changed); the
+    # files already in it keep their snapshot, so offline edits made since are not lost.
+    if ($script:BaselineMatcher -ne $script:IgnoreMatcher) {
+        # committed in Diversion (dv ls, works offline) = unchanged; not committed = new, left out of the snapshot
+        $dep = $null
+        try { $dep = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase); foreach ($x in (Get-DepotPaths)) { [void]$dep.Add([string]$x) } }
+        catch { $dep = $null; Write-Log ('baseline: dv ls not read (' + $_.Exception.Message + '): newly visible entries taken as unchanged') }
+        $adopt = 0; $left = 0
+        foreach ($k in @($now.Keys)) {
+            if ($base.ContainsKey($k)) { continue }
+            $isD = ($now[$k] -eq 'D')
+            if ($null -eq $dep -or ($isD -and $dep.Contains($k + '/')) -or (-not $isD -and $dep.Contains($k))) { $base[$k] = $now[$k]; $adopt++ } else { $left++ }
+        }
+        Save-Baseline $base $script:BaselineCommit
+        $script:BaselineMatcher = $script:IgnoreMatcher
+        Write-Log ('baseline: ignore rules updated (' + $script:IgnoreMatcher + '), ' + $adopt + ' newly visible entries added as committed, ' + $left + ' left as new')
+    }
     $out = New-Object 'System.Collections.Generic.Dictionary[string,string]' ([StringComparer]::OrdinalIgnoreCase)
     foreach ($p in $known) {
         $exists = $now.ContainsKey($p.Path)
-        if ((Kind-Letter $p.Kind) -eq 'D') { if (-not $exists) { $out[$p.Path] = 'Deleted' } }
+        if ((Kind-Letter $p.Kind) -eq 'D') { if (-not $exists -and -not (Test-OnDisk $p.Path)) { $out[$p.Path] = 'Deleted' } }
         elseif ($exists) { if ((Kind-Letter $p.Kind) -eq 'A') { $out[$p.Path] = 'New' } else { $out[$p.Path] = 'Modified' } }
     }
     foreach ($k in $now.Keys) {
@@ -1331,7 +1554,8 @@ function Get-OfflinePending {
         if (-not $base.ContainsKey($k)) { $out[$k] = 'New' }
         elseif ($now[$k] -ne 'D' -and $now[$k] -ne $base[$k]) { $out[$k] = 'Modified' }
     }
-    $gone = @($base.Keys | Where-Object { -not $now.ContainsKey($_) -and -not $out.ContainsKey($_) })
+    # gone from the scan but still on disk = hidden by the ignore rules now, not deleted
+    $gone = @($base.Keys | Where-Object { -not $now.ContainsKey($_) -and -not $out.ContainsKey($_) -and -not (Test-OnDisk $_) })
     # more than half of the baseline "deleted" = the snapshot no longer matches the ignore rules,
     # not a real mass delete: take a new baseline instead of listing thousands of false deletions
     if ($gone.Count -gt 1000 -and $gone.Count -gt ($base.Count / 2)) {
