@@ -544,13 +544,36 @@ function Parse-Branches([string[]]$lines) {
     return ,$names.ToArray()
 }
 # One row per branch for the Branches panel: head commit (dv show), and the dvcl changelists made on it
+# Workspaces of this repository (dv workspace): name ("name @ computer"), id, the branch id it is on
+function Parse-Workspaces([string[]]$lines) {
+    $res = New-Object System.Collections.ArrayList; $cur = $null
+    foreach ($l in @($lines)) {
+        if ([string]$l -match '^\s*workspace\s+(.+?)\s*\((dv\.ws\.[0-9A-Za-z-]+)\)') { $cur = [pscustomobject]@{ Name = $Matches[1].Trim(); Id = $Matches[2]; BranchId = '' }; [void]$res.Add($cur); continue }
+        if ($cur -and [string]$l -match '^\s+branch\s+(dv\.branch\.[0-9A-Za-z-]+)') { $cur.BranchId = $Matches[1] }
+    }
+    $res.ToArray()   # streamed
+}
 function Branch-Rows {
     $rows = New-Object System.Collections.ArrayList
-    foreach ($b in @(Get-Branches)) {
+    $bl = (Invoke-Dv @('branch') $true).Lines
+    $ids = Parse-BranchIds $bl
+    # which workspaces (this one and your other computers) are on each branch
+    if (-not (Ws-Name)) { try { [void](Read-Status (Invoke-Dv (Status-Args $false) $true)) } catch {} }
+    $me = Ws-Name; $wsOn = @{}
+    try {
+        foreach ($w in @(Parse-Workspaces (Invoke-Dv @('workspace') $true).Lines)) {
+            $bn = [string]$ids[$w.BranchId]; if (-not $bn) { continue }
+            $k = $bn.ToLowerInvariant(); if (-not $wsOn.ContainsKey($k)) { $wsOn[$k] = New-Object System.Collections.ArrayList }
+            [void]$wsOn[$k].Add($(if ($me -and $w.Name -eq $me) { $w.Name + ' (this)' } else { $w.Name }))
+        }
+    } catch {}
+    $names = Parse-Branches $bl
+    foreach ($b in $names) {
         $r = Invoke-Dv @('show', [string]$b) $true
         $c = @(Parse-Log $r.Lines | Select-Object -First 1)
         $cls = @($script:CLs | Where-Object { ([string]$_.branch) -ieq $b } | ForEach-Object { '#' + $_.id + ' ' + $_.name })
-        [void]$rows.Add([pscustomobject]@{ Name = [string]$b; Head = $(if ($c.Count) { [string]$c[0].Id } else { '' }); Date = $(if ($c.Count) { Format-CommitDate ([string]$c[0].Date) } else { '' }); Desc = $(if ($c.Count) { (([string]$c[0].Desc) -split "`n")[0] } else { '' }); Cls = ($cls -join ', ') })
+        $wk = ([string]$b).ToLowerInvariant()
+        [void]$rows.Add([pscustomobject]@{ Workspaces = $(if ($wsOn.ContainsKey($wk)) { @($wsOn[$wk]) -join ', ' } else { '' }); Name = [string]$b; Head = $(if ($c.Count) { [string]$c[0].Id } else { '' }); Date = $(if ($c.Count) { Format-CommitDate ([string]$c[0].Date) } else { '' }); Desc = $(if ($c.Count) { (([string]$c[0].Desc) -split "`n")[0] } else { '' }); Cls = ($cls -join ', ') })
     }
     $rows.ToArray()   # streamed: @(Branch-Rows) = one row per branch
 }

@@ -91,7 +91,7 @@ function Do-Probe {
     Push-Location $ws
     try {
         $last = ''; foreach ($l in @(& dv log -n 1 2>&1)) { if ([string]$l -match '(dv\.commit\.\d+)') { $last = $Matches[1]; break } }
-        foreach ($a in @(@('log', '--help'), @('log', '-n', '5'), @('branch'), @('merge', '-l'), @('show', $last), @('show', '--help'))) {
+        foreach ($a in @(,@('workspace'))) {
             $pl.Add('==== dv ' + ($a -join ' '))
             foreach ($l in @(& dv @a 2>&1 | ForEach-Object { [string]$_ } | Select-Object -First 60)) { $pl.Add($l) }
         }

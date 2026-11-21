@@ -250,8 +250,10 @@ function Run-SelfTest {
             $k = @{}; foreach ($x in $off) { $k[$x.Path] = $x.Kind }
             $sw0 = Select-WithNewFolders @([pscustomobject]@{ Index = 1; Kind = 'New'; Path = 'Game/Content/New'; Old = $null }) (Path-Set @('Game/Content/New/D.uasset', 'Game/Content/New/zz.uasset', 'Game/Content/A.uasset'))
             $origDv = ${function:Invoke-Dv}
-            Set-Item function:script:Invoke-Dv { param($a, $q, $b) [pscustomobject]@{ Code = 0; Lines = @('branch main (dv.branch.1)', 'commit dv.commit.7', '', 'branch job01 (dv.branch.2)', 'commit dv.commit.7'); Upload = '' } }
-            try { $gb = @(Get-Branches); $br = @(Branch-Rows) } finally { Set-Item function:script:Invoke-Dv $origDv }
+            Set-Item function:script:Invoke-Dv { param($a, $q, $b) if ($a[0] -eq 'workspace') { return [pscustomobject]@{ Code = 0; Lines = @('', 'workspace Town @ PC1 (dv.ws.a1)', '    branch dv.branch.2', '', 'workspace Town @ PC2 (dv.ws.b2)', '    branch dv.branch.1'); Upload = '' } }; [pscustomobject]@{ Code = 0; Lines = @('branch main (dv.branch.1)', 'commit dv.commit.7', '', 'branch job01 (dv.branch.2)', 'commit dv.commit.7'); Upload = '' } }
+            $wsKeep2 = $script:WsName; $script:WsName = 'Town @ PC1'
+            try { $gb = @(Get-Branches); $br = @(Branch-Rows) } finally { Set-Item function:script:Invoke-Dv $origDv; $script:WsName = $wsKeep2 }
+            T "branches: workspaces on each branch, this one marked" ($br.Count -eq 2 -and $br[0].Workspaces -eq 'Town @ PC2' -and $br[1].Workspaces -eq 'Town @ PC1 (this)') (($br | ForEach-Object { [string]$_.Name + '=' + [string]$_.Workspaces }) -join ' | ')
             T "branches: one row per branch (not one row for all)" ($gb.Count -eq 2 -and $gb[1] -eq 'job01' -and $br.Count -eq 2 -and $br[0].Name -eq 'main' -and $br[1].Name -eq 'job01') (($br | ForEach-Object { [string]$_.Name }) -join ' | ')
             T "submit-files: a file inside a new folder (pending as the folder) is submitted alone" (@($sw0).Count -eq 1 -and $sw0[0].Path -eq 'Game/Content/New/D.uasset' -and $sw0[0].Kind -eq 'New') (($sw0 | ForEach-Object { $_.Path }) -join ' ')
             T "offline: modified, deleted, new file + new folder, known pending kept" ($k['Game/Content/A.uasset'] -eq 'Modified' -and $k['Game/Content/B.uasset'] -eq 'Deleted' -and $k['Game/Content/New/D.uasset'] -eq 'New' -and $k['Game/Content/New'] -eq 'New' -and $k['Game/Content/C.uasset'] -eq 'Modified' -and $off.Count -eq 5)

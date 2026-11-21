@@ -2,6 +2,10 @@
 
 Versions follow [semver](https://semver.org). Tags: `vX.Y.Z`.
 
+## 0.33.1 - 2026-11-21
+
+- Branches panel: "Workspaces on it" column, which of your workspaces (this computer, your others) is on each branch.
+
 ## 0.33.0 - 2026-11-21
 
 - Lists (Submitted, History, Branches, graph): right-click a column header to choose the columns shown; remembered.

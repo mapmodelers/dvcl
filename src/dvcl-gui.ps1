@@ -334,7 +334,7 @@ Register-Pad 'history' 'History' $vHist.Root 'bottom'
 $padBranches = New-Object System.Windows.Forms.Panel
 $lvBr = New-Object System.Windows.Forms.ListView
 $lvBr.View = 'Details'; $lvBr.FullRowSelect = $true; $lvBr.HideSelection = $false; $lvBr.Dock = 'Fill'; $lvBr.Font = $fontUi
-foreach ($col in @(@('Branch', 140), @('Head', 110), @('Date', 120), @('Last commit', 300), @('dvcl changelists', 260))) { [void]$lvBr.Columns.Add($col[0], $col[1]) }
+foreach ($col in @(@('Branch', 140), @('Head', 110), @('Date', 120), @('Last commit', 300), @('Workspaces on it', 300), @('dvcl changelists', 260))) { [void]$lvBr.Columns.Add($col[0], $col[1]) }
 $brBar = New-Object System.Windows.Forms.FlowLayoutPanel; $brBar.Dock = 'Top'; $brBar.Height = 30; $brBar.WrapContents = $false
 $btnBrLoad = New-Object System.Windows.Forms.Button; $btnBrLoad.Text = 'Refresh'; $btnBrLoad.AutoSize = $true; $btnBrLoad.Font = $fontUi
 $lblBr = New-Object System.Windows.Forms.Label; $lblBr.AutoSize = $true; $lblBr.Font = $fontUi; $lblBr.Margin = New-Object System.Windows.Forms.Padding(8, 8, 4, 0)
@@ -391,7 +391,7 @@ function Show-BranchRows {
     $lvBr.BeginUpdate(); $lvBr.Items.Clear()
     foreach ($b in @($script:BrRows)) {
         $it = New-Object System.Windows.Forms.ListViewItem($(if ($b.Name -ieq $script:Branch) { '* ' + $b.Name } else { $b.Name }))
-        foreach ($v in @($b.Head, $b.Date, $b.Desc, $b.Cls)) { [void]$it.SubItems.Add([string]$v) }
+        foreach ($v in @($b.Head, $b.Date, $b.Desc, $b.Workspaces, $b.Cls)) { [void]$it.SubItems.Add([string]$v) }
         $it.Tag = $b.Name
         $it.BackColor = Branch-Tint $b.Name $script:Pal.Input $script:Dark
         if ($b.Name -ieq $script:Branch) { $it.Font = $fontBold }
