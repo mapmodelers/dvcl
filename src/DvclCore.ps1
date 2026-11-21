@@ -456,7 +456,7 @@ function Load-Db {
                 foreach ($f in @($c.files)) { if ($f) { [void]$files.Add([string]$f) } }
                 $id = 0; if ($c.id) { $id = [int]$c.id }
                 if ($id -le 0) { $missing = $true } elseif ($id -ge $script:NextId) { $script:NextId = $id + 1 }
-                [void]$script:CLs.Add([pscustomobject]@{ id = $id; name = [string]$c.name; desc = [string]$c.desc; files = $files })
+                [void]$script:CLs.Add([pscustomobject]@{ id = $id; name = [string]$c.name; desc = [string]$c.desc; branch = [string]$c.branch; files = $files })
             }
         }
     }
@@ -465,9 +465,51 @@ function Load-Db {
 }
 
 function New-ClObject([string]$name, [string]$desc) {
-    $c = [pscustomobject]@{ id = $script:NextId; name = $name; desc = ([string]$desc).Trim(); files = (New-Object System.Collections.ArrayList) }
+    $c = [pscustomobject]@{ id = $script:NextId; name = $name; desc = ([string]$desc).Trim(); branch = (Current-Branch); files = (New-Object System.Collections.ArrayList) }
     $script:NextId++
     return $c
+}
+
+# ---- branches: each changelist remembers the branch it was made on (job branches, merged later)
+# The branch the workspace is on: last read from Diversion (window / command), else the one saved at the last pause
+function Current-Branch {
+    if ($script:Branch) { return [string]$script:Branch }
+    try { return [string](Read-LastHead).Branch } catch { return '' }
+}
+# '' = fine; else why this changelist must not be submitted from the current branch
+function ClBranch-Problem($c, [string]$current) {
+    if ($c -and $c.branch -and $current -and ([string]$c.branch) -ine $current) {
+        return ("changelist '" + $c.name + "' was made on branch '" + $c.branch + "', the workspace is on '" + $current + "'. Switch back (dvcl branch switch " + $c.branch + ") or move its files to a changelist of this branch.")
+    }
+    return ''
+}
+# Before a branch switch (checked offline, before going online). Pending work is never mixed in silently:
+# with pending files it refuses, unless $take (Diversion takes them along). Unreal must be closed.
+function Assert-CanSwitch([string]$name, [bool]$take) {
+    if (-not $name) { Fail "usage: dvcl branch switch <branch> [--take]" }
+    if ((Current-Branch) -ieq $name) { Fail ("already on branch '" + $name + "'") }
+    if (Find-UeEngine) { Fail "Unreal is open: close it first (switching branch rewrites the files it has loaded)" }
+    $files = @(Get-OfflinePendingOrOnline)
+    if ($files.Count -gt 0 -and -not $take) {
+        $by = @{}
+        foreach ($p in $files) { $o = Owner-Of $p.Path; $k = $(if ($o) { '#' + $o.id + ' ' + $o.name } else { 'default' }); if (-not $by.ContainsKey($k)) { $by[$k] = 0 }; $by[$k]++ }
+        Fail ([string]$files.Count + " pending file(s) (" + ((@($by.Keys | Sort-Object | ForEach-Object { $_ + ': ' + $by[$_] })) -join ', ') + "): switching would carry them into '" + $name + "'. Submit or shelve them first (dvcl shelve <cl>), or take them along on purpose: dvcl branch switch " + $name + " --take")
+    }
+}
+# The switch itself (sync on). With $take, Diversion first gets the offline changes, then carries them over.
+function Switch-Branch([string]$name, [bool]$take) {
+    if ($take) { [void](Wait-Upload) }
+    $a = @('checkout', $name, '--ignore-shelf'); if ($take) { $a += '--take-changes' }
+    $r = Invoke-Dv $a
+    if ($r.Code -ne 0) { Fail ("dv checkout failed: " + ($r.Lines -join ' ')) }
+    $script:Branch = $name
+    Say ("Workspace now on branch '" + $name + "'.") 'Green'
+}
+function Get-OfflinePendingOrOnline {
+    if (Test-OfflineFlag) { return (Get-OfflinePending) }
+    $st = Get-Pending $false
+    if ($st.Paused) { return (Get-OfflinePending) }
+    return $st.Files
 }
 
 # "#12 description" (or name) for display
@@ -475,7 +517,7 @@ function CL-Label($c) { if (-not $c) { return 'default' }; $d = ($c.desc -replac
 
 function Save-Db {
     $out = @()
-    foreach ($c in $script:CLs) { $out += [pscustomobject]@{ id = $c.id; name = $c.name; desc = $c.desc; files = @($c.files) } }
+    foreach ($c in $script:CLs) { $out += [pscustomobject]@{ id = $c.id; name = $c.name; desc = $c.desc; branch = [string]$c.branch; files = @($c.files) } }
     $json = [pscustomobject]@{ next = $script:NextId; changelists = $out } | ConvertTo-Json -Depth 6
     Set-Content -LiteralPath $script:Db -Value $json -Encoding UTF8
 }

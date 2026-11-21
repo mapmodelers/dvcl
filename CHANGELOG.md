@@ -2,6 +2,11 @@
 
 Versions follow [semver](https://semver.org). Tags: `vX.Y.Z`.
 
+## 0.30.0 - 2026-11-21
+
+- Branches (job branches merged into main later): `dvcl branches` lists them (current first), `dvcl branch new <name>` creates one from the current branch's head (the workspace stays put), `dvcl branch switch <name>` switches the workspace: refused while files are pending (says how many per changelist; submit or shelve them, or `--take` to carry them over on purpose) and while Unreal is open. `dvcl merge <branch> [--into <branch>]` merges (conflicts are resolved in the Diversion app), `dvcl merge-preview <branch>` opens Diversion's preview in the browser. Online only for that action, as always.
+- Each changelist remembers the branch it was made on; submitting it from another branch is refused (window and command line). The window shows a job branch in its title and as an amber BRANCH tag; changelists of another branch say so.
+
 ## 0.29.1 - 2026-11-21
 
 - Unreal Changelists window: a selected changelist or file stays selected (the dvcl link rebuilt its changelist objects every few seconds, Unreal took them for new rows). Routine status refreshes reread dvcl's files only when they changed. dvcl link 7: update the link once (Tools > Unreal link > Update, Unreal closed).

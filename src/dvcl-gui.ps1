@@ -548,6 +548,7 @@ function Build-Tree {
                 if ($name.StartsWith((Slug-Base (($c.desc -split "`n")[0])), [StringComparison]::OrdinalIgnoreCase)) { $label = $d } else { $label = $name + '   ' + $d }
             }
             $label = '#' + $c.id + '  ' + $label
+            if ($c.branch -and $script:Branch -and $c.branch -ine $script:Branch) { $label += '   [branch ' + $c.branch + ']' }
         }
         $shs = @(); if ($script:ShelfMap -and $script:ShelfMap.ContainsKey($name.ToLowerInvariant())) { $shs = @($script:ShelfMap[$name.ToLowerInvariant()]) }
         $count = '   (' + $items.Count
@@ -937,6 +938,9 @@ function Set-BranchInfo {
     elseif ($script:Head -and $script:WsCommit) { if ($script:Head -eq $script:WsCommit) { $h = 'up to date' } else { $h = 'NEW COMMITS' } }
     $branchLbl.Text = $script:Branch + ' @ ' + $script:WsCommit + $(if ($h) { '  -  ' + $h } else { '' })
     $branchLbl.ForeColor = $(if ($h -like '*NEW COMMITS*') { $script:Pal.Link } else { $script:Pal.Muted })
+    # a job branch (not main) stands out: amber, bold
+    if ($script:Branch -notin @('main', 'master')) { $branchLbl.Text = 'BRANCH ' + $branchLbl.Text; $branchLbl.ForeColor = $script:Pal.offline; $branchLbl.Font = New-Object System.Drawing.Font($branchLbl.Font, [System.Drawing.FontStyle]::Bold) }
+    elseif ($branchLbl.Font.Bold) { $branchLbl.Font = New-Object System.Drawing.Font($branchLbl.Font, [System.Drawing.FontStyle]::Regular) }
 }
 
 # ---------------------------------------------------------------- refresh
@@ -1136,7 +1140,7 @@ function Show-Pending($st, [bool]$unreachable) {
     if ($st.Syncing) { $sync = 'sync on - Diversion still syncing, list updates by itself' }
     if ($script:Offline) { $sync = 'OFFLINE' }
     $statusLbl.Text = $script:Root + '    ' + $st.Files.Count + ' pending    dvcl ' + (Get-LocalVersion)
-    $form.Text = 'dvcl - ' + (Split-Path -Leaf $script:Root) + '   (experimental)'
+    $form.Text = 'dvcl - ' + (Split-Path -Leaf $script:Root) + $(if ($script:Branch -and $script:Branch -notin @('main', 'master')) { '  [branch ' + $script:Branch + ']' } else { '' }) + '   (experimental)'
     if (-not $script:FirstShown) { $script:FirstShown = $true; Write-Timing 'script-start-to-pending-list' $script:Clock.Elapsed.TotalMilliseconds }
     if ($st.Syncing -and -not $script:Paused -and -not $script:SyncMode -and $script:OpDepth -eq 0) { $pollTimer.Start() }
     if ($st.Branch -and -not $script:Offline) { if ($script:OpDepth -gt 0) { $script:OpLater['head'] = $st.Branch } else { Start-DvAsync @('show', $st.Branch) 'Apply-Head' $true $true } }
@@ -1246,6 +1250,8 @@ function Do-Submit {
     $name = Selected-CL
     Begin-Op ('Submitting ' + $name)
     try {
+    $bp = ClBranch-Problem (Find-CL $name) (Current-Branch)
+    if ($bp) { [void][System.Windows.Forms.MessageBox]::Show($form, ('Not submitted: ' + $bp), 'Submit', 'OK', 'Warning'); return }
     if ($script:Offline) { if (-not (Ensure-Online 'Submit')) { Back-Offline; return } }
     elseif (-not (Refresh-Now)) { return }
     try {

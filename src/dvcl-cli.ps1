@@ -11,7 +11,7 @@ function Show-List($pending) {
     foreach ($name in (@('default') + @($script:CLs | ForEach-Object { $_.name }))) {
         $items = Get-CLItems $pending $name
         $d = ''; $stale = @(); $num = ''
-        if ($name -ne 'default') { $c = Find-CL $name; $num = 'CL' + $c.id + ' '; if ($c.desc) { $d = '  "' + $c.desc + '"' }; $stale = Stale-Of $pending $c $set }
+        if ($name -ne 'default') { $c = Find-CL $name; $num = 'CL' + $c.id + ' '; if ($c.desc) { $d = '  "' + $c.desc + '"' }; if ($c.branch -and $script:Branch -and $c.branch -ine $script:Branch) { $d += '  [branch ' + $c.branch + ']' }; $stale = Stale-Of $pending $c $set }
         $s = ''; if ($stale.Count -gt 0) { $s = '  +' + $stale.Count + ' not pending' }
         Say ("== " + $num + $name + $d + "  (" + $items.Count + ")" + $s) 'Cyan'
         foreach ($p in $items) { Say ("   #{0,-4} {1}  {2}" -f $p.Index, (Kind-Letter $p.Kind), $p.Path) }
@@ -48,6 +48,11 @@ Run inside a Diversion workspace (any subfolder).
   dvcl unshelve <shelf> [<cl>]  apply one (kept) into <cl> (default: the shelf's changelist)
   (revert / shelve / unshelve need Diversion sync: on for that command only, then off again)
   dvcl get                      get latest: pull the branch's new commits into the workspace
+  dvcl branches                 list branches (current first); changelists remember their branch
+  dvcl branch new <name>        create a branch from the current branch's head (workspace stays put)
+  dvcl branch switch <name>     switch the workspace (refused with pending files; --take brings them along)
+  dvcl merge <branch> [--into <b>]  merge a branch (into the current one by default); conflicts in the Diversion app
+  dvcl merge-preview <branch>   open Diversion's merge preview in the browser
   dvcl sync on|off              go online (resume sync) / offline (pause sync). Offline, dvcl finds
                                 your changes by scanning the folder; shelve makes a local copy
   dvcl safety on|off            stay offline (default on): sync is on only during an action, never left
@@ -157,6 +162,10 @@ function Run-SelfTest {
         T "store: 2 changelists reloaded" ($script:CLs.Count -eq 2)
         T "store: single-file list stays a list" ((Find-CL 'one').files.Count -eq 1)
         T "store: empty list reloads empty" ((Find-CL 'empty').files.Count -eq 0)
+        $script:Branch = 'rural'; [void](New-CL 'jobcl' 'job'); $script:Branch = ''; Load-Db
+        T "branches: a changelist remembers the branch it was made on" ((Find-CL 'jobcl').branch -eq 'rural')
+        T "branches: its submit refused on another branch, fine on its own (old changelists: no branch, never refused)" ((ClBranch-Problem (Find-CL 'jobcl') 'main') -like "*made on branch 'rural'*" -and (ClBranch-Problem (Find-CL 'jobcl') 'rural') -eq '' -and (ClBranch-Problem (Find-CL 'one') 'main') -eq '')
+        Remove-CL 'jobcl'
         T "numbers: #1, #2 kept on reload, found by number" ((Find-CL 'one').id -eq 1 -and (Find-CL 'empty').id -eq 2 -and (Find-CL '#2').name -eq 'empty' -and (Find-CL '1').name -eq 'one' -and (Find-CL 'CL2').name -eq 'empty')
         T "owner lookup (case-insensitive)" ((Owner-Of 'MYGAME/content/b.uasset').name -eq 'one')
         T "items of 'one'" ((Get-CLItems $p 'one').Count -eq 1)
@@ -249,6 +258,13 @@ function Run-SelfTest {
             T "offline flag set / cleared" ($f1 -and -not (Test-OfflineFlag))
             Set-OfflineFlag $true; $cp = Current-Pending; $wild = Select-Pending $cp.Files @('Content/*.uasset'); Set-OfflineFlag $false
             T "offline: add with a wildcard matches from the folder scan" ($cp.Paused -and @($wild).Count -ge 1 -and @($wild).Count -eq @($cp.Files | Where-Object { $_.Path -like '*.uasset' }).Count -and @($wild | Where-Object { $_.Path -notlike 'Game/Content/*.uasset' }).Count -eq 0) ("" + @($wild).Count + " of " + @($cp.Files).Count + " | " + (@($cp.Files | % { $_.Path }) -join ","))
+            $origUe = ${function:Find-UeEngine}; Set-Item function:script:Find-UeEngine { return $null }
+            Set-OfflineFlag $true; $script:Branch = 'main'
+            $sw1 = ''; try { Assert-CanSwitch 'rural' $false } catch { $sw1 = $_.Exception.Message }
+            $sw2 = 'x'; try { Assert-CanSwitch 'rural' $true; $sw2 = '' } catch { $sw2 = $_.Exception.Message }
+            $sw3 = ''; try { Assert-CanSwitch 'main' $true } catch { $sw3 = $_.Exception.Message }
+            Set-OfflineFlag $false; $script:Branch = ''; Set-Item function:script:Find-UeEngine $origUe
+            T "branch switch: refused with pending files (counts per changelist), allowed with --take, not to the branch it is on" ($sw1 -like '*pending file(s)*--take*' -and $sw2 -eq '' -and $sw3 -like '*already on*') ($sw1 + ' | ' + $sw2 + ' | ' + $sw3)
             $id = Shelve-Local 'my work' @($off | Where-Object { $_.Path -like '*.uasset' })
             MkF 'Game/Content/A.uasset' 'changed-after-shelve'
             $ls = @(Get-LocalShelves)
@@ -412,6 +428,7 @@ function Submit-Cli([string]$name, $argv, [bool]$yes) {
                 if (-not $desc) { Fail "default needs a message: dvcl submit default ""your message""" }
             } else {
                 $c = Find-CL $name; if (-not $c) { Fail ("no changelist '" + $name + "'") }
+                $bp = ClBranch-Problem $c $st.Branch; if ($bp) { Fail ("not submitted: " + $bp) }
                 if (-not $c.desc) { Fail ("'" + $name + "' has no description: dvcl desc " + $name + " ""what you did""") }
                 $desc = $c.desc
             }
@@ -471,7 +488,7 @@ try {
         }
 
         { $_ -in 'status', 'st', 'list', 'ls' } {
-            $st = Get-Pending $false
+            $st = Get-Pending $false; $script:Branch = $st.Branch
             $sync = 'sync on'
             if ($st.Syncing) { $sync = 'sync on, still syncing (list may be incomplete)' }
             if ($st.Paused -or (Test-OfflineFlag)) {
@@ -583,6 +600,59 @@ try {
                     Submit-Items '' $items $script:SfDesc $st.Files
                 }
             } finally { try { Write-PendingFile (Current-Pending).Files } catch {} }
+        }
+
+        'branches' {
+            $st = Get-Pending $false; $script:Branch = $st.Branch
+            Say ("Current branch: " + $st.Branch) 'Cyan'
+            # dv checkout without a branch lists them all
+            $r = Invoke-Dv @('checkout') $true
+            foreach ($l in $r.Lines) { if ([string]$l -match '\S') { Say ('  ' + $l) } }
+            $mine = @($script:CLs | Where-Object { $_.branch -and $_.branch -ine $st.Branch })
+            if ($mine.Count) { Say ('Changelists of other branches: ' + ((@($mine | ForEach-Object { '#' + $_.id + ' ' + $_.name + ' (' + $_.branch + ')' })) -join ', ')) 'DarkYellow' }
+        }
+
+        'branch' {
+            $sub = ([string]$argv[0]).ToLowerInvariant(); $bn = [string]$argv[1]
+            $take = $argv -contains '--take'
+            switch ($sub) {
+                'new' {
+                    if ($bn -notmatch '^[A-Za-z0-9_\-\.]{1,60}$') { Fail "usage: dvcl branch new <name> (letters, digits, _ - .)" }
+                    $from = (Get-Pending $false).Branch
+                    $script:BrName = $bn
+                    With-Sync { $r = Invoke-Dv @('branch', '-c', $script:BrName, '--no-checkout'); if ($r.Code -ne 0) { Fail ("dv branch failed: " + ($r.Lines -join ' ')) } }
+                    Say ("Branch '" + $bn + "' created from '" + $from + "' (head). The workspace stays on '" + $from + "'. Switch: dvcl branch switch " + $bn) 'Green'
+                }
+                'switch' {
+                    Assert-CanSwitch $bn $take
+                    $script:BrName = $bn; $script:BrTake = $take
+                    With-Sync { Switch-Branch $script:BrName $script:BrTake }
+                }
+                default { Fail "usage: dvcl branch new <name>  |  dvcl branch switch <name> [--take]  (list: dvcl branches)" }
+            }
+        }
+
+        'merge' {
+            $from = [string]$argv[0]; if (-not $from -or $from -like '--*') { Fail "usage: dvcl merge <branch> [--into <branch>] [-y]" }
+            $i = [Array]::IndexOf([string[]]$argv, '--into'); $into = $(if ($i -ge 0 -and $argv.Count -gt $i + 1) { [string]$argv[$i + 1] } else { '' })
+            $cur = (Get-Pending $false).Branch; $dest = $(if ($into) { $into } else { $cur })
+            if ($dest -ieq $cur) {
+                if (Find-UeEngine) { Fail "Unreal is open: close it first (the merge writes into this workspace)" }
+                $pf = @(Get-OfflinePendingOrOnline)
+                if ($pf.Count) { Fail ([string]$pf.Count + " pending file(s) in this workspace: submit or shelve them before merging into '" + $dest + "'") }
+            }
+            Say ("Merge '" + $from + "' into '" + $dest + "'. Conflicts are resolved in the Diversion app (dvcl merge-preview " + $from + " shows them first, in the browser).") 'Cyan'
+            Confirm-Or-Exit ("Merge now?") $yes
+            $script:MgArgs = @('merge', $from); if ($into) { $script:MgArgs += @('--into', $into) }
+            With-Sync { $r = Invoke-Dv $script:MgArgs; if ($r.Code -ne 0) { Fail ("dv merge failed: " + ($r.Lines -join ' ')) } }
+            Say ("Merged '" + $from + "' into '" + $dest + "'. Open merges with conflicts: dv merge -l, resolve them in the Diversion app.") 'Green'
+        }
+
+        'merge-preview' {
+            $from = [string]$argv[0]; if (-not $from) { Fail "usage: dvcl merge-preview <branch> [--into <branch>]" }
+            $a = @('merge-preview', $from); $i = [Array]::IndexOf([string[]]$argv, '--into'); if ($i -ge 0 -and $argv.Count -gt $i + 1) { $a += @('--target', [string]$argv[$i + 1]) }
+            $r = Invoke-Dv $a; if ($r.Code -ne 0) { Fail ("dv merge-preview failed: " + ($r.Lines -join ' ')) }
+            Say "Merge preview opened in the browser (Diversion)." 'Green'
         }
 
         'shelve' {
