@@ -2,6 +2,14 @@
 
 Versions follow [semver](https://semver.org). Tags: `vX.Y.Z`.
 
+## 0.36.0 - 2026-11-21
+
+- State bar redesigned: a grey section of its own (no more colored background). The connection shows as an icon + OFFLINE / ONLINE / BUSY / NO DIVERSION; hovering shows what a click does (CONNECT / DISCONNECT / RETRY) with the icon of the result. Then the branch the workspace is on, with its color chip.
+- Changelists: the list keeps its normal background; each changelist icon takes its branch's color (main stays grey).
+- Get latest: warns first when incoming files also have your own changes (Diversion would merge them or mark conflicts).
+- Exit while an action runs asks first (sync could stay online).
+- Faster: pending list built about 2x faster (657 files: 1.9 s to 1.1 s); offline scan 3 s to under 1 s on a real workspace.
+
 ## 0.35.0 - 2026-11-21
 
 - Branches panel refreshes by itself (in the background): when shown, after a branch change, every 5 minutes; the last list shows at once when the window opens.

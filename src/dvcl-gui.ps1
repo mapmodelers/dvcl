@@ -63,6 +63,7 @@ $script:PalLight = @{
     Row = [System.Drawing.Color]::FromArgb(45, 45, 45); Muted = [System.Drawing.Color]::FromArgb(110, 110, 110); Stale = [System.Drawing.Color]::DarkGray; Shelf = [System.Drawing.Color]::FromArgb(120, 80, 30)
     Log = [System.Drawing.Color]::FromArgb(250, 250, 250); Link = [System.Drawing.Color]::FromArgb(0, 90, 190)
     Border = [System.Drawing.SystemColors]::ControlDark; Hi = [System.Drawing.SystemColors]::Highlight; Sel = [System.Drawing.SystemColors]::Highlight
+    Bar = [System.Drawing.Color]::FromArgb(226, 226, 226); BarHover = [System.Drawing.Color]::FromArgb(204, 204, 204); BarLine = [System.Drawing.Color]::FromArgb(190, 190, 190)
     offline = [System.Drawing.Color]::FromArgb(255, 236, 160); online = [System.Drawing.Color]::FromArgb(214, 240, 214)
     busy = [System.Drawing.Color]::FromArgb(210, 228, 250); down = [System.Drawing.Color]::FromArgb(250, 215, 215); loading = [System.Drawing.SystemColors]::Control
     A = [System.Drawing.Color]::FromArgb(0, 140, 60); M = [System.Drawing.Color]::FromArgb(30, 30, 30); D = [System.Drawing.Color]::FromArgb(200, 40, 40)
@@ -73,6 +74,7 @@ $script:PalDark = @{
     Row = [System.Drawing.Color]::FromArgb(205, 205, 205); Muted = [System.Drawing.Color]::FromArgb(140, 140, 140); Stale = [System.Drawing.Color]::FromArgb(115, 115, 115); Shelf = [System.Drawing.Color]::FromArgb(205, 165, 110)
     Log = [System.Drawing.Color]::FromArgb(24, 24, 24); Link = [System.Drawing.Color]::FromArgb(110, 175, 255)
     Border = [System.Drawing.Color]::FromArgb(63, 63, 70); Hi = [System.Drawing.Color]::FromArgb(62, 62, 66); Sel = [System.Drawing.Color]::FromArgb(0, 120, 215)
+    Bar = [System.Drawing.Color]::FromArgb(54, 54, 58); BarHover = [System.Drawing.Color]::FromArgb(76, 76, 82); BarLine = [System.Drawing.Color]::FromArgb(28, 28, 30)
     offline = [System.Drawing.Color]::FromArgb(92, 74, 20); online = [System.Drawing.Color]::FromArgb(35, 80, 45)
     busy = [System.Drawing.Color]::FromArgb(35, 60, 100); down = [System.Drawing.Color]::FromArgb(110, 40, 40); loading = [System.Drawing.Color]::FromArgb(45, 45, 48)
     A = [System.Drawing.Color]::FromArgb(110, 205, 120); M = [System.Drawing.Color]::FromArgb(235, 235, 235); D = [System.Drawing.Color]::FromArgb(240, 105, 105)
@@ -137,21 +139,76 @@ function Add-DropItem($drop, [string]$text, [string]$tip, [scriptblock]$onClick)
     return $mi
 }
 
-# State bar: where dvcl stands with Diversion (OFFLINE / ONLINE / busy / not answering), one button
-# to switch, and the branch state. Colors: amber offline, green online, blue busy, red not answering.
+# State bar, a section of its own in grey: the connection (icon + OFFLINE / ONLINE / BUSY / NO DIVERSION;
+# hovering shows what a click does: CONNECT / DISCONNECT / RETRY), the branch the workspace is on (its
+# color chip, commit, up to date or not), then a line of text. Only the small icons carry color.
 $modeBar = New-Object System.Windows.Forms.Panel
-$modeBar.Dock = 'Top'; $modeBar.Height = 34
+$modeBar.Dock = 'Top'; $modeBar.Height = 36
+$modeLine = New-Object System.Windows.Forms.Panel; $modeLine.Dock = 'Bottom'; $modeLine.Height = 1
+$modeLineTop = New-Object System.Windows.Forms.Panel; $modeLineTop.Dock = 'Top'; $modeLineTop.Height = 1
 $modeFlow = New-Object System.Windows.Forms.FlowLayoutPanel
 $modeFlow.Dock = 'Fill'; $modeFlow.WrapContents = $false; $modeFlow.BackColor = [System.Drawing.Color]::Transparent
-$modeLbl = New-Object System.Windows.Forms.Label
-$modeLbl.AutoSize = $true; $modeLbl.Font = New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
-$modeLbl.Margin = New-Object System.Windows.Forms.Padding(10, 7, 6, 0)
-$btnMode = New-Object System.Windows.Forms.Button
-$btnMode.AutoSize = $true; $btnMode.Height = 26; $btnMode.FlatStyle = 'System'; $btnMode.Margin = New-Object System.Windows.Forms.Padding(4, 4, 8, 0)
+# connection icons (18 px): online = green disc with a plugged plug; offline = grey ring, plug apart, slash;
+# busy = blue ring; down = red disc with a cross
+function New-ConnIcon([string]$kind) {
+    $bmp = New-Object System.Drawing.Bitmap(18, 18); $g = [System.Drawing.Graphics]::FromImage($bmp); $g.SmoothingMode = 'AntiAlias'
+    $grey = [System.Drawing.Color]::FromArgb(140, 140, 140)
+    switch ($kind) {
+        'online' {
+            $g.FillEllipse((New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(46, 160, 67))), 0, 0, 17, 17)
+            $w = [System.Drawing.Brushes]::White; $p = New-Object System.Drawing.Pen([System.Drawing.Color]::White, 1.6)
+            $g.DrawLine($p, 2.5, 8.5, 5, 8.5); $g.FillRectangle($w, 5, 5.5, 4, 6); $g.DrawLine($p, 9, 7, 11, 7); $g.DrawLine($p, 9, 10, 11, 10); $g.FillRectangle($w, 11, 5.5, 3, 6); $g.DrawLine($p, 14, 8.5, 15.5, 8.5)
+        }
+        'offline' {
+            $p = New-Object System.Drawing.Pen($grey, 1.6); $b = New-Object System.Drawing.SolidBrush($grey)
+            $g.DrawEllipse($p, 1, 1, 15, 15)
+            $g.FillRectangle($b, 3.5, 6, 3, 5); $g.DrawLine($p, 6.5, 7, 8, 7); $g.DrawLine($p, 6.5, 10, 8, 10); $g.FillRectangle($b, 11, 6, 3, 5)
+            $g.DrawLine($p, 4, 14, 14, 4)
+        }
+        'busy' {
+            $p = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(36, 124, 220), 2.4)
+            $g.DrawArc($p, 2, 2, 13, 13, -90, 270)
+        }
+        'down' {
+            $g.FillEllipse((New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(215, 58, 58))), 0, 0, 17, 17)
+            $p = New-Object System.Drawing.Pen([System.Drawing.Color]::White, 2); $g.DrawLine($p, 5.5, 5.5, 11.5, 11.5); $g.DrawLine($p, 11.5, 5.5, 5.5, 11.5)
+        }
+        default { $g.DrawEllipse((New-Object System.Drawing.Pen($grey, 1.6)), 1, 1, 15, 15) }
+    }
+    $g.Dispose(); return $bmp
+}
+$script:ConnIcons = @{}; foreach ($k in 'online', 'offline', 'busy', 'down', 'loading') { $script:ConnIcons[$k] = New-ConnIcon $k }
+# branch chip: a rounded square in the branch's color (grey for main)
+$script:ChipIcons = @{}
+function Branch-Chip([string]$branch) {
+    $k = [string]$branch + '|' + [string]$script:Dark
+    if (-not $script:ChipIcons.ContainsKey($k)) {
+        $bmp = New-Object System.Drawing.Bitmap(14, 14); $g = [System.Drawing.Graphics]::FromImage($bmp); $g.SmoothingMode = 'AntiAlias'
+        $g.FillEllipse((New-Object System.Drawing.SolidBrush((Branch-Color $branch $script:Dark))), 1, 1, 12, 12); $g.Dispose()
+        $script:ChipIcons[$k] = $bmp
+    }
+    return $script:ChipIcons[$k]
+}
+# the connection: icon + state, drawn by dvcl (a PictureBox: no text of its own to overlap); hover = the action
+$modeLbl = New-Object System.Windows.Forms.PictureBox
+$modeLbl.Width = 150; $modeLbl.Height = 28; $modeLbl.Margin = New-Object System.Windows.Forms.Padding(6, 3, 6, 3)
+$script:ModeFont = New-Object System.Drawing.Font('Segoe UI', 9.5, [System.Drawing.FontStyle]::Bold)
+$modeLbl.Tag = ''; $script:ModeShown = '...'; $script:ModeHover = $false; $script:ModeImage = $null
+$modeLbl.Add_Paint({
+    param($s, $e)
+    $g = $e.Graphics; $g.SmoothingMode = 'AntiAlias'; $g.TextRenderingHint = 'ClearTypeGridFit'
+    if ($script:ModeImage) { $g.DrawImage($script:ModeImage, 8, [int](($s.Height - 18) / 2), 18, 18) }
+    $col = $(if ($s.Enabled) { $script:Pal.Fore } else { $script:Pal.Muted })
+    [System.Windows.Forms.TextRenderer]::DrawText($g, [string]$s.Text, $script:ModeFont, (New-Object System.Drawing.Rectangle(32, 0, ($s.Width - 34), $s.Height)), $col, ([System.Windows.Forms.TextFormatFlags]::VerticalCenter -bor [System.Windows.Forms.TextFormatFlags]::Left -bor [System.Windows.Forms.TextFormatFlags]::NoPrefix))
+})
+$modeLbl.Add_EnabledChanged({ $modeLbl.Invalidate() })
+$modeSep = New-Object System.Windows.Forms.Label; $modeSep.AutoSize = $false; $modeSep.Width = 1; $modeSep.Height = 20; $modeSep.Margin = New-Object System.Windows.Forms.Padding(4, 8, 10, 0)
 $modeDesc = New-Object System.Windows.Forms.Label
-$modeDesc.AutoSize = $true; $modeDesc.Margin = New-Object System.Windows.Forms.Padding(4, 9, 4, 0)
+$modeDesc.AutoSize = $true; $modeDesc.Margin = New-Object System.Windows.Forms.Padding(14, 10, 4, 0)
 $branchLbl = New-Object System.Windows.Forms.Label
-$branchLbl.AutoSize = $true; $branchLbl.Margin = New-Object System.Windows.Forms.Padding(18, 9, 4, 0); $branchLbl.ForeColor = [System.Drawing.Color]::FromArgb(70, 70, 70)
+$branchLbl.AutoSize = $true; $branchLbl.Margin = New-Object System.Windows.Forms.Padding(2, 10, 4, 0)
+$chipBox = New-Object System.Windows.Forms.PictureBox; $chipBox.Size = New-Object System.Drawing.Size(14, 14); $chipBox.BackColor = [System.Drawing.Color]::Transparent; $chipBox.Margin = New-Object System.Windows.Forms.Padding(0, 11, 2, 0)
+$branchLbl.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
 # Shown while dvcl works (loading, scanning, going online...): the rest of the window is greyed out
 $busyBar = New-Object System.Windows.Forms.ProgressBar
 $busyBar.Style = 'Marquee'; $busyBar.MarqueeAnimationSpeed = 30; $busyBar.Width = 140; $busyBar.Height = 16
@@ -159,10 +216,12 @@ $busyBar.Margin = New-Object System.Windows.Forms.Padding(18, 9, 4, 0); $busyBar
 $busyLbl = New-Object System.Windows.Forms.Label
 $busyLbl.AutoSize = $true; $busyLbl.Margin = New-Object System.Windows.Forms.Padding(4, 9, 4, 0); $busyLbl.Visible = $false
 $busyLbl.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
-$modeFlow.Controls.AddRange(@($modeLbl, $btnMode, $modeDesc, $branchLbl, $busyBar, $busyLbl))
-$modeBar.Controls.Add($modeFlow)
+$modeFlow.Controls.AddRange(@($modeLbl, $modeSep, $chipBox, $branchLbl, $modeDesc, $busyBar, $busyLbl))
+$modeBar.Controls.Add($modeFlow); $modeBar.Controls.Add($modeLine); $modeBar.Controls.Add($modeLineTop)
 $modeTip = New-Object System.Windows.Forms.ToolTip
-$modeTip.SetToolTip($branchLbl, "Auto-update (others' commits arriving by themselves) is a setting in the Diversion app: keep it off. Get latest pulls them when you choose.")
+$modeTip.SetToolTip($branchLbl, "The branch this workspace is on (synced to), its commit, and whether the branch has newer commits.`r`nAuto-update (others' commits arriving by themselves) is a setting in the Diversion app: keep it off. Get latest pulls them when you choose.")
+$modeLbl.Add_MouseEnter({ $script:ModeHover = $true; Paint-ModeBtn })
+$modeLbl.Add_MouseLeave({ $script:ModeHover = $false; Paint-ModeBtn })
 
 $split = New-Object System.Windows.Forms.SplitContainer
 $split.Dock = 'Fill'; $split.Orientation = 'Horizontal'
@@ -217,7 +276,7 @@ $script:BadgeColor = @{
     'D' = [System.Drawing.Color]::FromArgb(215, 58, 58); 'R' = [System.Drawing.Color]::FromArgb(230, 140, 20)
     '!' = [System.Drawing.Color]::FromArgb(200, 0, 160); '?' = [System.Drawing.Color]::Gray
 }
-function New-Icon([string]$base, [string]$badge) {
+function New-Icon([string]$base, [string]$badge, $fill = $null) {
     $bmp = New-Object System.Drawing.Bitmap(16, 16)
     $g = [System.Drawing.Graphics]::FromImage($bmp)
     $g.SmoothingMode = 'AntiAlias'
@@ -235,7 +294,7 @@ function New-Icon([string]$base, [string]$badge) {
         'faded'  { $g.DrawRectangle((New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(190, 190, 190))), 3, 1, 9, 13) }
         'folder' { $b = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(165, 165, 165)); $g.FillRectangle($b, 1, 3, 6, 3); $g.FillRectangle($b, 1, 5, 14, 9) }
         'folderoff' { $pn = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(170, 170, 170)); $g.DrawRectangle($pn, 1, 3, 5, 2); $g.DrawRectangle($pn, 1, 5, 13, 8) }
-        'cl'     { $g.FillRectangle((New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(175, 175, 175))), 2, 2, 12, 12); foreach ($y in 5, 8, 11) { $g.DrawLine([System.Drawing.Pens]::White, 4, $y, 11, $y) } }
+        'cl'     { $g.FillRectangle((New-Object System.Drawing.SolidBrush($(if ($fill) { $fill } else { [System.Drawing.Color]::FromArgb(175, 175, 175) }))), 2, 2, 12, 12); foreach ($y in 5, 8, 11) { $g.DrawLine([System.Drawing.Pens]::White, 4, $y, 11, $y) } }
         'shelf'  {
             # zipped folder
             $g.SmoothingMode = 'None'
@@ -244,7 +303,7 @@ function New-Icon([string]$base, [string]$badge) {
             foreach ($y in 5, 7, 9) { $g.FillRectangle($z, 6, $y, 2, 1); $g.FillRectangle($z, 8, ($y + 1), 2, 1) }
             $g.FillRectangle($z, 6, 11, 4, 3)
         }
-        'cldef'  { $g.FillRectangle((New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(125, 125, 125))), 2, 2, 12, 12); foreach ($y in 5, 8, 11) { $g.DrawLine([System.Drawing.Pens]::White, 4, $y, 11, $y) } }
+        'cldef'  { $g.FillRectangle((New-Object System.Drawing.SolidBrush($(if ($fill) { $fill } else { [System.Drawing.Color]::FromArgb(125, 125, 125) }))), 2, 2, 12, 12); foreach ($y in 5, 8, 11) { $g.DrawLine([System.Drawing.Pens]::White, 4, $y, 11, $y) } }
     }
     if ($badge) {
         $c = $script:BadgeColor[$badge]
@@ -270,6 +329,17 @@ foreach ($k in 'A', 'M', 'D', 'R', '!', '?') { $icons.Images.Add(('file-' + $k),
 # Local / Depot trees exist before the icons: attach the list here
 $tvLocal.ImageList = $icons; $tvDepot.ImageList = $icons
 function Set-Icon($node, [string]$key) { $node.ImageKey = $key; $node.SelectedImageKey = $key }
+# changelist icon in its branch's color (main: the plain grey one)
+function ClIcon-Key([string]$base, [string]$branch) {
+    if (-not $branch -or $branch -in @('main', 'master')) { return $base }
+    $k = $base + '@' + $branch.ToLowerInvariant()
+    if (-not $icons.Images.ContainsKey($k)) {
+        $c = Branch-Color $branch $false
+        if ($base -eq 'cldef') { $c = [System.Drawing.Color]::FromArgb([int]($c.R * 0.72), [int]($c.G * 0.72), [int]($c.B * 0.72)) }
+        $icons.Images.Add($k, (New-Icon $base '' $c))
+    }
+    return $k
+}
 # Changelist rows: main text (name) + a muted part (folder, counts); the node text holds both
 function Set-Row($node, [string]$main, [string]$sub) {
     $node.Text = $main + $(if ($sub) { '   ' + $sub } else { '' })
@@ -530,7 +600,7 @@ function Begin-Busy([string]$what) {
     $busyLbl.Text = $what; $busyBar.Visible = $true; $busyLbl.Visible = $true
     if ($script:OpDepth -gt 0) { Op-Step $what }
     # actions locked; trees, panels and log stay usable (each action also refuses while one runs)
-    $tool.Enabled = $false; $btnMode.Enabled = $false
+    $tool.Enabled = $false; $modeLbl.Enabled = $false
     $form.UseWaitCursor = $true
     [System.Windows.Forms.Application]::DoEvents()
 }
@@ -538,7 +608,7 @@ function End-Busy {
     if ($script:BusyDepth -gt 0) { $script:BusyDepth-- }
     if ($script:BusyDepth -gt 0) { return }
     $busyBar.Visible = $false; $busyLbl.Visible = $false
-    $tool.Enabled = $true; $btnMode.Enabled = $true
+    $tool.Enabled = $true; $modeLbl.Enabled = $true
     $form.UseWaitCursor = $false
 }
 
@@ -692,12 +762,14 @@ $script:GroupOfpa = ($settings.groupOfpa -ne $false)
 function Build-Tree {
     if ($script:OpDepth -gt 0) { $script:TreeDirty = $true; return }
     $script:BuildCount++
+    $bsw = [Diagnostics.Stopwatch]::StartNew()
     Write-PendingFile $script:Pending; Write-ShelvedFile $script:ShelfMap
+    $tFiles = $bsw.Elapsed.TotalMilliseconds
     # keep what the user selected across rebuilds (refresh, theme, outside changes)
     $keepSel = $null; if ($tv.SelectedNode -and $tv.SelectedNode.Tag) { $t = $tv.SelectedNode.Tag; $keepSel = [string]$t.Type + '|' + $(if ($t.Type -eq 'file') { $t.Item.Path } elseif ($t.Type -eq 'cl') { $t.Name } else { [string]$t.Path + [string]$t.Cl }) }
     $script:InBuild = $true; $tv.BeginUpdate()
     $tv.Nodes.Clear()
-    $set = Pending-Set $script:Pending; $own = Owner-Index
+    $set = Pending-Set $script:Pending; $own = Owner-Index; $tPrep = $bsw.Elapsed.TotalMilliseconds
     $names = @('default') + @($script:CLs | ForEach-Object { $_.name })
     foreach ($name in $names) {
         $items = Get-CLItems $script:Pending $name $own
@@ -721,28 +793,33 @@ function Build-Tree {
         $n = [System.Windows.Forms.TreeNode]::new(($label + $count))
         $n.Tag = [pscustomobject]@{ Type = 'cl'; Name = $name; Stale = $stale.Count }
         Set-Row $n $label ($count.Trim())
-        Set-Icon $n $(if ($name -eq 'default') { 'cldef' } else { 'cl' })
+        $clBr = $(if ($name -ne 'default' -and $c -and $c.branch) { [string]$c.branch } else { [string]$script:Branch })
+        Set-Icon $n (ClIcon-Key $(if ($name -eq 'default') { 'cldef' } else { 'cl' }) $clBr)
         # OFPA actor files: one line per level instead of one per file
         $plainItems = @($items); $ofpa = @()
         if ($script:GroupOfpa) { $so = Split-Ofpa $items; $plainItems = @($so.Plain); $ofpa = @($so.Groups) }
         # a huge list freezes the TreeView (48k rows = 80 s): show the first ones, the rest stay in the changelist
-        $shown = 0
+        $shown = 0; $batch = New-Object 'System.Collections.Generic.List[System.Windows.Forms.TreeNode]'
         foreach ($p in $plainItems) {
             if ($shown -ge $script:MaxRows) {
                 $more = [System.Windows.Forms.TreeNode]::new(('+' + ($plainItems.Count - $shown) + ' more'))
                 $more.Tag = [pscustomobject]@{ Type = 'more'; Cl = $name }; $more.ForeColor = $script:Pal.Stale; $more.NodeFont = $fontUi; Set-Icon $more 'none'
+                if ($batch.Count) { $n.Nodes.AddRange($batch.ToArray()); $batch.Clear() }
                 [void]$n.Nodes.Add($more); break
             }
             $shown++
-            $k = Kind-Letter $p.Kind
-            $f = [System.Windows.Forms.TreeNode]::new($p.Path)
-            $f.Tag = [pscustomobject]@{ Type = 'file'; Item = $p; Cl = $name }
-            Set-Row $f (Path-Leaf $p.Path) (Path-Dir $p.Path); $f.ToolTipText = $p.Path
-            $f.ForeColor = $colKind[$k]
-            Set-Icon $f (Pending-IconKey $p)
-            $f.NodeFont = $fontUi
-            [void]$n.Nodes.Add($f)
+            # hot loop (thousands of rows): no helper calls, same result as Set-Row / Set-Icon / Pending-IconKey
+            $k = $script:KindCache[[string]$p.Kind]; if (-not $k) { $k = Kind-Letter $p.Kind }
+            $pp = [string]$p.Path; $ix = $pp.LastIndexOf('/')
+            $leaf = $(if ($ix -lt 0) { $pp } else { $pp.Substring($ix + 1) }); $dir = $(if ($ix -lt 0) { '' } else { $pp.Substring(0, $ix) })
+            # a name with a dot is taken as a file without asking the disk
+            $ik = 'file-' + $k; if ($leaf.IndexOf('.') -lt 0 -and [System.IO.Directory]::Exists([System.IO.Path]::Combine($script:Root, $pp.Replace('/', '\')))) { $ik = 'folder-' + $k }
+            $f = [System.Windows.Forms.TreeNode]::new($(if ($dir) { $leaf + '   ' + $dir } else { $leaf }))
+            $f.Tag = [pscustomobject]@{ Type = 'file'; Item = $p; Cl = $name; Main = $leaf; Sub = $dir }
+            $f.ToolTipText = $pp; $f.ForeColor = $colKind[$k]; $f.ImageKey = $ik; $f.SelectedImageKey = $ik; $f.NodeFont = $fontUi
+            $batch.Add($f)
         }
+        if ($batch.Count) { $n.Nodes.AddRange($batch.ToArray()); $batch.Clear() }
         foreach ($og in $ofpa) {
             $k = Kind-Letter (@($og.Items)[0].Kind); if (@($og.Items | Where-Object { (Kind-Letter $_.Kind) -ne $k }).Count) { $k = 'M' }
             $f = [System.Windows.Forms.TreeNode]::new($og.Name)
@@ -793,6 +870,7 @@ function Build-Tree {
         }
         [void]$tv.Nodes.Add($n)
     }
+    $tNodes = $bsw.Elapsed.TotalMilliseconds
     $tv.ExpandAll()
     foreach ($cn in $tv.Nodes) {
         if ($script:ClosedCLs.Contains([string]$cn.Tag.Name)) { $cn.Collapse() }
@@ -805,7 +883,9 @@ function Build-Tree {
         }
     }
     if ($tv.Nodes.Count -gt 0) { $tv.Nodes[0].EnsureVisible() }
+    $tExp = $bsw.Elapsed.TotalMilliseconds
     $tv.EndUpdate(); $script:InBuild = $false
+    Write-Timing ('build-tree parts: files ' + [int]$tFiles + ', clear+index ' + [int]($tPrep - $tFiles) + ', nodes ' + [int]($tNodes - $tPrep) + ', expand ' + [int]($tExp - $tNodes) + ', draw') ($bsw.Elapsed.TotalMilliseconds - $tExp)
 }
 
 $script:Shelves = @(); $script:ShelfMap = @{}
@@ -1079,18 +1159,40 @@ $script:ModeText = @{
 function Set-Mode([string]$state, [string]$desc) {
     $script:Mode = $state
     switch ($state) {
-        'offline' { $modeBar.BackColor = $script:Pal.offline; $modeLbl.Text = 'OFFLINE'; $btnMode.Text = 'Go online'; $btnMode.Tag = 'on'; $btnMode.Visible = -not (Safety-On) }
-        'online'  { $modeBar.BackColor = $script:Pal.online; $modeLbl.Text = 'ONLINE'; $btnMode.Text = 'Go offline'; $btnMode.Tag = 'off'; $btnMode.Visible = $true }
-        'busy'    { $modeBar.BackColor = $script:Pal.busy; $modeLbl.Text = 'BUSY'; $btnMode.Visible = $false }
-        'down'    { $modeBar.BackColor = $script:Pal.down; $modeLbl.Text = 'NO DIVERSION'; $btnMode.Text = 'Retry'; $btnMode.Tag = 'retry'; $btnMode.Visible = $true }
-        default   { $modeBar.BackColor = $script:Pal.loading; $modeLbl.Text = '...'; $btnMode.Visible = $false }
+        'offline' { $script:ModeShown = 'OFFLINE'; $script:ModeIcon = 'offline'; $modeLbl.Tag = $(if (Safety-On) { '' } else { 'on' }) }
+        'online'  { $script:ModeShown = 'ONLINE'; $script:ModeIcon = 'online'; $modeLbl.Tag = 'off' }
+        'busy'    { $script:ModeShown = 'BUSY'; $script:ModeIcon = 'busy'; $modeLbl.Tag = '' }
+        'down'    { $script:ModeShown = 'NO DIVERSION'; $script:ModeIcon = 'down'; $modeLbl.Tag = 'retry' }
+        default   { $script:ModeShown = '...'; $script:ModeIcon = 'loading'; $modeLbl.Tag = '' }
     }
+    $modeBar.BackColor = $script:Pal.Bar; $modeLine.BackColor = $script:Pal.BarLine; $modeLineTop.BackColor = $script:Pal.BarLine; $modeSep.BackColor = $script:Pal.BarLine
+    $modeDesc.ForeColor = $script:Pal.Muted
+    $tip = @{ 'on' = 'Offline: nothing syncs. Click to CONNECT (resume sync).'; 'off' = 'Online: syncing to your private workspace. Click to DISCONNECT (pause sync).'; 'retry' = 'Diversion app closed or no network. Click to RETRY.' }[[string]$modeLbl.Tag]
+    if (-not $tip) { $tip = $(if ($state -eq 'offline') { 'Offline, and Stay offline is on (Tools): dvcl goes online only for an action (Submit, Get latest...), then back.' } else { 'dvcl is working.' }) }
+    $modeTip.SetToolTip($modeLbl, $tip)
+    Paint-ModeBtn
     if (-not $desc) { $desc = $script:ModeText[$state] }
     $modeDesc.Text = $desc
     [System.Windows.Forms.Application]::DoEvents()
 }
-$btnMode.Add_Click({
-    switch ([string]$btnMode.Tag) { 'on' { Do-Sync $true } 'off' { Do-Sync $false } default { Refresh-All } }
+# the connection button: state at rest; on hover (when a click does something) the action and its result icon
+function Paint-ModeBtn {
+    $act = [string]$modeLbl.Tag
+    if ($script:ModeHover -and $act -and $modeLbl.Enabled) {
+        $modeLbl.Text = @{ 'on' = 'CONNECT'; 'off' = 'DISCONNECT'; 'retry' = 'RETRY' }[$act]
+        $script:ModeImage = $script:ConnIcons[@{ 'on' = 'online'; 'off' = 'offline'; 'retry' = 'busy' }[$act]]
+        $modeLbl.BackColor = $script:Pal.BarHover
+    } else {
+        $modeLbl.Text = $script:ModeShown; $script:ModeImage = $script:ConnIcons[[string]$script:ModeIcon]; $modeLbl.BackColor = $script:Pal.Bar
+    }
+    # wide enough for the longest word it shows (DISCONNECT / NO DIVERSION): the bar does not jump on hover
+    $modeLbl.Width = 44 + [Math]::Max([System.Windows.Forms.TextRenderer]::MeasureText('NO DIVERSION', $script:ModeFont).Width, [System.Windows.Forms.TextRenderer]::MeasureText([string]$modeLbl.Text, $script:ModeFont).Width)
+    $modeLbl.Invalidate()
+    $modeLbl.Cursor = $(if ($act) { [System.Windows.Forms.Cursors]::Hand } else { [System.Windows.Forms.Cursors]::Default })
+}
+$modeLbl.Add_Click({
+    $script:ModeHover = $false; Paint-ModeBtn
+    switch ([string]$modeLbl.Tag) { 'on' { Do-Sync $true } 'off' { Do-Sync $false } 'retry' { Refresh-All } default { } }
 })
 
 # "main @ dv.commit.52 - branch: up to date / NEW COMMITS / checked when online"
@@ -1099,16 +1201,13 @@ function Set-BranchInfo {
     $h = ''
     if ($script:Offline) { $h = '' }
     elseif ($script:Head -and $script:WsCommit) { if ($script:Head -eq $script:WsCommit) { $h = 'up to date' } else { $h = 'NEW COMMITS' } }
-    $branchLbl.Text = $script:Branch + ' @ ' + $script:WsCommit + $(if ($h) { '  -  ' + $h } else { '' })
+    $branchLbl.Text = $script:Branch + $(if ($script:WsCommit) { '  @ ' + $script:WsCommit } else { '' }) + $(if ($h) { '  -  ' + $h } else { '' })
+    $chipBox.Image = Branch-Chip $script:Branch; $modeTip.SetToolTip($chipBox, 'Branch color: ' + $script:Branch)
     if ($ddBranch) { $ddBranch.Text = 'Branch: ' + $script:Branch }
-    # the changelist list takes a soft color of its own on a job branch (none on main)
-    $tint = Branch-Tint $script:Branch $script:Pal.Input $script:Dark
-    if ($tv.BackColor.ToArgb() -ne $tint.ToArgb()) { $tv.BackColor = $tint; $tv.Invalidate() }
+    # the changelists keep the normal background: their icons carry the branch color
+    if ($tv.BackColor.ToArgb() -ne $script:Pal.Input.ToArgb()) { $tv.BackColor = $script:Pal.Input; $tv.Invalidate() }
     if ($script:BrRowsShown) { Show-BranchRows }
-    $branchLbl.ForeColor = $(if ($h -like '*NEW COMMITS*') { $script:Pal.Link } else { $script:Pal.Muted })
-    # a job branch (not main) stands out: amber, bold
-    if ($script:Branch -notin @('main', 'master')) { $branchLbl.Text = 'BRANCH ' + $branchLbl.Text; $branchLbl.ForeColor = $script:Pal.offline; $branchLbl.Font = New-Object System.Drawing.Font($branchLbl.Font, [System.Drawing.FontStyle]::Bold) }
-    elseif ($branchLbl.Font.Bold) { $branchLbl.Font = New-Object System.Drawing.Font($branchLbl.Font, [System.Drawing.FontStyle]::Regular) }
+    $branchLbl.ForeColor = $(if ($h -like '*NEW COMMITS*') { $script:Pal.Link } else { $script:Pal.Fore })
 }
 
 # ---------------------------------------------------------------- refresh
@@ -1671,6 +1770,10 @@ function Do-GetLatest {
     $script:Incoming = @()
     try {
         Run-Busy { $script:Incoming = @(Incoming-Files $script:WsCommit) } 'Listing the incoming files'
+        # incoming files you also changed: Diversion merges them or marks conflicts; say so first
+        $pend = @{}; foreach ($p in @($script:Pending)) { $pend[([string]$p.Path).ToLowerInvariant()] = 1 }
+        $clash = @(@($script:Incoming) | Where-Object { $pend.ContainsKey(([string]$_).ToLowerInvariant()) })
+        if ($clash.Count -and -not (Ask-YesNo ([string]$clash.Count + " incoming file(s) also have your own changes:`r`n" + ((@($clash) | Select-Object -First 8) -join "`r`n") + $(if ($clash.Count -gt 8) { "`r`n..." } else { '' }) + "`r`n`r`nDiversion merges them or marks them as conflicts. To be safe, shelve them first.`r`n`r`nGet latest anyway?") 'Get latest')) { return }
         if (-not (Ue-Prepare $script:Incoming 'Get latest')) { return }
         try {
             Run-Busy { Get-Latest; Say ("Got " + $script:Incoming.Count + " changed file(s). Your pending changes were kept.") 'Gray' } 'Getting latest'
@@ -2332,7 +2435,7 @@ function Ensure-Ui {
 function Theme-Walk($root) {
     $P = $script:Pal; $d = $script:Dark; $ui = Ensure-Ui
     foreach ($c in @($root) + @(Get-Descendants $root)) {
-        if ($c -eq $modeBar -or $c -eq $modeFlow -or $c -is [System.Windows.Forms.ProgressBar] -or $c -is [System.Windows.Forms.PictureBox]) { continue }
+        if ($c -eq $modeBar -or $c -eq $modeFlow -or $c -eq $modeLbl -or $c -eq $modeLine -or $c -eq $modeLineTop -or $c -eq $modeSep -or $c -eq $modeDesc -or $c -is [System.Windows.Forms.ProgressBar] -or $c -is [System.Windows.Forms.PictureBox]) { continue }
         if ($c -is [System.Windows.Forms.TreeView] -or $c -is [System.Windows.Forms.ListView] -or $c -is [System.Windows.Forms.CheckedListBox] -or ($c -is [System.Windows.Forms.TextBox])) {
             $c.BackColor = $(if ($c -eq $logBox) { $P.Log } else { $P.Input }); $c.ForeColor = $P.Fore
             if ($c -is [System.Windows.Forms.TreeView]) { $c.LineColor = $P.Muted }
@@ -2811,6 +2914,10 @@ function Run-GuiSelfCheck {
         if ($brBak) { [System.IO.File]::WriteAllBytes($brCf, $brBak) } else { Remove-Item -LiteralPath $brCf -ErrorAction SilentlyContinue }
         C 'branch switch: checklist dialog and checks in place' ((Get-Command Show-SwitchCheck -ErrorAction SilentlyContinue) -and (Get-Command Get-SwitchCheck -ErrorAction SilentlyContinue) -and $lvBr.Columns[4].Text -eq 'Workspaces on it')
         C 'submitted: Workspace column (from the [ws: ...] line dvcl adds)' ($vSub.List.Columns[3].Text -eq 'Workspace' -and $vSub.List.Columns[4].Text -eq 'Description')
+        C 'changelists: icon in the branch color (main grey), list background plain' ((ClIcon-Key 'cl' 'main') -eq 'cl' -and (ClIcon-Key 'cl' 'rural') -eq 'cl@rural' -and $icons.Images.ContainsKey('cl@rural') -and (ClIcon-Key 'cldef' 'Rural') -eq 'cldef@rural' -and $tv.BackColor.ToArgb() -eq $script:Pal.Input.ToArgb())
+        $script:ModeHover = $true; Paint-ModeBtn; $hv = $modeLbl.Text; $script:ModeHover = $false; Paint-ModeBtn
+        $want = @{ 'on' = 'CONNECT'; 'off' = 'DISCONNECT'; 'retry' = 'RETRY'; '' = $script:ModeShown }[[string]$modeLbl.Tag]
+        C 'state bar: grey section, connection icon, hover shows what a click does' ($modeBar.BackColor.ToArgb() -eq $script:Pal.Bar.ToArgb() -and $script:ModeImage -and $hv -eq $want -and $modeLbl.Text -eq $script:ModeShown -and $chipBox.Image) ($hv + ' / ' + $modeLbl.Text + ' / tag ' + [string]$modeLbl.Tag)
         C 'branch: shown in the title (taskbar) and the Branch menu' (($script:Branch -eq '' -or ($form.Text -like ('dvcl `[' + $script:Branch + '`]*') -and $ddBranch.Text -eq ('Branch: ' + $script:Branch)))) ($form.Text + ' | ' + $ddBranch.Text)
         Dock-Pad 'pending' 'bottom'; Dock-Pad 'submitted' 'bottom'; [System.Windows.Forms.Application]::DoEvents()
         $f1 = $split.Panel2.Contains($tv) -and $main.Panel2Collapsed
@@ -2852,7 +2959,7 @@ function Run-GuiSelfCheck {
         C 'icons: changelist rows have the changelist icon' (@($tv.Nodes | Where-Object { $_.ImageKey -notin 'cl', 'cldef' }).Count -eq 0)
         C 'layout: path bars present' ($tabLocal.Contains($barLocal.Box) -and $tabDepot.Contains($barDepot.Box))
         C 'toolbar: Get latest + Tools + Locks' ((@($tool.Items | Where-Object { $_.Text -like 'Get latest*' -or $_.Text -in 'Tools', 'Locks' })).Count -eq 3)
-        C 'state bar: label and button match the state' ((($script:Offline -and $modeLbl.Text -eq 'OFFLINE' -and $btnMode.Text -eq 'Go online') -or (-not $script:Offline -and $modeLbl.Text -eq 'ONLINE' -and $btnMode.Text -eq 'Go offline')) -or $script:Mode -eq 'down') ($modeLbl.Text + ' / ' + $btnMode.Text)
+        C 'state bar: label and button match the state' ((($script:Offline -and $modeLbl.Text -eq 'OFFLINE' -and [string]$modeLbl.Tag -in @('on', '')) -or (-not $script:Offline -and $modeLbl.Text -eq 'ONLINE' -and [string]$modeLbl.Tag -eq 'off')) -or $script:Mode -eq 'down') ($modeLbl.Text + ' / ' + [string]$modeLbl.Tag)
         [void]$r.Add('INFO  state bar: ' + $modeLbl.Text + ' | ' + $modeDesc.Text + ' | ' + $branchLbl.Text)
         # another dvcl (command line, another session) online right now: the workspace state is
         # changing under this check, the offline / online round trip is skipped
@@ -3027,7 +3134,7 @@ function Run-GuiSelfCheck {
         $fw = Ensure-Native 'DvclNative.FolderWatch' 'dvclwatch' $script:FsSource
         C 'up to date by itself: folder watcher compiled, filters off the window thread' ($fw -and [DvclNative.FolderWatch]::IsNoise('g\Saved\Logs\a.log', [string[]]$script:FsNoise) -and -not [DvclNative.FolderWatch]::IsNoise('g\Content\A.uasset', [string[]]$script:FsNoise))
         C 'legend: on the Changelists tab, not above the list' ($script:LegendTip -and $script:LegendTip.OwnerDraw -and $padPending.Controls.Count -eq 1)
-        C 'stay offline: on by default, in Tools, Go online hidden while offline' ((Safety-On) -and @($ddTools.DropDownItems | Where-Object { $_.Text -eq 'Stay offline (safety)' }).Count -eq 1 -and (-not $script:Offline -or -not $btnMode.Visible))
+        C 'stay offline: on by default, in Tools, Go online hidden while offline' ((Safety-On) -and @($ddTools.DropDownItems | Where-Object { $_.Text -eq 'Stay offline (safety)' }).Count -eq 1 -and (-not $script:Offline -or -not [string]$modeLbl.Tag))
         $fws = @(Find-Workspaces)
         C 'setup: workspaces found on this PC include this one, not the user folder' (@($fws | Where-Object { $_ -ieq $script:Root }).Count -eq 1 -and @($fws | Where-Object { $_ -ieq $env:USERPROFILE }).Count -eq 0) ([string]$fws.Count)
         C 'setup: Diversion confirms this workspace' ((Test-DvWorkspace $script:Root) -eq 'ok')
@@ -3075,7 +3182,11 @@ function Show-FromTray {
     if ($form.WindowState -eq 'Minimized') { $form.WindowState = 'Normal' }
     $form.Activate(); $form.BringToFront()
 }
-function Exit-Dvcl { $script:ReallyExit = $true; $form.Close() }
+function Exit-Dvcl {
+    # quitting in the middle of an action (submit, switch...) can leave sync online: ask first
+    if (($script:OpDepth -gt 0 -or $script:Busy) -and -not (Ask-YesNo "An action is still running. Quit anyway?`r`nSync may stay online until dvcl runs again." 'Exit dvcl')) { return }
+    $script:ReallyExit = $true; $form.Close()
+}
 $script:SelfPath = $PSCommandPath
 function Restart-Dvcl { Say ('dvcl ' + (Get-LocalVersion) + ' on disk: restarting') 'Gray'; $script:Restart = $true; Exit-Dvcl }
 [void](Add-MenuItem $trayMenu 'Open dvcl' { Show-FromTray })
