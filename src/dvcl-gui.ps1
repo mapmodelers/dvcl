@@ -210,8 +210,27 @@ $modeDesc = New-Object System.Windows.Forms.Label
 $modeDesc.AutoSize = $true; $modeDesc.Margin = New-Object System.Windows.Forms.Padding(14, 10, 4, 0)
 $branchLbl = New-Object System.Windows.Forms.Label
 $branchLbl.AutoSize = $true; $branchLbl.Margin = New-Object System.Windows.Forms.Padding(2, 10, 4, 0)
-$chipBox = New-Object System.Windows.Forms.PictureBox; $chipBox.Size = New-Object System.Drawing.Size(14, 14); $chipBox.BackColor = [System.Drawing.Color]::Transparent; $chipBox.Margin = New-Object System.Windows.Forms.Padding(0, 11, 2, 0)
-$branchLbl.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
+# the branch the workspace is on: a pill tinted with the branch's color (grey for main), branch icon + name
+$chipBox = New-Object System.Windows.Forms.PictureBox; $chipBox.Size = New-Object System.Drawing.Size(90, 24); $chipBox.BackColor = [System.Drawing.Color]::Transparent; $chipBox.Margin = New-Object System.Windows.Forms.Padding(0, 6, 4, 0)
+$script:ChipBranch = ''; $script:ChipFont = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
+function Mix-Color($a, $b, [double]$k) { return [System.Drawing.Color]::FromArgb([int]($a.R + ($b.R - $a.R) * $k), [int]($a.G + ($b.G - $a.G) * $k), [int]($a.B + ($b.B - $a.B) * $k)) }
+$chipBox.Add_Paint({
+    param($s, $e)
+    $br = [string]$script:ChipBranch; if (-not $br) { return }
+    $g = $e.Graphics; $g.SmoothingMode = 'AntiAlias'
+    $bc = Branch-Color $br $script:Dark
+    $fill = Mix-Color $script:Pal.Bar $bc $(if ($script:Dark) { 0.32 } else { 0.28 })
+    $r = New-Object System.Drawing.RectangleF(0.5, 0.5, ($s.Width - 1.5), ($s.Height - 1.5)); $rad = 10
+    $gp = New-Object System.Drawing.Drawing2D.GraphicsPath
+    $gp.AddArc($r.X, $r.Y, $rad, $rad, 180, 90); $gp.AddArc($r.Right - $rad, $r.Y, $rad, $rad, 270, 90); $gp.AddArc($r.Right - $rad, $r.Bottom - $rad, $rad, $rad, 0, 90); $gp.AddArc($r.X, $r.Bottom - $rad, $rad, $rad, 90, 90); $gp.CloseFigure()
+    $g.FillPath((New-Object System.Drawing.SolidBrush($fill)), $gp); $g.DrawPath((New-Object System.Drawing.Pen($bc, 1)), $gp)
+    # branch icon in the branch color
+    $p = New-Object System.Drawing.Pen($bc, 1.5); $b = New-Object System.Drawing.SolidBrush($bc); $y0 = [int](($s.Height - 14) / 2)
+    $g.DrawLine($p, 9.5, ($y0 + 2.5), 9.5, ($y0 + 11.5)); $g.DrawBezier($p, 9.5, ($y0 + 9), 9.5, ($y0 + 6.5), 16.5, ($y0 + 7.5), 16.5, ($y0 + 4.5))
+    $g.FillEllipse($b, 7.5, ($y0 + 0.5), 4, 4); $g.FillEllipse($b, 7.5, ($y0 + 9.5), 4, 4); $g.FillEllipse($b, 14.5, ($y0 + 2), 4, 4)
+    [System.Windows.Forms.TextRenderer]::DrawText($g, $br, $script:ChipFont, (New-Object System.Drawing.Rectangle(24, 0, ($s.Width - 26), $s.Height)), $script:Pal.Fore, ([System.Windows.Forms.TextFormatFlags]::VerticalCenter -bor [System.Windows.Forms.TextFormatFlags]::Left -bor [System.Windows.Forms.TextFormatFlags]::NoPrefix))
+})
+$branchLbl.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Regular)
 # Shown while dvcl works (loading, scanning, going online...): the rest of the window is greyed out
 $busyBar = New-Object System.Windows.Forms.ProgressBar
 $busyBar.Style = 'Marquee'; $busyBar.MarqueeAnimationSpeed = 30; $busyBar.Width = 140; $busyBar.Height = 16
@@ -1196,8 +1215,10 @@ function Set-BranchInfo {
     $h = ''
     if ($script:Offline) { $h = '' }
     elseif ($script:Head -and $script:WsCommit) { if ($script:Head -eq $script:WsCommit) { $h = 'up to date' } else { $h = 'NEW COMMITS' } }
-    $branchLbl.Text = $script:Branch + $(if ($script:WsCommit) { '  @ ' + $script:WsCommit } else { '' }) + $(if ($h) { '  -  ' + $h } else { '' })
-    $chipBox.Image = Branch-Chip $script:Branch; $modeTip.SetToolTip($chipBox, 'Branch: ' + $script:Branch)
+    $branchLbl.Text = $(if ($script:WsCommit) { '@ ' + $script:WsCommit } else { '' }) + $(if ($h) { '  -  ' + $h } else { '' })
+    $script:ChipBranch = $script:Branch
+    $chipBox.Width = 34 + [System.Windows.Forms.TextRenderer]::MeasureText($script:Branch, $script:ChipFont).Width; $chipBox.Invalidate()
+    $modeTip.SetToolTip($chipBox, 'The workspace is on branch ' + $script:Branch + ' (synced to it). Its color tints this bar chip.')
     if ($ddBranch) { $ddBranch.Text = 'Branch: ' + $script:Branch }
     # the changelists keep the normal background: their icons carry the branch color
     if ($tv.BackColor.ToArgb() -ne $script:Pal.Input.ToArgb()) { $tv.BackColor = $script:Pal.Input; $tv.Invalidate() }
@@ -2917,7 +2938,7 @@ function Run-GuiSelfCheck {
         C 'changelists: grey icons, [branch] after the number, default first, plain background' ($cln.Count -ge 1 -and @($cln | Where-Object { $_.ImageKey -notin 'cl', 'cldef' }).Count -eq 0 -and $cln[0].Tag.Name -eq 'default' -and (-not $script:Branch -or [string]$cln[0].Tag.Main -like ('default  `[' + $script:Branch + '`]')) -and $tv.BackColor.ToArgb() -eq $script:Pal.Input.ToArgb()) (($cln | Select-Object -First 3 | ForEach-Object { [string]$_.Tag.Main }) -join ' | ')
         $script:ModeHover = $true; Paint-ModeBtn; $hv = $modeLbl.Text; $script:ModeHover = $false; Paint-ModeBtn
         $want = @{ 'on' = 'CONNECT'; 'off' = 'DISCONNECT'; 'retry' = 'RETRY'; '' = $script:ModeShown }[[string]$modeLbl.Tag]
-        C 'state bar: grey section, connection icon, hover shows what a click does' ($modeBar.BackColor.ToArgb() -eq $script:Pal.Bar.ToArgb() -and $script:ModeImage -and $hv -eq $want -and $modeLbl.Text -eq $script:ModeShown -and $chipBox.Image) ($hv + ' / ' + $modeLbl.Text + ' / tag ' + [string]$modeLbl.Tag)
+        C 'state bar: grey section, connection icon, hover shows what a click does' ($modeBar.BackColor.ToArgb() -eq $script:Pal.Bar.ToArgb() -and $script:ModeImage -and $hv -eq $want -and $modeLbl.Text -eq $script:ModeShown -and $script:ChipBranch -eq $script:Branch -and $chipBox.Width -gt 34) ($hv + ' / ' + $modeLbl.Text + ' / tag ' + [string]$modeLbl.Tag)
         C 'branch: shown in the title (taskbar) and the Branch menu' (($script:Branch -eq '' -or ($form.Text -like ('dvcl `[' + $script:Branch + '`]*') -and $ddBranch.Text -eq ('Branch: ' + $script:Branch)))) ($form.Text + ' | ' + $ddBranch.Text)
         Dock-Pad 'pending' 'bottom'; Dock-Pad 'submitted' 'bottom'; [System.Windows.Forms.Application]::DoEvents()
         $f1 = $split.Panel2.Contains($tv) -and $main.Panel2Collapsed

@@ -2,6 +2,10 @@
 
 Versions follow [semver](https://semver.org). Tags: `vX.Y.Z`.
 
+## 0.37.1 - 2026-11-21
+
+- State bar: the branch the workspace is on shows as a pill tinted with the branch's color (grey for main), branch icon + name; then its commit. Branch colors softer.
+
 ## 0.37.0 - 2026-11-21
 
 - Changelists grouped by branch: default, then the ones of the branch the workspace is on, then the other branches'. Each row: "#12  [branch]  name" in bold, the description in regular text, then the counts.

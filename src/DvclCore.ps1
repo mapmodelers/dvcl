@@ -627,7 +627,7 @@ function Graph-Data([string[]]$logLines, $ids, [string]$current) {
 function Branch-Color([string]$branch, [bool]$dark) {
     if (-not $branch -or $branch -in @('main', 'master')) { return $(if ($dark) { [System.Drawing.Color]::FromArgb(170, 170, 170) } else { [System.Drawing.Color]::FromArgb(110, 110, 110) }) }
     $h = 0; foreach ($ch in $branch.ToLowerInvariant().ToCharArray()) { $h = ($h * 31 + [int]$ch) % 360 }
-    $s = 0.7; $v = 0.85; $f = ($h / 60.0) - [Math]::Floor($h / 60.0); $p = $v * (1 - $s); $q = $v * (1 - $s * $f); $u = $v * (1 - $s * (1 - $f))
+    $s = 0.45; $v = $(if ($dark) { 0.85 } else { 0.72 }); $f = ($h / 60.0) - [Math]::Floor($h / 60.0); $p = $v * (1 - $s); $q = $v * (1 - $s * $f); $u = $v * (1 - $s * (1 - $f))
     switch ([int][Math]::Floor($h / 60.0) % 6) { 0 { $rgb = $v, $u, $p } 1 { $rgb = $q, $v, $p } 2 { $rgb = $p, $v, $u } 3 { $rgb = $p, $q, $v } 4 { $rgb = $u, $p, $v } default { $rgb = $v, $p, $q } }
     return [System.Drawing.Color]::FromArgb([int](255 * $rgb[0]), [int](255 * $rgb[1]), [int](255 * $rgb[2]))
 }
