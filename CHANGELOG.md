@@ -2,6 +2,10 @@
 
 Versions follow [semver](https://semver.org). Tags: `vX.Y.Z`.
 
+## 0.29.1 - 2026-11-21
+
+- Unreal Changelists window: a selected changelist or file stays selected (the dvcl link rebuilt its changelist objects every few seconds, Unreal took them for new rows). Routine status refreshes reread dvcl's files only when they changed. dvcl link 7: update the link once (Tools > Unreal link > Update, Unreal closed).
+
 ## 0.29.0 - 2026-11-21
 
 - Unreal revision control "dvcl" (dvcl link 6): dvcl's changelists in Unreal's Changelists window (Window > Revision Control > Changelists): #number, name, description, their files. New, delete, edit description, move files between changelists, submit a changelist and revert files from there; dvcl and Unreal stay in step (both read .dvcl\changelists.json). Update the link once (Tools > Unreal link > Update, Unreal closed).

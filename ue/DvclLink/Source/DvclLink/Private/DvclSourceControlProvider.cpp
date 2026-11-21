@@ -108,11 +108,23 @@ TMap<ISourceControlProvider::EStatus, FString> FDvclSourceControlProvider::GetSt
 
 void FDvclSourceControlProvider::ReadChangelists()
 {
+	// the same objects are kept from one read to the next: Unreal's Changelists window knows its rows
+	// by these objects, a new object would drop the selection
+	TMap<int32, TSharedRef<FDvclChangelistState, ESPMode::ThreadSafe>> Old = MoveTemp(ClStates);
 	ClStates.Reset();
 	ClOrder.Reset();
 	Owner.Reset();
-	ClStates.Add(0, MakeShared<FDvclChangelistState, ESPMode::ThreadSafe>(0, FString(TEXT("default")), FString()));
-	ClOrder.Add(0);
+	auto Keep = [this, &Old](int32 Id, const FString& Name, const FString& Description)
+	{
+		const TSharedRef<FDvclChangelistState, ESPMode::ThreadSafe>* Found = Old.Find(Id);
+		TSharedRef<FDvclChangelistState, ESPMode::ThreadSafe> State = Found != nullptr ? *Found : MakeShared<FDvclChangelistState, ESPMode::ThreadSafe>(Id, Name, Description);
+		State->Name = Name;
+		State->Description = Description;
+		State->Files.Reset();
+		ClStates.Add(Id, State);
+		ClOrder.Add(Id);
+	};
+	Keep(0, FString(TEXT("default")), FString());
 	FString Text;
 	if (ClFile.IsEmpty() || !FFileHelper::LoadFileToString(Text, *ClFile))
 	{
@@ -146,8 +158,7 @@ void FDvclSourceControlProvider::ReadChangelists()
 		FString Description;
 		Cl->TryGetStringField(TEXT("name"), Name);
 		Cl->TryGetStringField(TEXT("desc"), Description);
-		ClStates.Add(Id, MakeShared<FDvclChangelistState, ESPMode::ThreadSafe>(Id, Name, Description));
-		ClOrder.Add(Id);
+		Keep(Id, Name, Description);
 		const TArray<TSharedPtr<FJsonValue>>* Files = nullptr;
 		if (Cl->TryGetArrayField(TEXT("files"), Files) && Files != nullptr)
 		{
@@ -179,6 +190,8 @@ bool FDvclSourceControlProvider::Reload(bool bForce)
 	ClStamp = CStamp;
 	// the changelists file says which changelist owns a file; the pending list says what changed
 	ReadChangelists();
+	// unchanged files keep their state object too (same reason)
+	TMap<FString, TSharedRef<FDvclSourceControlState, ESPMode::ThreadSafe>> OldPending = MoveTemp(Pending);
 	Pending.Reset();
 	TArray<FString> Lines;
 	if (FFileHelper::LoadFileToStringArray(Lines, *PendingFile))
@@ -204,7 +217,10 @@ bool FDvclSourceControlProvider::Reload(bool bForce)
 				Id = 0;
 			}
 			const TSharedRef<FDvclChangelistState, ESPMode::ThreadSafe>& Cl = ClStates.FindChecked(Id);
-			const TSharedRef<FDvclSourceControlState, ESPMode::ThreadSafe> State = MakeShared<FDvclSourceControlState, ESPMode::ThreadSafe>(Full, FChar::ToUpper(Parts[0][0]), Cl->GetDisplayText().ToString());
+			const TCHAR Kind = FChar::ToUpper(Parts[0][0]);
+			const FString Label = Cl->GetDisplayText().ToString();
+			const TSharedRef<FDvclSourceControlState, ESPMode::ThreadSafe>* Was = OldPending.Find(FileKey);
+			const TSharedRef<FDvclSourceControlState, ESPMode::ThreadSafe> State = (Was != nullptr && (*Was)->Kind == Kind && (*Was)->Changelist == Label) ? *Was : MakeShared<FDvclSourceControlState, ESPMode::ThreadSafe>(Full, Kind, Label);
 			Pending.Add(FileKey, State);
 			Cl->Files.Add(State);
 		}
@@ -229,7 +245,7 @@ ECommandResult::Type FDvclSourceControlProvider::GetState(const TArray<FString>&
 {
 	if (InStateCacheUsage == EStateCacheUsage::ForceUpdate)
 	{
-		Reload(true);
+		Reload(false);
 	}
 	for (const FString& File : SourceControlHelpers::AbsoluteFilenames(InFiles))
 	{
@@ -251,7 +267,7 @@ ECommandResult::Type FDvclSourceControlProvider::GetState(const TArray<FSourceCo
 {
 	if (InStateCacheUsage == EStateCacheUsage::ForceUpdate)
 	{
-		Reload(true);
+		Reload(false);
 	}
 	for (const FSourceControlChangelistRef& Changelist : InChangelists)
 	{
@@ -267,7 +283,7 @@ TArray<FSourceControlChangelistRef> FDvclSourceControlProvider::GetChangelists(E
 {
 	if (InStateCacheUsage == EStateCacheUsage::ForceUpdate)
 	{
-		Reload(true);
+		Reload(false);
 	}
 	TArray<FSourceControlChangelistRef> Result;
 	for (const int32 Id : ClOrder)
@@ -326,8 +342,11 @@ ECommandResult::Type FDvclSourceControlProvider::Execute(const FSourceControlOpe
 	}
 	else if (Op == "UpdateStatus" || Op == "UpdateChangelistsStatus")
 	{
-		Reload(true);
-		OnStateChanged.Broadcast();
+		// Unreal asks this every few seconds: reread only if dvcl changed its files
+		if (Reload(false))
+		{
+			OnStateChanged.Broadcast();
+		}
 	}
 	else if (Op == "CheckOut" || Op == "MarkForAdd" || Op == "RevertUnchanged")
 	{
