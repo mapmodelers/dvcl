@@ -1268,7 +1268,7 @@ function Show-Pending($st, [bool]$unreachable) {
     $sync = 'sync on'
     if ($st.Syncing) { $sync = 'sync on - Diversion still syncing, list updates by itself' }
     if ($script:Offline) { $sync = 'OFFLINE' }
-    $statusLbl.Text = $script:Root + '    ' + $st.Files.Count + ' pending    dvcl ' + (Get-LocalVersion)
+    $statusLbl.Text = $script:Root + $(if (Ws-Name) { '  (' + (Ws-Name) + ')' } else { '' }) + '    ' + $st.Files.Count + ' pending    dvcl ' + (Get-LocalVersion)
     $form.Text = 'dvcl ' + $(if ($script:Branch) { '[' + $script:Branch + '] ' } else { '' }) + '- ' + (Split-Path -Leaf $script:Root) + '   (experimental)'
     if (-not $script:FirstShown) { $script:FirstShown = $true; Write-Timing 'script-start-to-pending-list' $script:Clock.Elapsed.TotalMilliseconds }
     if ($st.Syncing -and -not $script:Paused -and -not $script:SyncMode -and $script:OpDepth -eq 0) { $pollTimer.Start() }
@@ -1645,17 +1645,49 @@ function Ask-Branch([string]$title, [string]$prompt, [string]$default) {
     Add-Type -AssemblyName Microsoft.VisualBasic
     return ([Microsoft.VisualBasic.Interaction]::InputBox($prompt, $title, $default)).Trim()
 }
+# Checklist before a branch switch: Switch is enabled only when nothing blocks (Unreal closed, no
+# pending file, no other dvcl working online); "Check again" after closing things
+function Show-SwitchCheck([string]$name) {
+    $d = New-Object System.Windows.Forms.Form
+    $d.Text = 'Switch branch'; $d.StartPosition = 'CenterParent'; $d.FormBorderStyle = 'FixedDialog'; $d.MinimizeBox = $false; $d.MaximizeBox = $false
+    $d.ClientSize = New-Object System.Drawing.Size(680, 300); $d.Font = $fontUi
+    $tb = New-Object System.Windows.Forms.TextBox; $tb.Multiline = $true; $tb.ReadOnly = $true; $tb.Dock = 'Fill'; $tb.ScrollBars = 'Vertical'
+    $bar = New-Object System.Windows.Forms.FlowLayoutPanel; $bar.Dock = 'Bottom'; $bar.Height = 40; $bar.FlowDirection = 'RightToLeft'
+    $bCancel = New-Object System.Windows.Forms.Button; $bCancel.Text = 'Cancel'; $bCancel.AutoSize = $true; $bCancel.DialogResult = 'Cancel'
+    $bGo = New-Object System.Windows.Forms.Button; $bGo.Text = 'Switch'; $bGo.AutoSize = $true
+    $bAgain = New-Object System.Windows.Forms.Button; $bAgain.Text = 'Check again'; $bAgain.AutoSize = $true
+    $bar.Controls.Add($bCancel); $bar.Controls.Add($bGo); $bar.Controls.Add($bAgain)
+    $d.Controls.Add($tb); $d.Controls.Add($bar); $d.CancelButton = $bCancel
+    $script:SwName = $name
+    $fill = {
+        $l = New-Object System.Collections.Generic.List[string]
+        $l.Add("Switch the workspace from '" + $script:Branch + "' to '" + $script:SwName + "'."); $l.Add('')
+        try {
+            $c = Get-SwitchCheck $script:SwName $false
+            foreach ($b in @($c.Block)) { $l.Add('[X]  ' + $b) }
+            foreach ($w in @($c.Warn)) { $l.Add('[!]  ' + $w) }
+            if (@($c.Block).Count -eq 0) { $l.Add('[OK] Unreal closed, no pending file, no other dvcl working online.') }
+            $bGo.Enabled = (@($c.Block).Count -eq 0)
+        } catch { $l.Add('[X]  ' + $_.Exception.Message); $bGo.Enabled = $false }
+        $l.Add(''); $l.Add('Agents working in this workspace should be idle. Diversion checks again once online; nothing is switched if it lists pending files.')
+        $tb.Text = $l -join "`r`n"; $tb.SelectionLength = 0
+    }
+    $bAgain.Add_Click($fill)
+    $bGo.Add_Click({ $d.DialogResult = 'OK'; $d.Close() })
+    & $fill
+    Theme-Walk $d
+    return ($d.ShowDialog($form) -eq 'OK')
+}
 function Do-BranchSwitch([string]$name = '') {
     if (Op-Busy) { return }
     if ($name) {
         if ($name -ieq $script:Branch) { return }
-        if (-not (Ask-YesNo ("Switch the workspace from '" + $script:Branch + "' to '" + $name + "'?") 'Switch branch')) { return }
     } else {
         $list = @(); Run-Busy { $script:BrList = @(Get-Branches) } 'Listing branches'; $list = @($script:BrList)
         $name = Ask-Branch 'Switch branch' ("Branches: " + ($list -join ', ') + "`r`n`r`nSwitch the workspace to (now on " + $script:Branch + "):") ''
     }
-    if (-not $name) { return }
-    try { Assert-CanSwitch $name $false } catch { [void][System.Windows.Forms.MessageBox]::Show($form, $_.Exception.Message, 'Switch branch', 'OK', 'Warning'); return }
+    if (-not $name -or $name -ieq $script:Branch) { return }
+    if (-not (Show-SwitchCheck $name)) { return }
     $script:BrName = $name
     Begin-Op ('Switching to branch ' + $name)
     try {
@@ -2731,6 +2763,7 @@ function Run-GuiSelfCheck {
         C 'branch: no tint on main, a soft one per job branch (same name, same color)' ((Branch-Tint 'main' $tb $false).ToArgb() -eq $tb.ToArgb() -and (Branch-Tint 'rural' $tb $false).ToArgb() -ne $tb.ToArgb() -and (Branch-Tint 'rural' $tb $false).ToArgb() -eq (Branch-Tint 'Rural' $tb $false).ToArgb() -and (Branch-Tint 'rural' $tb $false).R -gt 200)
         Set-ColShown $lvGr 'graph' 4 $false; $hc = ($lvGr.Columns[4].Width -eq 0 -and @($script:HiddenCols['graph']) -contains 4); Set-ColShown $lvGr 'graph' 4 $true
         C 'columns: a column hidden / shown again from the header menu, remembered in the settings' ($hc -and $lvGr.Columns[4].Width -gt 0 -and @($script:HiddenCols['graph']) -notcontains 4 -and $vSub.List.ContextMenuStrip -and $lvBr.ContextMenuStrip -and (Settings-Json '' $null) -like '*"cols"*')
+        C 'branch switch: checklist dialog and checks in place' ((Get-Command Show-SwitchCheck -ErrorAction SilentlyContinue) -and (Get-Command Get-SwitchCheck -ErrorAction SilentlyContinue) -and $lvBr.Columns[4].Text -eq 'Workspaces on it')
         C 'submitted: Workspace column (from the [ws: ...] line dvcl adds)' ($vSub.List.Columns[3].Text -eq 'Workspace' -and $vSub.List.Columns[4].Text -eq 'Description')
         C 'branch: shown in the title (taskbar) and the Branch menu' (($script:Branch -eq '' -or ($form.Text -like ('dvcl `[' + $script:Branch + '`]*') -and $ddBranch.Text -eq ('Branch: ' + $script:Branch)))) ($form.Text + ' | ' + $ddBranch.Text)
         Dock-Pad 'pending' 'bottom'; Dock-Pad 'submitted' 'bottom'; [System.Windows.Forms.Application]::DoEvents()

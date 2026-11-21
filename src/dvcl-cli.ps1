@@ -287,6 +287,8 @@ function Run-SelfTest {
             $sw1 = ''; try { Assert-CanSwitch 'rural' $false } catch { $sw1 = $_.Exception.Message }
             $sw2 = 'x'; try { Assert-CanSwitch 'rural' $true; $sw2 = '' } catch { $sw2 = $_.Exception.Message }
             $sw3 = ''; try { Assert-CanSwitch 'main' $true } catch { $sw3 = $_.Exception.Message }
+            $swc = Get-SwitchCheck 'rural' $false
+            T "switch check: pending files block, reported per changelist" (@($swc.Block).Count -ge 1 -and (@($swc.Block) -join ' ') -like '*pending file*') ((@($swc.Block) + @($swc.Warn)) -join ' | ')
             Set-OfflineFlag $false; $script:Branch = ''; Set-Item function:script:Find-UeEngine $origUe
             T "branch switch: refused with pending files (counts per changelist), allowed with --take, not to the branch it is on" ($sw1 -like '*pending file(s)*--take*' -and $sw2 -eq '' -and $sw3 -like '*already on*') ($sw1 + ' | ' + $sw2 + ' | ' + $sw3)
             $id = Shelve-Local 'my work' @($off | Where-Object { $_.Path -like '*.uasset' })

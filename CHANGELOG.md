@@ -2,6 +2,12 @@
 
 Versions follow [semver](https://semver.org). Tags: `vX.Y.Z`.
 
+## 0.34.0 - 2026-11-21
+
+- Branch switch: a checklist first (Unreal closed, no pending file, no other dvcl working online, editors that may hold workspace files); Switch is enabled only when nothing blocks, "Check again" after closing things.
+- Branch switch: once online, Diversion's own pending list must be empty too, else nothing is switched; after the switch dvcl checks the workspace is on the branch and reports anything left pending.
+- Status bar: this workspace's name ("name @ computer").
+
 ## 0.33.1 - 2026-11-21
 
 - Branches panel: "Workspaces on it" column, which of your workspaces (this computer, your others) is on each branch.

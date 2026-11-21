@@ -516,23 +516,44 @@ function ClBranch-Problem($c, [string]$current) {
 }
 # Before a branch switch (checked offline, before going online). Pending work is never mixed in silently:
 # with pending files it refuses, unless $take (Diversion takes them along). Unreal must be closed.
-function Assert-CanSwitch([string]$name, [bool]$take) {
+# Before a branch switch: what blocks it (Unreal open, pending files, another dvcl working online) and
+# warnings (editors that may hold workspace files). Block empty = safe to switch.
+$script:WorkspaceApps = @('blender', 'Adobe Substance 3D Painter', 'Adobe Substance 3D Designer', 'Substance Painter', 'Substance Designer', '3dsmax', 'maya', 'houdini', 'houdinifx', 'RizomUV', 'Photoshop')
+function Get-SwitchCheck([string]$name, [bool]$take) {
     if (-not $name) { Fail "usage: dvcl branch switch <branch> [--take]" }
     if ((Current-Branch) -ieq $name) { Fail ("already on branch '" + $name + "'") }
-    if (Find-UeEngine) { Fail "Unreal is open: close it first (switching branch rewrites the files it has loaded)" }
+    $block = New-Object System.Collections.Generic.List[string]; $warn = New-Object System.Collections.Generic.List[string]
+    if (Find-UeEngine) { $block.Add("Unreal is open: save and close it (switching branch rewrites the files it has loaded)") }
+    $o = Get-OtherOnline; if ($o) { $block.Add("another dvcl is working online (" + [string]$o.what + "): wait until it is done") }
     $files = @(Get-OfflinePendingOrOnline)
     if ($files.Count -gt 0 -and -not $take) {
         $by = @{}
-        foreach ($p in $files) { $o = Owner-Of $p.Path; $k = $(if ($o) { '#' + $o.id + ' ' + $o.name } else { 'default' }); if (-not $by.ContainsKey($k)) { $by[$k] = 0 }; $by[$k]++ }
-        Fail ([string]$files.Count + " pending file(s) (" + ((@($by.Keys | Sort-Object | ForEach-Object { $_ + ': ' + $by[$_] })) -join ', ') + "): switching would carry them into '" + $name + "'. Submit or shelve them first (dvcl shelve <cl>), or take them along on purpose: dvcl branch switch " + $name + " --take")
+        foreach ($p in $files) { $ow = Owner-Of $p.Path; $k = $(if ($ow) { '#' + $ow.id + ' ' + $ow.name } else { 'default' }); if (-not $by.ContainsKey($k)) { $by[$k] = 0 }; $by[$k]++ }
+        $block.Add([string]$files.Count + " pending file(s) (" + ((@($by.Keys | Sort-Object | ForEach-Object { $_ + ': ' + $by[$_] })) -join ', ') + "): switching would carry them into '" + $name + "'. Submit or shelve them first (dvcl shelve <cl>), or take them along on purpose: dvcl branch switch " + $name + " --take")
     }
+    $apps = @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $script:WorkspaceApps -contains $_.ProcessName } | ForEach-Object { $_.ProcessName } | Sort-Object -Unique)
+    if ($apps.Count) { $warn.Add("open: " + ($apps -join ', ') + ": save and close them if they use files of this workspace") }
+    return [pscustomobject]@{ Block = $block.ToArray(); Warn = $warn.ToArray() }
 }
-# The switch itself (sync on). With $take, Diversion first gets the offline changes, then carries them over.
+function Assert-CanSwitch([string]$name, [bool]$take) {
+    $c = Get-SwitchCheck $name $take
+    if (@($c.Block).Count) { Fail ((@($c.Block)) -join "; ") }
+}
 function Switch-Branch([string]$name, [bool]$take) {
     if ($take) { [void](Wait-Upload) }
+    else {
+        # online now: Diversion's own list, once synced, must be empty too (the offline scan may miss some)
+        $pre = Get-Pending $true
+        if (@($pre.Files).Count -gt 0) { Fail ("Diversion lists " + @($pre.Files).Count + " pending file(s): nothing switched. Submit or shelve them first.") }
+    }
     $a = @('checkout', $name, '--ignore-shelf'); if ($take) { $a += '--take-changes' }
     $r = Invoke-Dv $a
     if ($r.Code -ne 0) { Fail ("dv checkout failed: " + ($r.Lines -join ' ')) }
+    # check the result: on the branch, and nothing unexpected pending
+    $st = $null; try { $st = Get-Pending $true } catch { Write-Log ('branch switch: status after checkout not read: ' + $_.Exception.Message) }
+    if ($st -and $st.Branch -and $st.Branch -ine $name) { Fail ("dv checkout returned, but the workspace reports branch '" + $st.Branch + "'") }
+    if ($st -and -not $take -and @($st.Files).Count -gt 0) { Say ([string]@($st.Files).Count + " file(s) pending after the switch (kept, not lost): check them before working.") 'Yellow' }
+    Write-Log ('branch switch: now on ' + $name + $(if ($st) { ', ' + @($st.Files).Count + ' pending' } else { '' }))
     $script:Branch = $name
     Say ("Workspace now on branch '" + $name + "'.") 'Green'
 }

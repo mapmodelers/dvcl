@@ -20,4 +20,7 @@ B 'Get-CLItems all changelists' { foreach ($n in @('default') + @($script:CLs | 
 B 'Kind-Letter x pending' { foreach ($p in $pend) { [void](Kind-Letter $p.Kind) } } | Out-Null
 B 'Split-Ofpa pending' { [void](Split-Ofpa $pend) } | Out-Null
 B 'gone check (baseline keys)' { [void]@($base.Keys | Where-Object { -not $now.ContainsKey($_) }) } | Out-Null
+$L.Add('         workspace name saved: [' + (Ws-Name) + ']')
+$br = B 'Branch-Rows' { @(Branch-Rows) }
+$L.Add('         branch rows: ' + ((@($br) | ForEach-Object { [string]$_.Name + ' = [' + [string]$_.Workspaces + ']' }) -join ' | '))
 [System.IO.File]::WriteAllLines($Out, [string[]]$L)
