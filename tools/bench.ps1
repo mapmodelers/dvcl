@@ -1,0 +1,23 @@
+# Where dvcl spends its time on a real workspace (read-only): bench.ps1 <workspace> <out file>
+param([string]$Ws, [string]$Out)
+$ErrorActionPreference = 'Stop'
+. (Join-Path (Split-Path -Parent $PSScriptRoot) 'src\DvclCore.ps1')
+$L = New-Object System.Collections.Generic.List[string]
+function B([string]$what, [scriptblock]$sb) { $sw = [Diagnostics.Stopwatch]::StartNew(); $r = & $sb; $L.Add(('{0,7} ms  {1}' -f [int]$sw.Elapsed.TotalMilliseconds, $what)); return $r }
+Set-DvRoot $Ws
+B 'Ensure-Scanner (load dll)' { [void](Ensure-Scanner) } | Out-Null
+$known = B 'Read-LastStatus' { Read-LastStatus }
+$base = B 'Read-Baseline' { Read-Baseline }
+$now = B 'Scan-Workspace #1' { Scan-Workspace }
+$L.Add('         scanner: ' + [DvclNative.Scanner]::Stats)
+$now = B 'Scan-Workspace #2' { Scan-Workspace }
+$L.Add('         scanner: ' + [DvclNative.Scanner]::Stats)
+B 'Load-Db' { Load-Db } | Out-Null
+$nf = 0; foreach ($c in $script:CLs) { $nf += $c.files.Count }
+$L.Add('         ' + @($script:CLs).Count + ' changelists, ' + $nf + ' changelist entries, ' + @($known).Count + ' last-status, ' + $(if ($base) { $base.Count } else { 0 }) + ' baseline')
+$pend = @($known)
+B 'Get-CLItems all changelists' { foreach ($n in @('default') + @($script:CLs | ForEach-Object { $_.name })) { [void](Get-CLItems $pend $n) } } | Out-Null
+B 'Kind-Letter x pending' { foreach ($p in $pend) { [void](Kind-Letter $p.Kind) } } | Out-Null
+B 'Split-Ofpa pending' { [void](Split-Ofpa $pend) } | Out-Null
+B 'gone check (baseline keys)' { [void]@($base.Keys | Where-Object { -not $now.ContainsKey($_) }) } | Out-Null
+[System.IO.File]::WriteAllLines($Out, [string[]]$L)

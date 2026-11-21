@@ -39,7 +39,7 @@ function Settings-Json([string]$last, $lay) {
     $b = $(if ($form.WindowState -eq 'Normal') { $form.Bounds } else { $form.RestoreBounds })
     return ([pscustomobject]@{ lastRepo = $last; w = $b.Width; h = $b.Height; x = $b.X; y = $b.Y; max = ($form.WindowState -eq 'Maximized')
         ui = $(if ($script:Dark) { 'dark' } else { 'light' }); layout = $lay
-        openShelves = @($script:OpenShelves); closedCls = @($script:ClosedCLs); groupOfpa = [bool]$script:GroupOfpa
+        openShelves = @($script:OpenShelves); closedCls = @($script:ClosedCLs); groupOfpa = [bool]$script:GroupOfpa; cols = $script:HiddenCols
         ueEngine = $(if ($script:UeEngineSeen) { [string]$script:UeEngineSeen } else { [string]$settings.ueEngine }) } | ConvertTo-Json -Depth 8)
 }
 $settings = Load-Settings
@@ -377,7 +377,7 @@ function Show-Graph {
     $script:GraphLanes = @()
     $gd = $script:GraphData; if (-not $gd) { $lvGr.Items.Clear(); return }
     $k = 0; $script:GraphLanes = @($gd.Lanes | ForEach-Object { [pscustomobject]@{ Index = $k; Name = $_.Name; Min = $_.Min; Max = $_.Max; Color = (Branch-Color $_.Name $script:Dark) }; $k++ })
-    $lvGr.Columns[0].Width = [Math]::Max(40, 20 + 14 * $script:GraphLanes.Count)
+    if ($lvGr.Columns[0].Width -gt 0) { $lvGr.Columns[0].Width = [Math]::Max(40, 20 + 14 * $script:GraphLanes.Count) }
     $lvGr.BeginUpdate(); $lvGr.Items.Clear()
     foreach ($c in @($gd.Rows)) {
         $it = New-Object System.Windows.Forms.ListViewItem('')
@@ -414,6 +414,47 @@ $btnBrLoad.Add_Click({ Do-LoadBranches })
 $lvBr.Add_DoubleClick({ if ($lvBr.SelectedItems.Count) { Do-BranchSwitch ([string]$lvBr.SelectedItems[0].Tag) } })
 Register-Pad 'branches' 'Branches' $padBranches 'bottom'
 foreach ($id in @($script:Pads.Keys)) { Dock-Pad $id $script:Pads[$id].Home -1 $false }
+
+# Column chooser: right-click a list's column header, tick the columns to show (a hidden one has width 0);
+# remembered per list in the settings (cols)
+$script:HiddenCols = @{}; $script:ColWidths = @{}
+try { if ($settings.cols) { foreach ($p in $settings.cols.PSObject.Properties) { $script:HiddenCols[$p.Name] = @(@($p.Value) | ForEach-Object { [int]$_ }) } } } catch {}
+function Set-ColShown($lv, [string]$key, [int]$i, [bool]$on) {
+    $wk = $key + ':' + $i
+    if ($on) { $lv.Columns[$i].Width = $(if ($script:ColWidths.ContainsKey($wk)) { $script:ColWidths[$wk] } else { 100 }) }
+    else { if ($lv.Columns[$i].Width -gt 0) { $script:ColWidths[$wk] = $lv.Columns[$i].Width }; $lv.Columns[$i].Width = 0 }
+    $h = @(@($script:HiddenCols[$key]) | Where-Object { $_ -ne $null -and $_ -ne $i }); if (-not $on) { $h += $i }
+    $script:HiddenCols[$key] = @($h | Sort-Object -Unique)
+}
+function Add-ColumnChooser($lv, [string]$key) {
+    for ($i = 0; $i -lt $lv.Columns.Count; $i++) { $script:ColWidths[$key + ':' + $i] = $lv.Columns[$i].Width }
+    foreach ($i in @($script:HiddenCols[$key])) { if ($null -ne $i -and $i -ge 0 -and $i -lt $lv.Columns.Count) { $lv.Columns[$i].Width = 0 } }
+    $cm = New-Object System.Windows.Forms.ContextMenuStrip
+    $cm.Tag = [pscustomobject]@{ Lv = $lv; Key = $key }
+    $cm.Add_Opening({
+        param($s, $e)
+        $lv = $s.Tag.Lv
+        $pt = $lv.PointToClient([System.Windows.Forms.Cursor]::Position)
+        $hb = 26; if ($lv.Items.Count -gt 0 -and $lv.TopItem) { $hb = $lv.TopItem.Bounds.Top }
+        if ($pt.Y -ge $hb) { $e.Cancel = $true; return }   # not on the header: the list's own menu
+        $s.Items.Clear()
+        $hd = New-Object System.Windows.Forms.ToolStripMenuItem('Columns shown'); $hd.Enabled = $false; [void]$s.Items.Add($hd)
+        for ($i = 0; $i -lt $lv.Columns.Count; $i++) {
+            $mi = New-Object System.Windows.Forms.ToolStripMenuItem([string]$lv.Columns[$i].Text)
+            $mi.Checked = ($lv.Columns[$i].Width -gt 0); $mi.Tag = [pscustomobject]@{ Lv = $lv; Key = $s.Tag.Key; Index = $i }
+            $mi.Add_Click({
+                param($o, $a)
+                $t = $o.Tag; $shown = @(0..($t.Lv.Columns.Count - 1) | Where-Object { $t.Lv.Columns[$_].Width -gt 0 }).Count
+                if ($o.Checked -and $shown -le 1) { return }   # one column stays
+                Set-ColShown $t.Lv $t.Key $t.Index (-not $o.Checked)
+            })
+            [void]$s.Items.Add($mi)
+        }
+        $e.Cancel = $false
+    })
+    $lv.ContextMenuStrip = $cm
+}
+Add-ColumnChooser $vSub.List 'submitted'; Add-ColumnChooser $vHist.List 'history'; Add-ColumnChooser $lvBr 'branches'; Add-ColumnChooser $lvGr 'graph'
 
 $status = New-Object System.Windows.Forms.StatusStrip
 $statusLbl = New-Object System.Windows.Forms.ToolStripStatusLabel
@@ -612,15 +653,15 @@ $script:GroupOfpa = ($settings.groupOfpa -ne $false)
 function Build-Tree {
     if ($script:OpDepth -gt 0) { $script:TreeDirty = $true; return }
     $script:BuildCount++
-    Write-PendingFile $script:Pending
+    Write-PendingFile $script:Pending; Write-ShelvedFile $script:ShelfMap
     # keep what the user selected across rebuilds (refresh, theme, outside changes)
     $keepSel = $null; if ($tv.SelectedNode -and $tv.SelectedNode.Tag) { $t = $tv.SelectedNode.Tag; $keepSel = [string]$t.Type + '|' + $(if ($t.Type -eq 'file') { $t.Item.Path } elseif ($t.Type -eq 'cl') { $t.Name } else { [string]$t.Path + [string]$t.Cl }) }
     $script:InBuild = $true; $tv.BeginUpdate()
     $tv.Nodes.Clear()
-    $set = Pending-Set $script:Pending
+    $set = Pending-Set $script:Pending; $own = Owner-Index
     $names = @('default') + @($script:CLs | ForEach-Object { $_.name })
     foreach ($name in $names) {
-        $items = Get-CLItems $script:Pending $name
+        $items = Get-CLItems $script:Pending $name $own
         $label = $name; $stale = @()
         if ($name -ne 'default') {
             $c = Find-CL $name
@@ -638,7 +679,7 @@ function Build-Tree {
         if ($stale.Count -gt 0) { $count += ' +' + $stale.Count + ' stale' }
         if ($shs.Count -gt 0) { $count += ', ' + $shs.Count + ' shelved' }
         $count += ')'
-        $n = New-Object System.Windows.Forms.TreeNode(($label + $count))
+        $n = [System.Windows.Forms.TreeNode]::new(($label + $count))
         $n.Tag = [pscustomobject]@{ Type = 'cl'; Name = $name; Stale = $stale.Count }
         Set-Row $n $label ($count.Trim())
         Set-Icon $n $(if ($name -eq 'default') { 'cldef' } else { 'cl' })
@@ -649,13 +690,13 @@ function Build-Tree {
         $shown = 0
         foreach ($p in $plainItems) {
             if ($shown -ge $script:MaxRows) {
-                $more = New-Object System.Windows.Forms.TreeNode(('+' + ($plainItems.Count - $shown) + ' more'))
+                $more = [System.Windows.Forms.TreeNode]::new(('+' + ($plainItems.Count - $shown) + ' more'))
                 $more.Tag = [pscustomobject]@{ Type = 'more'; Cl = $name }; $more.ForeColor = $script:Pal.Stale; $more.NodeFont = $fontUi; Set-Icon $more 'none'
                 [void]$n.Nodes.Add($more); break
             }
             $shown++
             $k = Kind-Letter $p.Kind
-            $f = New-Object System.Windows.Forms.TreeNode($p.Path)
+            $f = [System.Windows.Forms.TreeNode]::new($p.Path)
             $f.Tag = [pscustomobject]@{ Type = 'file'; Item = $p; Cl = $name }
             Set-Row $f (Path-Leaf $p.Path) (Path-Dir $p.Path); $f.ToolTipText = $p.Path
             $f.ForeColor = $colKind[$k]
@@ -665,7 +706,7 @@ function Build-Tree {
         }
         foreach ($og in $ofpa) {
             $k = Kind-Letter (@($og.Items)[0].Kind); if (@($og.Items | Where-Object { (Kind-Letter $_.Kind) -ne $k }).Count) { $k = 'M' }
-            $f = New-Object System.Windows.Forms.TreeNode($og.Name)
+            $f = [System.Windows.Forms.TreeNode]::new($og.Name)
             $f.Tag = [pscustomobject]@{ Type = 'ofpa'; Items = @($og.Items); Keys = @($og.Items | ForEach-Object { $_.Path }); Folder = $og.Folder; Cl = $name }
             Set-Row $f ($og.Name + '   OFPA ' + $og.What) (Kinds-Text $og.Items)
             $f.ToolTipText = $og.Folder + "`r`nOne line for this level's actor files (View > OFPA files: one line per level)"
@@ -674,7 +715,7 @@ function Build-Tree {
         }
         # Entries kept although dv does not report them (committed elsewhere, or sync paused)
         foreach ($sp in $stale) {
-            $f = New-Object System.Windows.Forms.TreeNode($sp)
+            $f = [System.Windows.Forms.TreeNode]::new($sp)
             $f.Tag = [pscustomobject]@{ Type = 'stale'; Path = $sp; Cl = $name }
             Set-Row $f (Path-Leaf $sp) ((Path-Dir $sp) + '   not pending'); $f.ToolTipText = $sp + "`r`nNot pending any more (submitted or reverted elsewhere): right-click > Remove"
             Set-Icon $f 'stale'
@@ -686,7 +727,7 @@ function Build-Tree {
         foreach ($sh in $shs) {
             # "Shelved files (n)" under the changelist; shelf name in the tooltip
             $label = 'Shelved files' + $(if ($sh.Count -ge 0) { ' (' + $sh.Count + ')' } else { '' }) + '   ' + $(if ($sh.Local) { 'local' } else { 'Diversion' }) + $(if ($sh.Created) { ', ' + $sh.Created } else { '' })
-            $sn = New-Object System.Windows.Forms.TreeNode($label)
+            $sn = [System.Windows.Forms.TreeNode]::new($label)
             $sn.ToolTipText = 'shelf ' + $(if ($sh.Local) { $sh.Id } else { $sh.Name + ' (' + $sh.Id + ')' })
             $sn.Tag = [pscustomobject]@{ Type = 'shelf'; Shelf = $sh; Cl = $name }; $sn.NodeFont = $fontUi
             Set-Row $sn ('Shelved files' + $(if ($sh.Count -ge 0) { ' (' + $sh.Count + ')' } else { '' })) ($(if ($sh.Local) { 'local' } else { 'Diversion' }) + $(if ($sh.Created) { ', ' + $sh.Created } else { '' }))
@@ -695,7 +736,7 @@ function Build-Tree {
             if ($script:GroupOfpa) { $so = Split-Ofpa $shFiles; $shFiles = @($so.Plain); $shGroups = @($so.Groups) }
             foreach ($og in $shGroups) {
                 $k = Kind-Letter (@($og.Items)[0].Kind)
-                $fn = New-Object System.Windows.Forms.TreeNode($og.Name)
+                $fn = [System.Windows.Forms.TreeNode]::new($og.Name)
                 $fn.Tag = [pscustomobject]@{ Type = 'shelfgroup'; Paths = @($og.Items | ForEach-Object { $_.Path }); Keys = @($og.Items | ForEach-Object { 'shelf|' + [string]$sh.Id + '|' + $_.Path }); Cl = $name; ShelfId = [string]$sh.Id; Folder = $og.Folder }
                 Set-Row $fn ($og.Name + '   OFPA ' + $og.What) (Kinds-Text $og.Items)
                 $fn.ToolTipText = $og.Folder; $fn.NodeFont = $fontUi; $fn.ForeColor = $script:Pal.Muted; Set-Icon $fn ('folder-' + $k)
@@ -703,7 +744,7 @@ function Build-Tree {
             }
             foreach ($sf in $shFiles) {
                 $k = Kind-Letter $sf.Kind
-                $fn = New-Object System.Windows.Forms.TreeNode($sf.Path)
+                $fn = [System.Windows.Forms.TreeNode]::new($sf.Path)
                 $fn.Tag = [pscustomobject]@{ Type = 'shelffile'; Path = $sf.Path; Cl = $name; ShelfId = [string]$sh.Id }; $fn.NodeFont = $fontUi
                 Set-Row $fn (Path-Leaf $sf.Path) (Path-Dir $sf.Path); $fn.ToolTipText = $sf.Path
                 $fn.ForeColor = $script:Pal.Muted; Set-Icon $fn ('file-' + $k)
@@ -1825,7 +1866,7 @@ function Add-LocalChildren($nodes, [string]$dir) {
     foreach ($d in $dirs) {
         $name = [System.IO.Path]::GetFileName($d)
         if ($name -eq '.diversion' -or $name -eq '.dvcl') { continue }
-        $n = New-Object System.Windows.Forms.TreeNode($name)
+        $n = [System.Windows.Forms.TreeNode]::new($name)
         $n.Tag = [pscustomobject]@{ Type = 'dir'; Path = $d; Name = $name }
         Mark-Pending $n (Norm $d)
         Add-Placeholder $n
@@ -1833,7 +1874,7 @@ function Add-LocalChildren($nodes, [string]$dir) {
     }
     foreach ($f in $files) {
         $name = [System.IO.Path]::GetFileName($f)
-        $n = New-Object System.Windows.Forms.TreeNode($name)
+        $n = [System.Windows.Forms.TreeNode]::new($name)
         $n.Tag = [pscustomobject]@{ Type = 'lfile'; Path = $f; Name = $name }
         Mark-Pending $n (Norm $f)
         [void]$nodes.Add($n)
@@ -1844,7 +1885,7 @@ function Add-DepotChildren($nodes, [string]$dir) {
     $c = Get-DepotChildren $script:DepotPaths $dir
     foreach ($d in $c.Dirs) {
         $rel = $d; if ($dir) { $rel = $dir + '/' + $d }
-        $n = New-Object System.Windows.Forms.TreeNode($d)
+        $n = [System.Windows.Forms.TreeNode]::new($d)
         $n.Tag = [pscustomobject]@{ Type = 'ddir'; Path = $rel; Name = $d }
         Mark-Pending $n $rel
         # not downloaded on this PC (selective sync): grey
@@ -1854,7 +1895,7 @@ function Add-DepotChildren($nodes, [string]$dir) {
     }
     foreach ($f in $c.Files) {
         $rel = $f; if ($dir) { $rel = $dir + '/' + $f }
-        $n = New-Object System.Windows.Forms.TreeNode($f)
+        $n = [System.Windows.Forms.TreeNode]::new($f)
         $n.Tag = [pscustomobject]@{ Type = 'dfile'; Path = $rel; Name = $f }
         Mark-Pending $n $rel
         [void]$nodes.Add($n)
@@ -2688,6 +2729,9 @@ function Run-GuiSelfCheck {
         C 'dock: 7 panels (Branches too), each in exactly one zone' ($script:Pads.Count -eq 7 -and $n -eq 7 -and @($script:Pads.Values | Where-Object { -not $_.Zone }).Count -eq 0) ([string]$n)
         $tb = [System.Drawing.Color]::White
         C 'branch: no tint on main, a soft one per job branch (same name, same color)' ((Branch-Tint 'main' $tb $false).ToArgb() -eq $tb.ToArgb() -and (Branch-Tint 'rural' $tb $false).ToArgb() -ne $tb.ToArgb() -and (Branch-Tint 'rural' $tb $false).ToArgb() -eq (Branch-Tint 'Rural' $tb $false).ToArgb() -and (Branch-Tint 'rural' $tb $false).R -gt 200)
+        Set-ColShown $lvGr 'graph' 4 $false; $hc = ($lvGr.Columns[4].Width -eq 0 -and @($script:HiddenCols['graph']) -contains 4); Set-ColShown $lvGr 'graph' 4 $true
+        C 'columns: a column hidden / shown again from the header menu, remembered in the settings' ($hc -and $lvGr.Columns[4].Width -gt 0 -and @($script:HiddenCols['graph']) -notcontains 4 -and $vSub.List.ContextMenuStrip -and $lvBr.ContextMenuStrip -and (Settings-Json '' $null) -like '*"cols"*')
+        C 'submitted: Workspace column (from the [ws: ...] line dvcl adds)' ($vSub.List.Columns[3].Text -eq 'Workspace' -and $vSub.List.Columns[4].Text -eq 'Description')
         C 'branch: shown in the title (taskbar) and the Branch menu' (($script:Branch -eq '' -or ($form.Text -like ('dvcl `[' + $script:Branch + '`]*') -and $ddBranch.Text -eq ('Branch: ' + $script:Branch)))) ($form.Text + ' | ' + $ddBranch.Text)
         Dock-Pad 'pending' 'bottom'; Dock-Pad 'submitted' 'bottom'; [System.Windows.Forms.Application]::DoEvents()
         $f1 = $split.Panel2.Contains($tv) -and $main.Panel2Collapsed

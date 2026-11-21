@@ -50,7 +50,7 @@ function New-CommitView([string]$key) {
     $sc = New-Object System.Windows.Forms.SplitContainer; $sc.Dock = 'Fill'; $sc.Orientation = 'Horizontal'
     $list = New-Object System.Windows.Forms.ListView
     $list.Dock = 'Fill'; $list.View = 'Details'; $list.FullRowSelect = $true; $list.MultiSelect = $false; $list.HideSelection = $false; $list.ShowItemToolTips = $true; $list.Tag = $key
-    foreach ($c in @(@('Commit', 70), @('Date', 120), @('Author', 120), @('Description', 520))) { [void]$list.Columns.Add($c[0], $c[1]) }
+    foreach ($c in @(@('Commit', 70), @('Date', 120), @('Author', 120), @('Workspace', 150), @('Description', 520))) { [void]$list.Columns.Add($c[0], $c[1]) }
     $files = New-Object System.Windows.Forms.ListView
     $files.Dock = 'Fill'; $files.View = 'Details'; $files.FullRowSelect = $true; $files.MultiSelect = $false; $files.HideSelection = $false; $files.SmallImageList = $icons; $files.Tag = $key
     [void]$files.Columns.Add('Files of the selected commit', 900)
@@ -136,11 +136,11 @@ function Fill-Commits($v) {
     $newer = 0; $shown = 0
     foreach ($c in @($v.Commits)) {
         if ($ws -gt 0 -and $c.Num -gt $ws) { $newer++ }
-        if ($f -and -not (($c.Desc + ' ' + $c.Author + ' ' + $c.Num + ' ' + $c.Id) -like ('*' + $f + '*'))) { continue }
+        if ($f -and -not (($c.Desc + ' ' + $c.Author + ' ' + $c.Workspace + ' ' + $c.Num + ' ' + $c.Id) -like ('*' + $f + '*'))) { continue }
         $it = New-Object System.Windows.Forms.ListViewItem([string]$c.Num)
-        [void]$it.SubItems.Add((Short-Date $c.Date)); [void]$it.SubItems.Add($c.Author); [void]$it.SubItems.Add((($c.Desc -split "`n") -join '  |  '))
+        [void]$it.SubItems.Add((Short-Date $c.Date)); [void]$it.SubItems.Add($c.Author); [void]$it.SubItems.Add([string]$c.Workspace); [void]$it.SubItems.Add((($c.Desc -split "`n") -join '  |  '))
         $it.Tag = $c
-        $it.ToolTipText = $c.Id + '  ' + $c.Author + '  ' + $c.Date + "`n" + $c.Desc
+        $it.ToolTipText = $c.Id + '  ' + $c.Author + $(if ($c.Workspace) { '  (' + $c.Workspace + ')' } else { '' }) + '  ' + $c.Date + "`n" + $c.Desc
         if ($ws -gt 0 -and $c.Num -gt $ws) { $it.ForeColor = $script:Pal.Link; $it.ToolTipText = "Not in your workspace yet (Get latest)`n" + $it.ToolTipText }
         elseif ($ws -gt 0 -and $c.Num -eq $ws) { $it.Font = $fontBold; $it.ToolTipText = "Your workspace is at this commit`n" + $it.ToolTipText }
         elseif ($ws -gt 0) { $it.ForeColor = $script:Pal.Fore }
@@ -150,7 +150,7 @@ function Fill-Commits($v) {
     # unknown output format: show dv's lines as they are (nothing lost)
     if ($v.Commits.Count -eq 0) {
         foreach ($l in @($v.Raw | Where-Object { $_.Trim() } | Select-Object -First 200)) {
-            $it = New-Object System.Windows.Forms.ListViewItem(''); [void]$it.SubItems.Add(''); [void]$it.SubItems.Add(''); [void]$it.SubItems.Add($l); [void]$v.List.Items.Add($it)
+            $it = New-Object System.Windows.Forms.ListViewItem(''); [void]$it.SubItems.Add(''); [void]$it.SubItems.Add(''); [void]$it.SubItems.Add(''); [void]$it.SubItems.Add($l); [void]$v.List.Items.Add($it)
         }
     }
     $v.List.EndUpdate()

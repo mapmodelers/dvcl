@@ -69,6 +69,8 @@ void FDvclSourceControlProvider::Init(bool bForceConnection)
 	ClFile = Root.IsEmpty() ? FString() : (Root / TEXT(".dvcl/changelists.json"));
 	PendingStamp = FDateTime::MinValue();
 	ClStamp = FDateTime::MinValue();
+	ShelvedFile = Root.IsEmpty() ? FString() : (Root / TEXT(".dvcl/shelved.tsv"));
+	ShelvedStamp = FDateTime::MinValue();
 	Reload(true);
 }
 
@@ -121,6 +123,7 @@ void FDvclSourceControlProvider::ReadChangelists()
 		State->Name = Name;
 		State->Description = Description;
 		State->Files.Reset();
+		State->ShelvedFiles.Reset();
 		ClStates.Add(Id, State);
 		ClOrder.Add(Id);
 	};
@@ -182,12 +185,14 @@ bool FDvclSourceControlProvider::Reload(bool bForce)
 	}
 	const FDateTime Stamp = IFileManager::Get().GetTimeStamp(*PendingFile);
 	const FDateTime CStamp = IFileManager::Get().GetTimeStamp(*ClFile);
-	if (!bForce && Stamp == PendingStamp && CStamp == ClStamp)
+	const FDateTime SStamp = ShelvedFile.IsEmpty() ? FDateTime::MinValue() : IFileManager::Get().GetTimeStamp(*ShelvedFile);
+	if (!bForce && Stamp == PendingStamp && CStamp == ClStamp && SStamp == ShelvedStamp)
 	{
 		return false;
 	}
 	PendingStamp = Stamp;
 	ClStamp = CStamp;
+	ShelvedStamp = SStamp;
 	// the changelists file says which changelist owns a file; the pending list says what changed
 	ReadChangelists();
 	// unchanged files keep their state object too (same reason)
@@ -225,7 +230,58 @@ bool FDvclSourceControlProvider::Reload(bool bForce)
 			Cl->Files.Add(State);
 		}
 	}
+	ReadShelved();
 	return true;
+}
+
+void FDvclSourceControlProvider::ReadShelved()
+{
+	TMap<FString, TSharedRef<FDvclSourceControlState, ESPMode::ThreadSafe>> Old = MoveTemp(Shelved);
+	Shelved.Reset();
+	TArray<FString> Lines;
+	if (ShelvedFile.IsEmpty() || !FFileHelper::LoadFileToStringArray(Lines, *ShelvedFile))
+	{
+		return;
+	}
+	for (const FString& Line : Lines)
+	{
+		// "#id name" or "default" <tab> shelf <tab> kind <tab> path; "#dvcl-..." = header
+		if (Line.IsEmpty() || Line.StartsWith(TEXT("#dvcl")))
+		{
+			continue;
+		}
+		TArray<FString> Parts;
+		Line.ParseIntoArray(Parts, TEXT("\t"), false);
+		if (Parts.Num() < 4 || Parts[3].IsEmpty())
+		{
+			continue;
+		}
+		int32 Id = 0;
+		if (Parts[0].StartsWith(TEXT("#")))
+		{
+			FString Num = Parts[0].Mid(1);
+			FString Rest;
+			Parts[0].Mid(1).Split(TEXT(" "), &Num, &Rest);
+			Id = FCString::Atoi(*Num);
+		}
+		const TSharedRef<FDvclChangelistState, ESPMode::ThreadSafe>* Cl = ClStates.Find(Id);
+		if (Cl == nullptr)
+		{
+			continue;
+		}
+		FString Full = Root / Parts[3];
+		FPaths::NormalizeFilename(Full);
+		const FString MapKey = FString::FromInt(Id) + TEXT("|") + Key(Full);
+		if (Shelved.Contains(MapKey))
+		{
+			continue;   // the same file in two shelves: listed once
+		}
+		const TCHAR Kind = Parts[2].IsEmpty() ? TEXT('M') : FChar::ToUpper(Parts[2][0]);
+		const TSharedRef<FDvclSourceControlState, ESPMode::ThreadSafe>* Was = Old.Find(MapKey);
+		const TSharedRef<FDvclSourceControlState, ESPMode::ThreadSafe> State = (Was != nullptr && (*Was)->Kind == Kind) ? *Was : MakeShared<FDvclSourceControlState, ESPMode::ThreadSafe>(Full, Kind, (*Cl)->GetDisplayText().ToString());
+		Shelved.Add(MapKey, State);
+		(*Cl)->ShelvedFiles.Add(State);
+	}
 }
 
 TArray<FString> FDvclSourceControlProvider::FilesOf(int32 Id) const
@@ -321,7 +377,8 @@ bool FDvclSourceControlProvider::CanExecuteOperation(const FSourceControlOperati
 {
 	const FName Op = InOperation->GetName();
 	return Op == "Connect" || Op == "UpdateStatus" || Op == "CheckOut" || Op == "MarkForAdd" || Op == "Delete" || Op == "Revert" || Op == "CheckIn"
-		|| Op == "RevertUnchanged" || Op == "UpdateChangelistsStatus" || Op == "NewChangelist" || Op == "DeleteChangelist" || Op == "EditChangelist" || Op == "MoveToChangelist";
+		|| Op == "RevertUnchanged" || Op == "UpdateChangelistsStatus" || Op == "NewChangelist" || Op == "DeleteChangelist" || Op == "EditChangelist" || Op == "MoveToChangelist"
+		|| Op == "Shelve" || Op == "Unshelve" || Op == "DeleteShelved";
 }
 
 ECommandResult::Type FDvclSourceControlProvider::Execute(const FSourceControlOperationRef& InOperation, FSourceControlChangelistPtr InChangelist, const TArray<FString>& InFiles, EConcurrency::Type InConcurrency, const FSourceControlOperationComplete& InOperationCompleteDelegate)
@@ -493,6 +550,25 @@ ECommandResult::Type FDvclSourceControlProvider::Execute(const FSourceControlOpe
 			Result = RunCommand(Args, LOCTEXT("Moving", "dvcl: moving files..."), InOperation);
 		}
 	}
+	else if (Op == "Shelve" || Op == "Unshelve" || Op == "DeleteShelved")
+	{
+		// dvcl shelves: Shelve = a Diversion shelf of these files (online for this only); Unshelve applies
+		// these shelved files, newest shelf first; Delete Shelved removes the shelves holding them (whole)
+		Reload(false);
+		const int32 Id = ClId(InChangelist);
+		if (Op == "Shelve")
+		{
+			Result = RunClFilesCommand(TEXT("shelve-files"), Id, InFiles, LOCTEXT("Shelving", "dvcl: shelving (online for this only, then back offline)..."), InOperation);
+		}
+		else if (Op == "Unshelve")
+		{
+			Result = RunClFilesCommand(TEXT("unshelve-files"), Id, InFiles, LOCTEXT("Unshelving", "dvcl: unshelving..."), InOperation);
+		}
+		else
+		{
+			Result = RunClFilesCommand(TEXT("delete-shelved"), Id, InFiles, LOCTEXT("DeletingShelved", "dvcl: deleting the shelf..."), InOperation);
+		}
+	}
 	else if (Op == "Delete")
 	{
 		// Diversion sees the file gone; dvcl lists it as deleted
@@ -545,6 +621,19 @@ ECommandResult::Type FDvclSourceControlProvider::RunFilesCommand(const FString& 
 		Args += TEXT(" \"@") + WriteMessage(Message) + TEXT("\"");
 	}
 	Args += TEXT(" -y");
+	return RunCommand(Args, What, InOperation);
+}
+
+ECommandResult::Type FDvclSourceControlProvider::RunClFilesCommand(const FString& Command, int32 Id, const TArray<FString>& InFiles, const FText& What, const FSourceControlOperationRef& InOperation)
+{
+	if (Root.IsEmpty())
+	{
+		InOperation->AddErrorMessge(GetStatusText());
+		return ECommandResult::Failed;
+	}
+	const FString ListFile = Root / TEXT(".dvcl/ue-files.txt");
+	FFileHelper::SaveStringArrayToFile(SourceControlHelpers::AbsoluteFilenames(InFiles), *ListFile, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
+	const FString Args = Command + TEXT(" ") + (Id == 0 ? FString(TEXT("default")) : FString::FromInt(Id)) + TEXT(" \"@") + ListFile + TEXT("\" -y");
 	return RunCommand(Args, What, InOperation);
 }
 

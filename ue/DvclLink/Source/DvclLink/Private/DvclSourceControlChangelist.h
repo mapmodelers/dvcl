@@ -47,8 +47,9 @@ public:
 	virtual const FDateTime& GetTimeStamp() const override { return TimeStamp; }
 	virtual const TArray<FSourceControlStateRef> GetFilesStates() const override { return Files; }
 	virtual int32 GetFilesStatesNum() const override { return Files.Num(); }
-	virtual const TArray<FSourceControlStateRef> GetShelvedFilesStates() const override { return TArray<FSourceControlStateRef>(); }
-	virtual int32 GetShelvedFilesStatesNum() const override { return 0; }
+	// files of the changelist's shelves (dvcl's .dvcl\shelved.tsv): Unreal's "Shelved Files" line
+	virtual const TArray<FSourceControlStateRef> GetShelvedFilesStates() const override { return ShelvedFiles; }
+	virtual int32 GetShelvedFilesStatesNum() const override { return ShelvedFiles.Num(); }
 	virtual FSourceControlChangelistRef GetChangelist() const override { return MakeShared<FDvclChangelist, ESPMode::ThreadSafe>(Id); }
 
 	int32 Id;
@@ -56,4 +57,5 @@ public:
 	FString Description;
 	FDateTime TimeStamp;
 	TArray<FSourceControlStateRef> Files;
+	TArray<FSourceControlStateRef> ShelvedFiles;
 };

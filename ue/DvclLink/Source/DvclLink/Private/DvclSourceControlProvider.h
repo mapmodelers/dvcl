@@ -64,6 +64,10 @@ private:
 	ECommandResult::Type RunFilesCommand(const FString& Command, const TArray<FString>& InFiles, const FString& Message, const FText& What, const FSourceControlOperationRef& InOperation);
 	// runs "dvcl <Args>" (Args may hold @message for a text), errors to the operation, states reloaded after
 	ECommandResult::Type RunCommand(const FString& Args, const FText& What, const FSourceControlOperationRef& InOperation);
+	// "dvcl <Command> <changelist> @files -y" (shelve-files / unshelve-files / delete-shelved); no file = the whole changelist
+	ECommandResult::Type RunClFilesCommand(const FString& Command, int32 Id, const TArray<FString>& InFiles, const FText& What, const FSourceControlOperationRef& InOperation);
+	// shelved files per changelist, from .dvcl\shelved.tsv
+	void ReadShelved();
 	FString WriteMessage(const FString& Text) const;
 	bool RunDvcl(const FString& Args, const FText& What, FString& OutLog) const;
 
@@ -72,6 +76,10 @@ private:
 	FString ClFile;
 	FDateTime PendingStamp;
 	FDateTime ClStamp;
+	FString ShelvedFile;
+	FDateTime ShelvedStamp;
+	// changelist number | file key -> shelved file state (kept across reads, like Pending)
+	TMap<FString, TSharedRef<FDvclSourceControlState, ESPMode::ThreadSafe>> Shelved;
 	double NextCheck = 0.0;
 	TMap<FString, TSharedRef<FDvclSourceControlState, ESPMode::ThreadSafe>> Pending;
 	// dvcl changelists: number -> state (0 = default), and file key -> changelist number

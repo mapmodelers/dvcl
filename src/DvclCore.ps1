@@ -256,8 +256,33 @@ function Read-Status($r) {
         if ($l -match 'over commit (\S+)') { $commit = $Matches[1] }
         # header lines only (file entries are indented): "... paused ..." = sync off
         if ($l -notmatch '^\s' -and $l -match 'paus') { $paused = $true }
+        if ($l -match 'Working in workspace (.+?)\s*\(dv\.ws\.') { Save-WsName $Matches[1].Trim() }
     }
     return [pscustomobject]@{ Files = (Parse-Status $r.Lines); Branch = $branch; Commit = $commit; Paused = $paused; Syncing = [bool]$r.SyncBusy }
+}
+
+# This workspace's name as Diversion shows it ("name @ computer"), kept in .dvcl\workspace-name.txt.
+# dvcl adds it to each description it submits ("[ws: ...]" last line): Diversion does not record
+# which workspace a commit came from, the Workspace column of the commit lists reads it back.
+$script:WsName = $null
+function Save-WsName([string]$n) {
+    if (-not $n -or $n -eq $script:WsName -or -not $script:Root) { return }
+    $script:WsName = $n
+    try { [System.IO.File]::WriteAllText((Dvcl-File 'workspace-name.txt'), $n, $script:Utf8) } catch {}
+}
+function Ws-Name {
+    if ($null -eq $script:WsName) {
+        $script:WsName = ''
+        try { $f = Dvcl-File 'workspace-name.txt'; if (Test-Path -LiteralPath $f) { $script:WsName = ([System.IO.File]::ReadAllText($f)).Trim() } } catch {}
+    }
+    return $script:WsName
+}
+function Add-WsTrailer([string]$desc) { $n = Ws-Name; if (-not $n) { return $desc }; return ($desc + "`n`n[ws: " + $n + "]") }
+# description without its "[ws: ...]" line, and the workspace ('' when none)
+function Split-WsTrailer([string]$desc) {
+    $m = [regex]::Match([string]$desc, '(?:^|\n)\s*\[ws: ([^\]\n]+)\]\s*$')
+    if (-not $m.Success) { return @([string]$desc, '') }
+    return @(([string]$desc).Substring(0, $m.Index).TrimEnd(), $m.Groups[1].Value.Trim())
 }
 
 # First commit id in `dv show <branch>` output = the branch head ('' if not found)
@@ -359,7 +384,7 @@ function Parse-Log([string[]]$lines) {
         $l = [string]$raw
         if ($l -match '^\s*(?:commit\s*:?\s+)?(dv\.commit\.\d+)\b(.*)$') {
             $rest = $Matches[2] -replace '^\s*\([^)]*\)', '' -replace '^\s*[-:|]\s*', ''
-            $cur = [pscustomobject]@{ Id = $Matches[1]; Num = (Commit-Num $Matches[1]); Author = ''; Date = ''; Desc = $rest.Trim() }
+            $cur = [pscustomobject]@{ Id = $Matches[1]; Num = (Commit-Num $Matches[1]); Author = ''; Date = ''; Desc = $rest.Trim(); Workspace = '' }
             [void]$list.Add($cur); continue
         }
         if (-not $cur) { continue }
@@ -368,6 +393,7 @@ function Parse-Log([string[]]$lines) {
         if ($l -match '^\s*(?:Branch|Merge|Parents?|Ref)\s*:') { continue }
         if ($l.Trim()) { $cur.Desc = ($(if ($cur.Desc) { $cur.Desc + "`n" } else { '' }) + $l.Trim()) }
     }
+    foreach ($c in $list) { $sp = Split-WsTrailer $c.Desc; $c.Desc = $sp[0]; $c.Workspace = $sp[1] }
     return $list   # streamed: callers wrap in @()
 }
 # dv show --name-status: "M<tab>path", "R<tab>old<tab>new" (or "old -> new"), or "Modified: path"
@@ -434,7 +460,12 @@ function Kinds-Text($items) {
     return ([string]@($items).Count + ' files: ' + (@($n.Keys | ForEach-Object { [string]$n[$_] + ' ' + $_ }) -join ', '))
 }
 
+$script:KindCache = @{}
 function Kind-Letter([string]$k) {
+    $c = $script:KindCache[$k]; if ($c) { return $c }
+    $c = Kind-LetterOf $k; if ($null -ne $k) { $script:KindCache[$k] = $c }; return $c
+}
+function Kind-LetterOf([string]$k) {
     switch -regex ($k) { '^[AMDR!]$' { $k.ToUpperInvariant() } '^New|^Add' { 'A' } '^Mod|^Chang' { 'M' } '^Del|^Rem' { 'D' } '^Ren|^Mov' { 'R' } '^Conf' { '!' } default { '?' } }
 }
 
@@ -506,7 +537,7 @@ function Switch-Branch([string]$name, [bool]$take) {
     Say ("Workspace now on branch '" + $name + "'.") 'Green'
 }
 # Branch names of the repository (dv branch lists them), current one marked by Diversion
-function Get-Branches { return (Parse-Branches (Invoke-Dv @('branch') $true).Lines) }
+function Get-Branches { $n = Parse-Branches (Invoke-Dv @('branch') $true).Lines; return $n }   # streamed: @(Get-Branches) = one row per branch
 function Parse-Branches([string[]]$lines) {
     $names = New-Object System.Collections.Generic.List[string]
     foreach ($l in @($lines)) { if ([string]$l -match '^\W*branch\s+(\S+)') { if (-not $names.Contains($Matches[1])) { $names.Add($Matches[1]) } } }
@@ -521,7 +552,7 @@ function Branch-Rows {
         $cls = @($script:CLs | Where-Object { ([string]$_.branch) -ieq $b } | ForEach-Object { '#' + $_.id + ' ' + $_.name })
         [void]$rows.Add([pscustomobject]@{ Name = [string]$b; Head = $(if ($c.Count) { [string]$c[0].Id } else { '' }); Date = $(if ($c.Count) { Format-CommitDate ([string]$c[0].Date) } else { '' }); Desc = $(if ($c.Count) { (([string]$c[0].Desc) -split "`n")[0] } else { '' }); Cls = ($cls -join ', ') })
     }
-    return ,$rows.ToArray()
+    $rows.ToArray()   # streamed: @(Branch-Rows) = one row per branch
 }
 # Branch id -> name from dv branch ("branch main (dv.branch.1)")
 function Parse-BranchIds([string[]]$lines) {
@@ -611,6 +642,12 @@ function Unique-Name([string]$s) {
 }
 
 function Owner-Of([string]$path) { foreach ($c in $script:CLs) { foreach ($f in $c.files) { if ($f -ieq $path) { return $c } } }; return $null }
+# path (lower case) -> changelist, first changelist wins like Owner-Of
+function Owner-Index {
+    $own = @{}
+    foreach ($c in $script:CLs) { foreach ($f in $c.files) { $k = ([string]$f).ToLowerInvariant(); if (-not $own.ContainsKey($k)) { $own[$k] = $c } } }
+    return $own
+}
 
 function Detach([string]$path) {
     foreach ($c in $script:CLs) {
@@ -680,9 +717,15 @@ function Recover-Pruned($pending, [string[]]$lines = $null) {
 }
 
 # Items of one changelist ('default' = unassigned files)
-function Get-CLItems($pending, [string]$name) {
-    if ($name -ieq 'default') { return ,@($pending | Where-Object { -not (Owner-Of $_.Path) }) }
-    return ,@($pending | Where-Object { $o = Owner-Of $_.Path; $o -and $o.name -ieq $name })
+function Get-CLItems($pending, [string]$name, $own = $null) {
+    if ($null -eq $own) { $own = Owner-Index }
+    $res = New-Object System.Collections.ArrayList
+    $def = ($name -ieq 'default')
+    foreach ($p in $pending) {
+        $o = $own[([string]$p.Path).ToLowerInvariant()]
+        if ($def) { if (-not $o) { [void]$res.Add($p) } } elseif ($o -and $o.name -ieq $name) { [void]$res.Add($p) }
+    }
+    return ,$res.ToArray()
 }
 
 # Specs: indexes ("3", "5-8"), wildcards (Content/Maps/*), files or folders.
@@ -845,6 +888,7 @@ function Submit-Items([string]$clName, $items, [string]$desc, $pending = $null) 
     foreach ($b in @($plan.Batches)) {
         $i++
         $m = $desc; if ($nb -gt 1) { $m = $desc + ' (part ' + $i + '/' + $nb + ')' }
+        $m = Add-WsTrailer $m
         if ($plan.All) { $r = Invoke-Dv @('commit', '-a', '-m', $m) } else { $r = Invoke-Dv (@('commit') + $b.Files + @('-m', $m)) }
         if ($r.Code -ne 0) {
             $done = $(if ($i -gt 1) { ' Parts 1-' + ($i - 1) + ' were submitted; the rest stays in the changelist.' } else { '' })
@@ -1387,7 +1431,9 @@ using System.Text;
 using System.Text.RegularExpressions;
 namespace DvclNative {
   public static class Scanner {
-    class Rule { public Regex R; public bool DirOnly; public bool Neg; public bool Anchored; public string Base; public string Prefix; }
+    // NameOnly: unanchored pattern without "/" = tested on the entry's name only (same result, much faster);
+    // Literal / Suffix: plain name or "*.ext" compared without a regex
+    class Rule { public Regex R; public bool DirOnly; public bool Neg; public bool Anchored; public string Base; public string Prefix; public bool NameOnly; public string Literal; public string Suffix; }
     // same conversion as Ignore-Regex: * ? inside one name, ** across folders, [..] kept
     static Regex ToRegex(string p, bool anchored) {
       var sb = new StringBuilder();
@@ -1419,7 +1465,14 @@ namespace DvclNative {
     static Rule Make(string p, bool dirOnly, bool anchored, bool neg, string bas) {
       var full = bas.Length > 0 ? bas + "/" + p : p;
       int w = full.IndexOfAny(new[] { '*', '?', '[' });
-      return new Rule { R = ToRegex(p, anchored), DirOnly = dirOnly, Neg = neg, Anchored = anchored, Base = bas, Prefix = w < 0 ? full : full.Substring(0, w) };
+      var rule = new Rule { DirOnly = dirOnly, Neg = neg, Anchored = anchored, Base = bas, Prefix = w < 0 ? full : full.Substring(0, w) };
+      rule.NameOnly = !anchored && p.IndexOf('/') < 0;
+      if (rule.NameOnly) {
+        if (p.IndexOfAny(new[] { '*', '?', '[' }) < 0) rule.Literal = p;
+        else if (p.Length > 1 && p[0] == '*' && p.IndexOfAny(new[] { '*', '?', '[' }, 1) < 0) rule.Suffix = p.Substring(1);
+        else rule.R = ToRegex(p, true);
+      } else rule.R = ToRegex(p, anchored);
+      return rule;
     }
     static string Full(string root, string rel) { return rel.Length == 0 ? root : Path.Combine(root, rel.Replace('/', Path.DirectorySeparatorChar)); }
     // .gitignore + .dvignore of one folder, rules relative to it (same parsing as Read-IgnoreFiles)
@@ -1451,6 +1504,13 @@ namespace DvclNative {
     // Hit[i] = rule i matches this entry or a folder above it (inherited from the parent).
     static bool Matches(Rule r, string rel, bool isDir) {
       if (r.DirOnly && !isDir) return false;
+      if (r.NameOnly) {
+        if (r.Base.Length > 0 && rel.Length <= r.Base.Length) return false;
+        int s0 = rel.LastIndexOf('/'); var name = s0 < 0 ? rel : rel.Substring(s0 + 1);
+        if (r.Literal != null) return string.Equals(name, r.Literal, StringComparison.OrdinalIgnoreCase);
+        if (r.Suffix != null) return name.Length > r.Suffix.Length && name.EndsWith(r.Suffix, StringComparison.OrdinalIgnoreCase);
+        return r.R.IsMatch(name);
+      }
       var sub = rel;
       if (r.Base.Length > 0) { if (rel.Length <= r.Base.Length) return false; sub = rel.Substring(r.Base.Length + 1); }
       return r.R.IsMatch(sub);
@@ -1469,8 +1529,12 @@ namespace DvclNative {
       return false;
     }
     class Frame { public string Rel; public List<Rule> Rules; public bool[] Hit; public bool Hidden; }
+    // last scan's counts (bench / diagnostics): entries seen, hidden folders walked for "!" rules
+    public static string Stats = "";
     public static Dictionary<string, string> Scan(string root, out string[] logOut) {
       var log = new List<string>();
+      long seen = 0, hiddenSeen = 0, hiddenDirs = 0; var bigHidden = new Dictionary<string, long>();
+      var swScan = System.Diagnostics.Stopwatch.StartNew();
       var res = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
       var rootRules = new List<Rule> { Make(".diversion", false, true, false, ""), Make(".dvcl", false, true, false, "") };
       rootRules.AddRange(ReadIgnore(root, "", log));
@@ -1485,13 +1549,15 @@ namespace DvclNative {
         try {
           foreach (var i in new DirectoryInfo(Full(root, rel)).EnumerateFileSystemInfos()) {
             if ((i.Attributes & FileAttributes.ReparsePoint) != 0) continue;
+            seen++;
+            if (top.Hidden) { hiddenSeen++; var t0 = rel; int c0 = t0.IndexOf('/'); c0 = c0 < 0 ? -1 : t0.IndexOf('/', c0 + 1); if (c0 > 0) t0 = t0.Substring(0, c0); long n0; bigHidden.TryGetValue(t0, out n0); bigHidden[t0] = n0 + 1; }
             var r = rel.Length > 0 ? rel + "/" + i.Name : i.Name;
             bool isDir = (i.Attributes & FileAttributes.Directory) != 0;
             var h = new bool[rules.Count];
             for (int k = 0; k < rules.Count; k++) h[k] = hit[k] || Matches(rules[k], r, isDir);
             bool ignored = Last(rules, h);
             if (ignored) {
-              if (isDir && CouldBringBack(r, rules)) stack.Push(new Frame { Rel = r, Rules = rules, Hit = h, Hidden = true });
+              if (isDir && CouldBringBack(r, rules)) { hiddenDirs++; stack.Push(new Frame { Rel = r, Rules = rules, Hit = h, Hidden = true }); }
               continue;
             }
             if (top.Hidden) {
@@ -1504,6 +1570,9 @@ namespace DvclNative {
           }
         } catch (Exception e) { log.Add("scan: cannot read " + rel + " (" + e.Message + ")"); }
       }
+      var top3 = new List<KeyValuePair<string, long>>(bigHidden); top3.Sort((a, b) => b.Value.CompareTo(a.Value));
+      var sb3 = new StringBuilder(); for (int q = 0; q < top3.Count && q < 6; q++) sb3.Append(" " + top3[q].Key + "=" + top3[q].Value);
+      Stats = swScan.ElapsedMilliseconds + "ms, " + seen + " entries seen, " + res.Count + " kept, " + hiddenDirs + " hidden folders walked (" + hiddenSeen + " entries), biggest:" + sb3.ToString();
       logOut = log.ToArray();
       return res;
     }
@@ -1683,12 +1752,13 @@ function Get-OfflinePending {
         elseif ($now[$k] -ne 'D' -and $now[$k] -ne $base[$k]) { $out[$k] = 'Modified' }
     }
     # gone from the scan but still on disk = hidden by the ignore rules now, not deleted
-    $gone = @($base.Keys | Where-Object { -not $now.ContainsKey($_) -and -not $out.ContainsKey($_) -and -not (Test-OnDisk $_) })
+    $gone = New-Object System.Collections.Generic.List[string]
+    foreach ($k in $base.Keys) { if (-not $now.ContainsKey($k) -and -not $out.ContainsKey($k) -and -not (Test-OnDisk $k)) { $gone.Add($k) } }
     # more than half of the baseline "deleted" = the snapshot no longer matches the ignore rules,
     # not a real mass delete: take a new baseline instead of listing thousands of false deletions
     if ($gone.Count -gt 1000 -and $gone.Count -gt ($base.Count / 2)) {
         Write-Log ("baseline: " + $gone.Count + " of " + $base.Count + " entries missing, snapshot does not match the ignore rules: retaken")
-        Write-Baseline $known ''; $script:BaselineFresh = $true; $gone = @()
+        Write-Baseline $known ''; $script:BaselineFresh = $true; $gone.Clear()
     }
     foreach ($k in $gone) { $out[$k] = 'Deleted' }
     $res = New-Object System.Collections.ArrayList
@@ -1834,6 +1904,55 @@ function Map-Shelves($shelves) {
 }
 
 # Diversion shelves are listed online only: kept in .dvcl\dv-shelves.tsv for offline display
+# Pending items for these paths ($set). A file inside a folder Diversion lists only as a whole new
+# folder ("Added: Game/New") gets its own "New" item, so it can be submitted alone.
+function Select-WithNewFolders($pending, $set) {
+    $res = New-Object System.Collections.ArrayList
+    $have = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($p in @($pending)) { if ($set.Contains($p.Path)) { [void]$res.Add($p); [void]$have.Add($p.Path) } }
+    $dirs = @(@($pending) | Where-Object { (Kind-Letter $_.Kind) -eq 'A' -and [System.IO.Directory]::Exists((Full-Path $_.Path)) } | ForEach-Object { $_.Path + '/' })
+    if ($dirs.Count -gt 0) {
+        foreach ($w in $set) {
+            if ($have.Contains($w)) { continue }
+            foreach ($d in $dirs) {
+                if ($w.StartsWith($d, [StringComparison]::OrdinalIgnoreCase) -and [System.IO.File]::Exists((Full-Path $w))) { [void]$res.Add([pscustomobject]@{ Index = 0; Kind = 'New'; Path = $w; Old = $null }); [void]$have.Add($w); break }
+            }
+        }
+    }
+    return ,$res.ToArray()
+}
+
+# Shelved files per changelist for Unreal's revision control: .dvcl\shelved.tsv
+# ("#id name" or "default" <tab> shelf id <tab> kind <tab> path), rewritten only when it changes
+function Write-ShelvedFile($map) {
+    if (-not $script:Root -or $null -eq $map) { return }
+    try {
+        $sb = New-Object System.Text.StringBuilder
+        [void]$sb.Append("#dvcl-shelved1`n")
+        foreach ($k in @($map.Keys | Sort-Object)) {
+            $cl = 'default'
+            if ($k -ine 'default') { $c = Find-CL $k; if (-not $c) { continue }; $cl = '#' + $c.id + ' ' + $c.name }
+            foreach ($sh in @($map[$k])) {
+                if ($null -eq $sh) { continue }
+                foreach ($f in @($sh.Files)) { if ($f -and $f.Path) { [void]$sb.Append($cl + "`t" + [string]$sh.Id + "`t" + (Kind-Letter $f.Kind) + "`t" + [string]$f.Path + "`n") } }
+            }
+        }
+        $text = $sb.ToString()
+        if ($text -eq $script:ShelvedFileText) { return }
+        $f = Dvcl-File 'shelved.tsv'; $tmp = $f + '.tmp'
+        [System.IO.File]::WriteAllText($tmp, $text, $script:Utf8)
+        Move-Item -LiteralPath $tmp -Destination $f -Force
+        $script:ShelvedFileText = $text
+    } catch { Write-Log ('shelved.tsv not written: ' + $_.Exception.Message) }
+}
+# local shelves + last known Diversion shelves, by changelist
+function Current-ShelfMap { return (Map-Shelves @(@(Get-LocalShelves) + @(Read-DvShelfCache))) }
+# sort key of a shelf: the time stamp dvcl puts in its name (newest = largest)
+function Shelf-Stamp($sh) {
+    $m = [regex]::Match(([string]$sh.Id + ' ' + [string]$sh.Name), '(\d{8}-\d{4,6})')
+    if ($m.Success) { return $m.Groups[1].Value.PadRight(15, '0') }
+    return ''
+}
 function Save-DvShelfCache($shelves) {
     $lines = @($shelves | ForEach-Object { $_.Name + "`t" + $_.Id + "`t" + $_.Created })
     [System.IO.File]::WriteAllLines((Dvcl-File 'dv-shelves.tsv'), [string[]]$lines, $script:Utf8)

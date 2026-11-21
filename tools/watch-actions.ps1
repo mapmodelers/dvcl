@@ -145,5 +145,6 @@ $actions = @{
     'restart'      = { [void](Step 'restart' { Do-Restart }) }
     'probe'        = { [void](Step 'probe' { Do-Probe }) }
     'timings'      = { [void](Step 'timings' { Do-Timings }) }
+    'bench'        = { [void](Step 'bench' { $ws = Need-Workspace; $o = Join-Path $RepoDir 'tests\bench.log'; & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $RepoDir 'tools\bench.ps1') $ws $o 2>&1 | Out-Null; if (-not (Test-Path -LiteralPath $o)) { throw 'bench wrote nothing' }; (Get-Content -LiteralPath $o | Select-Object -First 3) -join ' ; ' }) }
     'release'      = { if (Run-Full) { [void](Step 'publish' { Do-Publish }) }; [void](Step 'restart' { Do-Restart }) }
 }

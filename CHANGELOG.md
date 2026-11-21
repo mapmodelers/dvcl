@@ -2,6 +2,16 @@
 
 Versions follow [semver](https://semver.org). Tags: `vX.Y.Z`.
 
+## 0.33.0 - 2026-11-21
+
+- Lists (Submitted, History, Branches, graph): right-click a column header to choose the columns shown; remembered.
+- Submitted / History: Workspace column. dvcl adds the workspace ("name @ computer") as the last line of each description it submits; Diversion itself does not record it. Older commits stay blank.
+- Unreal (dvcl link 8): Shelve Files, Unshelve and Delete Shelved Files in the Changelists window; each changelist shows its shelved files. New commands `shelve-files`, `unshelve-files`, `delete-shelved`.
+- Faster: offline scan about 3.5x faster (name-only ignore rules tested without a regex), pending list built in one pass.
+- Branches panel: one row per branch (all branches were shown on one row).
+- `submit-files`: a file inside a new folder (Diversion lists only the folder) can be submitted alone.
+- Dev watcher: `timings`, `bench` (where the time goes on the real workspace), `probe` shows a commit's details.
+
 ## 0.32.0 - 2026-11-21
 
 - Branches panel: a small history graph under the branch list. The workspace's last 80 commits, newest first, each as a dot on the lane of the branch it was made on (current branch = first lane, grey for main, one color per job branch); a job branch's lane runs from its first to its last commit and joins the main lane at both ends. Columns: commit, branch, date, author, description.

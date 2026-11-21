@@ -58,6 +58,9 @@ Run inside a Diversion workspace (any subfolder).
   dvcl safety on|off            stay offline (default on): sync is on only during an action, never left
                                 on; a dvcl that stopped while online is undone by the next dvcl
   dvcl shelf delete <shelf>     delete a shelf (local or Diversion)
+  dvcl shelve-files <cl> [@list]    shelve these pending files of <cl> (Unreal's Shelve)
+  dvcl unshelve-files <cl> [@list]  apply these shelved files of <cl>, newest shelf first
+  dvcl delete-shelved <cl> [@list]  delete <cl>'s shelves holding these files (whole shelves)
   dvcl clean [cl]               remove entries that are no longer pending (all changelists or one)
   dvcl recover                  restore changelist entries dropped by dvcl 0.2.x (from the log)
   dvcl history <file>           last 50 commits touching <file>
@@ -196,6 +199,12 @@ function Run-SelfTest {
         $lg = @(Parse-Log @('commit dv.commit.52 (HEAD -> main)', 'Author: Sam <s@x.y>', 'Date:   2026-11-10T10:00:00Z', '', '    station roof', '    second line', 'commit dv.commit.51', 'Author: Al', 'Date: 2026-11-09', '', '    fence'))
         T "log: blocks parsed (id, number, author, date, description)" ($lg.Count -eq 2 -and $lg[0].Num -eq 52 -and $lg[0].Author -eq 'Sam' -and $lg[0].Date -like '2026-11-10*' -and $lg[0].Desc -eq "station roof`nsecond line" -and $lg[1].Desc -eq 'fence')
         $lo = @(Parse-Log @('dv.commit.9 fix lights', 'dv.commit.8 - first'))
+        $lw = @(Parse-Log @('commit dv.commit.53', 'Author: Sam', '', '    roof', '    ', '    [ws: Town @ PC1]', 'commit dv.commit.52', 'Author: Al', '', '    fence [ws: x] kept'))
+        T "log: workspace read from the [ws: ...] line, description without it" ($lw.Count -eq 2 -and $lw[0].Workspace -eq 'Town @ PC1' -and $lw[0].Desc -eq 'roof' -and $lw[1].Workspace -eq '' -and $lw[1].Desc -eq 'fence [ws: x] kept') (($lw | ForEach-Object { $_.Desc + '|' + $_.Workspace }) -join ' / ')
+        $wsKeep = $script:WsName; $script:WsName = 'Town @ PC1'
+        $tr = Add-WsTrailer "station roof`nsecond line"; $sp = Split-WsTrailer $tr
+        $script:WsName = ''; $tr0 = Add-WsTrailer 'plain'; $script:WsName = $wsKeep
+        T "submit: description gets this workspace's [ws: ...] line (none when unknown)" ($tr.EndsWith('[ws: Town @ PC1]') -and $sp[0] -eq "station roof`nsecond line" -and $sp[1] -eq 'Town @ PC1' -and $tr0 -eq 'plain')
         T "log: one line per commit" ($lo.Count -eq 2 -and $lo[0].Desc -eq 'fix lights' -and $lo[1].Desc -eq 'first' -and $lo[1].Num -eq 8)
         $sf = @(Parse-ShowFiles @('commit dv.commit.52', "`tA new bench", '    M lamp fix', "M`tGame/Content/A.uasset", "A`tGame/B.umap", "R`tGame/old.txt`tGame/new.txt", 'D  Game/C.ini', 'Modified: Game/D.ini'))
         T "show: changed files parsed" ($sf.Count -eq 5 -and $sf[0].Kind -eq 'M' -and $sf[2].Path -eq 'Game/new.txt' -and $sf[3].Kind -eq 'D' -and $sf[4].Path -eq 'Game/D.ini')
@@ -215,7 +224,8 @@ function Run-SelfTest {
             function MkF([string]$rel, [string]$txt) { $f = Full-Path $rel; [void][System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($f)); [System.IO.File]::WriteAllText($f, $txt) }
             [void][System.IO.Directory]::CreateDirectory((Full-Path '.dvcl'))
             [void][System.IO.Directory]::CreateDirectory((Full-Path '.diversion'))
-            MkF '.dvignore' "# ue`nSaved/*`nIntermediate/*`n*.tmp`n/artsource`n/art/*`n!/art/keep/`n!/art/more/**`n/lvl/*/*_check.json`n**/gen/`n"
+            MkF '.dvignore' "# ue`nSaved/*`nIntermediate/*`n*.tmp`n/artsource`n/art/*`n!/art/keep/`n!/art/more/**`n/lvl/*/*_check.json`n**/gen/`nfo?.log`n"
+            MkF 'Game/a/foo.log' 'x'; MkF 'Game/a/fooo.log' 'x'
             MkF 'Game/.gitignore' "Cache/`n"; MkF 'Game/Cache/c.bin' 'x'; MkF 'Game/Sub/artsource/keep.txt' 'x'
             MkF 'Game/Content/A.uasset' 'a1'; MkF 'Game/Content/B.uasset' 'b1'; MkF 'Game/Content/C.uasset' 'c1'
             MkF 'art/top.txt' 'x'; MkF 'art/drop/x.txt' 'x'; MkF 'art/keep/scripts/y.py' 'x'; MkF 'art/more/sub/z.txt' 'x'; MkF 'lvl/a/b_check.json' 'x'; MkF 'lvl/a/b/c_check.json' 'x'; MkF 'Game/x/gen/f.txt' 'x'
@@ -227,6 +237,7 @@ function Run-SelfTest {
             T "scan: compiled scanner = PowerShell scan (same entries)" ((Ensure-Scanner) -and $same) ("native " + $sc.Count + " / ps " + $ps.Count + " | " + (($dif | Select-Object -First 6) -join ' '))
             T "scan: Saved/* and Intermediate/* hidden at any depth" (-not $sc.ContainsKey('Game/Saved/log.txt') -and -not $sc.ContainsKey('Game/Intermediate/x.obj'))
             T "scan: wildcard, /anchored, nested .gitignore, .diversion" (-not $sc.ContainsKey('Game/Content/t.tmp') -and -not $sc.ContainsKey('artsource') -and $sc.ContainsKey('Game/Sub/artsource/keep.txt') -and -not $sc.ContainsKey('Game/Cache') -and -not $sc.ContainsKey('.diversion'))
+            T "scan: name pattern with ? at any depth (fast name test)" (-not $sc.ContainsKey('Game/a/foo.log') -and $sc.ContainsKey('Game/a/fooo.log'))
             T "scan: normal files and folders kept" ($sc.ContainsKey('Game/Content/A.uasset') -and $sc['Game/Content'] -eq 'D')
             T "scan: ! rules bring files back inside a hidden folder, * stays in one folder, ** crosses folders" (-not $sc.ContainsKey('art/top.txt') -and -not $sc.ContainsKey('art/drop') -and $sc.ContainsKey('art/keep/scripts/y.py') -and $sc.ContainsKey('art/more/sub/z.txt') -and $sc['art/more'] -eq 'D' -and -not $sc.ContainsKey('lvl/a/b_check.json') -and $sc.ContainsKey('lvl/a/b/c_check.json') -and -not $sc.ContainsKey('Game/x/gen') -and $sc.ContainsKey('Game/x'))
             $known = @([pscustomobject]@{ Index = 1; Kind = 'Modified'; Path = 'Game/Content/C.uasset'; Old = $null })
@@ -237,6 +248,12 @@ function Run-SelfTest {
             MkF 'Game/Saved/other.txt' 'ignored'
             $off = Get-OfflinePending
             $k = @{}; foreach ($x in $off) { $k[$x.Path] = $x.Kind }
+            $sw0 = Select-WithNewFolders @([pscustomobject]@{ Index = 1; Kind = 'New'; Path = 'Game/Content/New'; Old = $null }) (Path-Set @('Game/Content/New/D.uasset', 'Game/Content/New/zz.uasset', 'Game/Content/A.uasset'))
+            $origDv = ${function:Invoke-Dv}
+            Set-Item function:script:Invoke-Dv { param($a, $q, $b) [pscustomobject]@{ Code = 0; Lines = @('branch main (dv.branch.1)', 'commit dv.commit.7', '', 'branch job01 (dv.branch.2)', 'commit dv.commit.7'); Upload = '' } }
+            try { $gb = @(Get-Branches); $br = @(Branch-Rows) } finally { Set-Item function:script:Invoke-Dv $origDv }
+            T "branches: one row per branch (not one row for all)" ($gb.Count -eq 2 -and $gb[1] -eq 'job01' -and $br.Count -eq 2 -and $br[0].Name -eq 'main' -and $br[1].Name -eq 'job01') (($br | ForEach-Object { [string]$_.Name }) -join ' | ')
+            T "submit-files: a file inside a new folder (pending as the folder) is submitted alone" (@($sw0).Count -eq 1 -and $sw0[0].Path -eq 'Game/Content/New/D.uasset' -and $sw0[0].Kind -eq 'New') (($sw0 | ForEach-Object { $_.Path }) -join ' ')
             T "offline: modified, deleted, new file + new folder, known pending kept" ($k['Game/Content/A.uasset'] -eq 'Modified' -and $k['Game/Content/B.uasset'] -eq 'Deleted' -and $k['Game/Content/New/D.uasset'] -eq 'New' -and $k['Game/Content/New'] -eq 'New' -and $k['Game/Content/C.uasset'] -eq 'Modified' -and $off.Count -eq 5)
             T "offline: ignored files never pending" (-not $k.ContainsKey('Game/Saved/other.txt'))
             T "offline: indexes 1..n" ($off[0].Index -eq 1 -and $off[$off.Count - 1].Index -eq $off.Count)
@@ -290,6 +307,11 @@ function Run-SelfTest {
             Apply-LocalShelf $id
             T "local unshelve restores the shelved content" ([System.IO.File]::ReadAllText((Full-Path 'Game/Content/A.uasset')) -eq 'a2-longer' -and [System.IO.File]::ReadAllText((Full-Path $other)) -ne 'changed-other')
             Delete-LocalShelf $id
+            $script:ShelvedFileText = $null
+            Write-ShelvedFile @{ default = @([pscustomobject]@{ Id = 'sh_20261121-1010'; Files = @([pscustomobject]@{ Path = 'Game/S/a.uasset'; Kind = 'Modified' }) }) }
+            $stx = [System.IO.File]::ReadAllText((Dvcl-File 'shelved.tsv'))
+            T "shelved.tsv: one line per shelved file for Unreal" ($stx -like "#dvcl-shelved1*" -and $stx -like "*default`tsh_20261121-1010`tM`tGame/S/a.uasset*") $stx
+            T "shelf order: newest stamp first" ((Shelf-Stamp ([pscustomobject]@{ Id = 'a_20261121-101500'; Name = '' })) -gt (Shelf-Stamp ([pscustomobject]@{ Id = 'dv.shelf.9'; Name = 'a_20261121-1010' })))
             T "local shelf deleted" (@(Get-LocalShelves).Count -eq 0)
             # ---- Unreal link: the Python sent to the editor, the files Get latest will write
             $uc = Ue-Code 'release_files' @('Game/Content/A b.uasset', "Game/Content/q'x.umap")
@@ -418,6 +440,13 @@ function Expand-Specs($specs) {
     foreach ($s in @($specs)) { $s = [string]$s; if ($s.StartsWith('@') -and [System.IO.File]::Exists($s.Substring(1))) { foreach ($p in (Read-PathArgs @($s))) { $out.Add($p) } } elseif ($s) { $out.Add($s) } }
     return ,$out.ToArray()
 }
+# changelist argument: a name, or "default" ('#3' / '3' already turned into the name)
+function Resolve-ClArg([string]$a) {
+    if (-not $a) { Fail "usage: dvcl $cmd <cl> [@listfile|file...] [-y]" }
+    if ($a -ieq 'default') { return 'default' }
+    $c = Find-CL $a; if (-not $c) { Fail ("no changelist '" + $a + "'") }
+    return $c.name
+}
 function Path-Set($paths) {
     $s = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
     foreach ($p in @($paths)) { [void]$s.Add([string]$p) }
@@ -475,7 +504,7 @@ $root = Find-DvRoot (Get-Location).Path
 if (-not $root) { Write-Host "Not inside a Diversion workspace (no .diversion folder above $((Get-Location).Path)). cd into your repo first." -ForegroundColor Red; exit 1 }
 Set-DvRoot $root
 # a changelist can be given by its number: dvcl submit 12 (or CL12, #12)
-if ($cmd -in 'desc', 'add', 'move', 'mv', 'delete', 'submit', 'revert', 'shelve' -and $argv.Count -gt 0 -and $argv[0] -match '^(#|cl ?)?\d+$') {
+if ($cmd -in 'desc', 'add', 'move', 'mv', 'delete', 'submit', 'revert', 'shelve', 'shelve-files', 'unshelve-files', 'delete-shelved' -and $argv.Count -gt 0 -and $argv[0] -match '^(#|cl ?)?\d+$') {
     Load-Db; $c = Find-CL $argv[0]; if ($c) { $argv[0] = $c.name }
 }
 Write-Log ("==== dvcl " + $cmd + " " + ($argv -join ' '))
@@ -597,7 +626,7 @@ try {
                 With-Sync {
                     $st = Wait-Upload
                     if ($st.Paused) { Fail "sync was paused before Diversion finished uploading: nothing submitted. Submit again." }
-                    $items = @($st.Files | Where-Object { $script:SfSet.Contains($_.Path) })
+                    $items = Select-WithNewFolders $st.Files $script:SfSet
                     if ($items.Count -eq 0) { Fail "none of these files is in Diversion's pending list: nothing submitted" }
                     Say ('Submit ' + $items.Count + ' file(s): "' + $script:SfDesc + '"') 'Cyan'
                     foreach ($p in $items) { Say ("   {0}  {1}" -f (Kind-Letter $p.Kind), $p.Path) }
@@ -662,6 +691,79 @@ try {
             $name = $argv[0]; if (-not $name) { Fail "usage: dvcl shelve <cl>" }
             if ((Get-CLItems (Current-Pending).Files $name).Count -eq 0) { Fail "no pending files in this changelist" }
             With-Sync { [void](Shelve-Items ($name + "_" + (Get-Date -Format 'yyyyMMdd-HHmm')) (Get-CLItems (Get-Pending).Files $name)) }
+        }
+
+        # Unreal's Shelve / Unshelve / Delete Shelved: <cl> [@listfile|file...] (no file = the whole changelist)
+        'shelve-files' {
+            $script:SfCl = Resolve-ClArg $argv[0]
+            $want = Read-PathArgs @($argv | Select-Object -Skip 1)
+            $script:SfSet = $(if ($want.Count) { Path-Set $want } else { $null })
+            $pre = @(Get-CLItems (Current-Pending).Files $script:SfCl | Where-Object { $null -eq $script:SfSet -or $script:SfSet.Contains($_.Path) })
+            if ($pre.Count -eq 0) { Fail "none of these files is pending in this changelist" }
+            try {
+                With-Sync {
+                    $items = @(Get-CLItems (Get-Pending).Files $script:SfCl | Where-Object { $null -eq $script:SfSet -or $script:SfSet.Contains($_.Path) })
+                    if ($items.Count -eq 0) { Fail "Diversion lists none of these files as changed" }
+                    [void](Shelve-Items ($script:SfCl + '_' + (Get-Date -Format 'yyyyMMdd-HHmm')) $items)
+                    try { Save-DvShelfCache @(Get-Shelves) } catch {}
+                }
+            } finally { Write-ShelvedFile (Current-ShelfMap) }
+        }
+
+        'unshelve-files' {
+            $cl = Resolve-ClArg $argv[0]
+            $want = Read-PathArgs @($argv | Select-Object -Skip 1)
+            $left = $(if ($want.Count) { Path-Set $want } else { $null })
+            $map = Current-ShelfMap
+            $shs = @(@($map[$cl.ToLowerInvariant()]) | Where-Object { $_ } | Sort-Object { Shelf-Stamp $_ } -Descending)
+            if ($shs.Count -eq 0) { Fail ("changelist '" + $cl + "' has no shelf") }
+            $done = New-Object System.Collections.ArrayList
+            try {
+                # newest shelf first: a file shelved twice comes from the newest
+                foreach ($sh in $shs) {
+                    $take = @(@($sh.Files) | Where-Object { $_ -and ($null -eq $left -or $left.Contains($_.Path)) })
+                    if ($take.Count -eq 0) { continue }
+                    $paths = [string[]]@($take | ForEach-Object { $_.Path })
+                    if ($sh.Local) { Apply-LocalShelf $sh.Id $paths; foreach ($t in $take) { [void]$done.Add($t) } }
+                    else {
+                        $script:UsSh = $sh; $script:UsPaths = $paths; $script:UnDone = $null
+                        With-Sync { $script:UnDone = Apply-DvShelf $script:UsSh $script:UsPaths }
+                        foreach ($t in @($script:UnDone)) { if ($t) { [void]$done.Add($t) } }
+                    }
+                    if ($null -eq $left) { break }   # no file given: the newest shelf
+                    foreach ($p in $paths) { [void]$left.Remove($p) }
+                    if ($left.Count -eq 0) { break }
+                }
+                if ($cl -ine 'default' -and $done.Count) { Move-ToCL $cl @($done) }
+                Say ("Unshelved " + $done.Count + " file(s) into '" + $cl + "'.") 'Green'
+            } finally { try { Write-PendingFile (Current-Pending).Files } catch {}; Write-ShelvedFile (Current-ShelfMap) }
+        }
+
+        'delete-shelved' {
+            $cl = Resolve-ClArg $argv[0]
+            $want = Read-PathArgs @($argv | Select-Object -Skip 1)
+            $set = $(if ($want.Count) { Path-Set $want } else { $null })
+            $shs = @(@((Current-ShelfMap)[$cl.ToLowerInvariant()]) | Where-Object { $_ })
+            $del = New-Object System.Collections.ArrayList
+            foreach ($sh in $shs) {
+                $paths = @(@($sh.Files) | Where-Object { $_ } | ForEach-Object { [string]$_.Path })
+                if ($null -eq $set) { [void]$del.Add($sh); continue }
+                $hit = @($paths | Where-Object { $set.Contains($_) }).Count
+                if ($hit -eq 0) { continue }
+                # a dvcl / Diversion shelf goes whole
+                if ($hit -lt $paths.Count) { Fail ("shelf '" + $(if ($sh.Local) { $sh.Id } else { $sh.Name }) + "' holds " + $paths.Count + " files: a shelf is deleted whole, select all its files (or the Shelved Files line)") }
+                [void]$del.Add($sh)
+            }
+            if ($del.Count -eq 0) { Fail "no shelf of this changelist holds these files" }
+            Confirm-Or-Exit ("Delete " + $del.Count + " shelf(s) of '" + $cl + "'? Cannot be undone.") $yes
+            try {
+                foreach ($sh in $del) {
+                    if ($sh.Local) { Delete-LocalShelf $sh.Id }
+                    else { $script:DelShelf = $sh.Id; With-Sync { Delete-Shelf $script:DelShelf } }
+                    Say ("Deleted shelf " + $(if ($sh.Local) { $sh.Id } else { $sh.Name }) + ".") 'Green'
+                }
+                if (@($del | Where-Object { -not $_.Local }).Count) { try { Save-DvShelfCache @(Get-Shelves) } catch {} }
+            } finally { Write-ShelvedFile (Current-ShelfMap) }
         }
 
         'shelves' {
