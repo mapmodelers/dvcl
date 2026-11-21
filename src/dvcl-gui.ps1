@@ -155,7 +155,7 @@ function New-ConnIcon([string]$kind) {
     $grey = [System.Drawing.Color]::FromArgb(140, 140, 140)
     switch ($kind) {
         'online' {
-            $g.FillEllipse((New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(46, 160, 67))), 0, 0, 17, 17)
+            $g.FillEllipse((New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(96, 166, 112))), 0, 0, 17, 17)
             $w = [System.Drawing.Brushes]::White; $p = New-Object System.Drawing.Pen([System.Drawing.Color]::White, 1.6)
             $g.DrawLine($p, 2.5, 8.5, 5, 8.5); $g.FillRectangle($w, 5, 5.5, 4, 6); $g.DrawLine($p, 9, 7, 11, 7); $g.DrawLine($p, 9, 10, 11, 10); $g.FillRectangle($w, 11, 5.5, 3, 6); $g.DrawLine($p, 14, 8.5, 15.5, 8.5)
         }
@@ -166,11 +166,11 @@ function New-ConnIcon([string]$kind) {
             $g.DrawLine($p, 4, 14, 14, 4)
         }
         'busy' {
-            $p = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(36, 124, 220), 2.4)
+            $p = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(92, 138, 196), 2.4)
             $g.DrawArc($p, 2, 2, 13, 13, -90, 270)
         }
         'down' {
-            $g.FillEllipse((New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(215, 58, 58))), 0, 0, 17, 17)
+            $g.FillEllipse((New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(196, 102, 102))), 0, 0, 17, 17)
             $p = New-Object System.Drawing.Pen([System.Drawing.Color]::White, 2); $g.DrawLine($p, 5.5, 5.5, 11.5, 11.5); $g.DrawLine($p, 11.5, 5.5, 5.5, 11.5)
         }
         default { $g.DrawEllipse((New-Object System.Drawing.Pen($grey, 1.6)), 1, 1, 15, 15) }
@@ -178,14 +178,17 @@ function New-ConnIcon([string]$kind) {
     $g.Dispose(); return $bmp
 }
 $script:ConnIcons = @{}; foreach ($k in 'online', 'offline', 'busy', 'down', 'loading') { $script:ConnIcons[$k] = New-ConnIcon $k }
-# branch chip: a rounded square in the branch's color (grey for main)
+# branch icon (grey): a fork, two commits on a line and one on the side
 $script:ChipIcons = @{}
 function Branch-Chip([string]$branch) {
-    $k = [string]$branch + '|' + [string]$script:Dark
+    $k = [string]$script:Dark
     if (-not $script:ChipIcons.ContainsKey($k)) {
         $bmp = New-Object System.Drawing.Bitmap(14, 14); $g = [System.Drawing.Graphics]::FromImage($bmp); $g.SmoothingMode = 'AntiAlias'
-        $g.FillEllipse((New-Object System.Drawing.SolidBrush((Branch-Color $branch $script:Dark))), 1, 1, 12, 12); $g.Dispose()
-        $script:ChipIcons[$k] = $bmp
+        $c = $(if ($script:Dark) { [System.Drawing.Color]::FromArgb(170, 170, 170) } else { [System.Drawing.Color]::FromArgb(100, 100, 100) })
+        $p = New-Object System.Drawing.Pen($c, 1.5); $b = New-Object System.Drawing.SolidBrush($c)
+        $g.DrawLine($p, 3.5, 2.5, 3.5, 11.5); $g.DrawBezier($p, 3.5, 9, 3.5, 6.5, 10.5, 7.5, 10.5, 4.5)
+        $g.FillEllipse($b, 1.5, 0.5, 4, 4); $g.FillEllipse($b, 1.5, 9.5, 4, 4); $g.FillEllipse($b, 8.5, 2, 4, 4)
+        $g.Dispose(); $script:ChipIcons[$k] = $bmp
     }
     return $script:ChipIcons[$k]
 }
@@ -272,9 +275,10 @@ $main.Panel1.Controls.Add($trees)
 $icons = New-Object System.Windows.Forms.ImageList
 $icons.ImageSize = New-Object System.Drawing.Size(16, 16); $icons.ColorDepth = 'Depth32Bit'
 $script:BadgeColor = @{
-    'A' = [System.Drawing.Color]::FromArgb(46, 160, 67); 'M' = [System.Drawing.Color]::FromArgb(36, 124, 220)
-    'D' = [System.Drawing.Color]::FromArgb(215, 58, 58); 'R' = [System.Drawing.Color]::FromArgb(230, 140, 20)
-    '!' = [System.Drawing.Color]::FromArgb(200, 0, 160); '?' = [System.Drawing.Color]::Gray
+    # soft, not vivid: the badge says the state, the icons stay grey
+    'A' = [System.Drawing.Color]::FromArgb(96, 166, 112); 'M' = [System.Drawing.Color]::FromArgb(92, 138, 196)
+    'D' = [System.Drawing.Color]::FromArgb(196, 102, 102); 'R' = [System.Drawing.Color]::FromArgb(200, 150, 86)
+    '!' = [System.Drawing.Color]::FromArgb(178, 102, 166); '?' = [System.Drawing.Color]::Gray
 }
 function New-Icon([string]$base, [string]$badge, $fill = $null) {
     $bmp = New-Object System.Drawing.Bitmap(16, 16)
@@ -329,17 +333,6 @@ foreach ($k in 'A', 'M', 'D', 'R', '!', '?') { $icons.Images.Add(('file-' + $k),
 # Local / Depot trees exist before the icons: attach the list here
 $tvLocal.ImageList = $icons; $tvDepot.ImageList = $icons
 function Set-Icon($node, [string]$key) { $node.ImageKey = $key; $node.SelectedImageKey = $key }
-# changelist icon in its branch's color (main: the plain grey one)
-function ClIcon-Key([string]$base, [string]$branch) {
-    if (-not $branch -or $branch -in @('main', 'master')) { return $base }
-    $k = $base + '@' + $branch.ToLowerInvariant()
-    if (-not $icons.Images.ContainsKey($k)) {
-        $c = Branch-Color $branch $false
-        if ($base -eq 'cldef') { $c = [System.Drawing.Color]::FromArgb([int]($c.R * 0.72), [int]($c.G * 0.72), [int]($c.B * 0.72)) }
-        $icons.Images.Add($k, (New-Icon $base '' $c))
-    }
-    return $k
-}
 # Changelist rows: main text (name) + a muted part (folder, counts); the node text holds both
 function Set-Row($node, [string]$main, [string]$sub) {
     $node.Text = $main + $(if ($sub) { '   ' + $sub } else { '' })
@@ -770,31 +763,33 @@ function Build-Tree {
     $script:InBuild = $true; $tv.BeginUpdate()
     $tv.Nodes.Clear()
     $set = Pending-Set $script:Pending; $own = Owner-Index; $tPrep = $bsw.Elapsed.TotalMilliseconds
-    $names = @('default') + @($script:CLs | ForEach-Object { $_.name })
+    # grouped by branch: default, the changelists of the branch the workspace is on, then the other
+    # branches' ones (by branch name), each group by number
+    $cur = [string]$script:Branch
+    $sorted = @($script:CLs | Sort-Object @{ Expression = { $b = $(if ($_.branch) { [string]$_.branch } else { $cur }); $(if ($b -ieq $cur) { '0' } else { '1' + $b.ToLowerInvariant() }) } }, @{ Expression = { [int]$_.id } })
+    $names = @('default') + @($sorted | ForEach-Object { $_.name })
     foreach ($name in $names) {
         $items = Get-CLItems $script:Pending $name $own
-        $label = $name; $stale = @()
+        $stale = @(); $d = ''; $c = $null
+        # row: "#12  [branch]  name" (bold), then the description (regular), then the counts (muted)
         if ($name -ne 'default') {
             $c = Find-CL $name
             $stale = Stale-Of $script:Pending $c $set
-            if ($c.desc) {
-                $d = ($c.desc -replace '\s+', ' ').Trim()
-                # name derived from the description: show the description only
-                if ($name.StartsWith((Slug-Base (($c.desc -split "`n")[0])), [StringComparison]::OrdinalIgnoreCase)) { $label = $d } else { $label = $name + '   ' + $d }
-            }
-            $label = '#' + $c.id + '  ' + $label
-            if ($c.branch -and $script:Branch -and $c.branch -ine $script:Branch) { $label += '   [branch ' + $c.branch + ']' }
-        }
+            $clBr = $(if ($c.branch) { [string]$c.branch } else { $cur })
+            $label = '#' + $c.id + $(if ($clBr) { '  [' + $clBr + ']' } else { '' })
+            if ($c.desc) { $d = ($c.desc -replace '\s+', ' ').Trim() }
+            # name derived from the description: the description alone says it
+            if (-not $d -or -not $name.StartsWith((Slug-Base (($c.desc -split "`n")[0])), [StringComparison]::OrdinalIgnoreCase)) { $label += '  ' + $name }
+        } else { $label = 'default' + $(if ($cur) { '  [' + $cur + ']' } else { '' }) }
         $shs = @(); if ($script:ShelfMap -and $script:ShelfMap.ContainsKey($name.ToLowerInvariant())) { $shs = @($script:ShelfMap[$name.ToLowerInvariant()]) }
         $count = '   (' + $items.Count
         if ($stale.Count -gt 0) { $count += ' +' + $stale.Count + ' stale' }
         if ($shs.Count -gt 0) { $count += ', ' + $shs.Count + ' shelved' }
         $count += ')'
-        $n = [System.Windows.Forms.TreeNode]::new(($label + $count))
-        $n.Tag = [pscustomobject]@{ Type = 'cl'; Name = $name; Stale = $stale.Count }
+        $n = [System.Windows.Forms.TreeNode]::new(($label + $(if ($d) { '   ' + $d } else { '' }) + $count))
+        $n.Tag = [pscustomobject]@{ Type = 'cl'; Name = $name; Stale = $stale.Count; Desc = $d }
         Set-Row $n $label ($count.Trim())
-        $clBr = $(if ($name -ne 'default' -and $c -and $c.branch) { [string]$c.branch } else { [string]$script:Branch })
-        Set-Icon $n (ClIcon-Key $(if ($name -eq 'default') { 'cldef' } else { 'cl' }) $clBr)
+        Set-Icon $n $(if ($name -eq 'default') { 'cldef' } else { 'cl' })
         # OFPA actor files: one line per level instead of one per file
         $plainItems = @($items); $ofpa = @()
         if ($script:GroupOfpa) { $so = Split-Ofpa $items; $plainItems = @($so.Plain); $ofpa = @($so.Groups) }
@@ -1202,7 +1197,7 @@ function Set-BranchInfo {
     if ($script:Offline) { $h = '' }
     elseif ($script:Head -and $script:WsCommit) { if ($script:Head -eq $script:WsCommit) { $h = 'up to date' } else { $h = 'NEW COMMITS' } }
     $branchLbl.Text = $script:Branch + $(if ($script:WsCommit) { '  @ ' + $script:WsCommit } else { '' }) + $(if ($h) { '  -  ' + $h } else { '' })
-    $chipBox.Image = Branch-Chip $script:Branch; $modeTip.SetToolTip($chipBox, 'Branch color: ' + $script:Branch)
+    $chipBox.Image = Branch-Chip $script:Branch; $modeTip.SetToolTip($chipBox, 'Branch: ' + $script:Branch)
     if ($ddBranch) { $ddBranch.Text = 'Branch: ' + $script:Branch }
     # the changelists keep the normal background: their icons carry the branch color
     if ($tv.BackColor.ToArgb() -ne $script:Pal.Input.ToArgb()) { $tv.BackColor = $script:Pal.Input; $tv.Invalidate() }
@@ -1387,14 +1382,15 @@ function Show-Pending($st, [bool]$unreachable) {
     $script:WsCommit = $st.Commit
     $script:PendingByPath = @{}
     foreach ($p in $st.Files) { $script:PendingByPath[$p.Path] = $p }
-    $sig = (@($st.Files | ForEach-Object { [string]$_.Kind + '|' + $_.Path }) -join "`n")
+    # the branch first: the changelist rows show it ([branch]) and are grouped by it
+    $script:Branch = $st.Branch
+    $sig = (@($st.Files | ForEach-Object { [string]$_.Kind + '|' + $_.Path }) -join "`n") + "`n#" + [string]$st.Branch
     $same = ($script:QuietRefresh -and $sig -eq $script:PendingSig)
     $script:PendingSig = $sig
     $sw = [Diagnostics.Stopwatch]::StartNew()
     if (-not $same) { Build-Tree; Write-Timing ('build-pending-tree (' + $st.Files.Count + ' files)') $sw.Elapsed.TotalMilliseconds }
     # Diversion shelves: listed online in the background (no lock), cached for offline
     if (-not $script:Offline -and -not $unreachable) { if ($script:OpDepth -gt 0) { $script:OpLater['shelf'] = $true } else { Start-DvAsync @('shelf') 'Apply-DvShelves' $true $true '' } }
-    $script:Branch = $st.Branch
     $note = ''; if ($script:BaselineFresh) { $note = '  (tracking from now)' }
     if ($unreachable) { Set-Mode 'down' '' }
     elseif ($script:Offline) { Set-Mode 'offline' ($script:ModeText['offline'] + $note) }
@@ -2677,13 +2673,15 @@ $tv.Add_DrawNode({
     $on = (Is-Sel $n) -or ($n -eq $s.SelectedNode -and $n.Tag -and -not (Node-Key $n))
     $cur = ($n -eq $s.SelectedNode)
     $fnt = $n.NodeFont; if (-not $fnt) { $fnt = $s.Font }
-    $main = [string]$n.Text; $sub = ''
+    $main = [string]$n.Text; $sub = ''; $dsc = ''
     if ($n.Tag -and $n.Tag.PSObject.Properties['Main']) { $main = [string]$n.Tag.Main; $sub = [string]$n.Tag.Sub }
+    if ($n.Tag -and $n.Tag.PSObject.Properties['Desc']) { $dsc = [string]$n.Tag.Desc }
     $fl = [System.Windows.Forms.TextFormatFlags]'Left, VerticalCenter, NoPrefix, SingleLine, NoPadding'
     $big = New-Object System.Drawing.Size(8000, $e.Bounds.Height)
     $w1 = [System.Windows.Forms.TextRenderer]::MeasureText($e.Graphics, $main, $fnt, $big, $fl).Width
+    $wd = $(if ($dsc) { [System.Windows.Forms.TextRenderer]::MeasureText($e.Graphics, ('   ' + $dsc), $fontUi, $big, $fl).Width } else { 0 })
     $w2 = $(if ($sub) { [System.Windows.Forms.TextRenderer]::MeasureText($e.Graphics, ('   ' + $sub), $fnt, $big, $fl).Width } else { 0 })
-    $r = New-Object System.Drawing.Rectangle($e.Bounds.X, $e.Bounds.Y, ([Math]::Max($e.Bounds.Width, $w1 + $w2 + 6)), $e.Bounds.Height)
+    $r = New-Object System.Drawing.Rectangle($e.Bounds.X, $e.Bounds.Y, ([Math]::Max($e.Bounds.Width, $w1 + $wd + $w2 + 6)), $e.Bounds.Height)
     $bg = $s.BackColor
     if ($on) { $bg = $(if ($s.Focused) { $script:Pal.Sel } elseif ($script:Dark) { $script:Pal.Hi } else { [System.Drawing.Color]::FromArgb(217, 217, 217) }) }
     $b = New-Object System.Drawing.SolidBrush($bg); $e.Graphics.FillRectangle($b, $r); $b.Dispose()
@@ -2694,7 +2692,8 @@ $tv.Add_DrawNode({
     if ($on -and $s.Focused) { $fc = [System.Drawing.Color]::White; $sc = [System.Drawing.Color]::FromArgb(215, 225, 240) }
     $x = $r.X + 3
     [System.Windows.Forms.TextRenderer]::DrawText($e.Graphics, $main, $fnt, (New-Object System.Drawing.Rectangle($x, $r.Y, ($w1 + 4), $r.Height)), $fc, $fl)
-    if ($sub) { [System.Windows.Forms.TextRenderer]::DrawText($e.Graphics, ('   ' + $sub), $fnt, (New-Object System.Drawing.Rectangle(($x + $w1), $r.Y, ($w2 + 4), $r.Height)), $sc, $fl) }
+    if ($dsc) { [System.Windows.Forms.TextRenderer]::DrawText($e.Graphics, ('   ' + $dsc), $fontUi, (New-Object System.Drawing.Rectangle(($x + $w1), $r.Y, ($wd + 4), $r.Height)), $fc, $fl) }
+    if ($sub) { [System.Windows.Forms.TextRenderer]::DrawText($e.Graphics, ('   ' + $sub), $fnt, (New-Object System.Drawing.Rectangle(($x + $w1 + $wd), $r.Y, ($w2 + 4), $r.Height)), $sc, $fl) }
     if ($cur -and $s.Focused -and -not $on) { [System.Windows.Forms.ControlPaint]::DrawFocusRectangle($e.Graphics, $r) }
 })
 $tv.Add_KeyDown({
@@ -2914,7 +2913,8 @@ function Run-GuiSelfCheck {
         if ($brBak) { [System.IO.File]::WriteAllBytes($brCf, $brBak) } else { Remove-Item -LiteralPath $brCf -ErrorAction SilentlyContinue }
         C 'branch switch: checklist dialog and checks in place' ((Get-Command Show-SwitchCheck -ErrorAction SilentlyContinue) -and (Get-Command Get-SwitchCheck -ErrorAction SilentlyContinue) -and $lvBr.Columns[4].Text -eq 'Workspaces on it')
         C 'submitted: Workspace column (from the [ws: ...] line dvcl adds)' ($vSub.List.Columns[3].Text -eq 'Workspace' -and $vSub.List.Columns[4].Text -eq 'Description')
-        C 'changelists: icon in the branch color (main grey), list background plain' ((ClIcon-Key 'cl' 'main') -eq 'cl' -and (ClIcon-Key 'cl' 'rural') -eq 'cl@rural' -and $icons.Images.ContainsKey('cl@rural') -and (ClIcon-Key 'cldef' 'Rural') -eq 'cldef@rural' -and $tv.BackColor.ToArgb() -eq $script:Pal.Input.ToArgb())
+        $cln = @($tv.Nodes | Where-Object { $_.Tag -and $_.Tag.Type -eq 'cl' })
+        C 'changelists: grey icons, [branch] after the number, default first, plain background' ($cln.Count -ge 1 -and @($cln | Where-Object { $_.ImageKey -notin 'cl', 'cldef' }).Count -eq 0 -and $cln[0].Tag.Name -eq 'default' -and (-not $script:Branch -or [string]$cln[0].Tag.Main -like ('default  `[' + $script:Branch + '`]')) -and $tv.BackColor.ToArgb() -eq $script:Pal.Input.ToArgb()) (($cln | Select-Object -First 3 | ForEach-Object { [string]$_.Tag.Main }) -join ' | ')
         $script:ModeHover = $true; Paint-ModeBtn; $hv = $modeLbl.Text; $script:ModeHover = $false; Paint-ModeBtn
         $want = @{ 'on' = 'CONNECT'; 'off' = 'DISCONNECT'; 'retry' = 'RETRY'; '' = $script:ModeShown }[[string]$modeLbl.Tag]
         C 'state bar: grey section, connection icon, hover shows what a click does' ($modeBar.BackColor.ToArgb() -eq $script:Pal.Bar.ToArgb() -and $script:ModeImage -and $hv -eq $want -and $modeLbl.Text -eq $script:ModeShown -and $chipBox.Image) ($hv + ' / ' + $modeLbl.Text + ' / tag ' + [string]$modeLbl.Tag)

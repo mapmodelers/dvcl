@@ -2,6 +2,12 @@
 
 Versions follow [semver](https://semver.org). Tags: `vX.Y.Z`.
 
+## 0.37.0 - 2026-11-21
+
+- Changelists grouped by branch: default, then the ones of the branch the workspace is on, then the other branches'. Each row: "#12  [branch]  name" in bold, the description in regular text, then the counts.
+- Icons grey again (no branch colors); only the state badges have color, softer than before. The state bar shows a grey branch icon.
+- The branch is known before the list is drawn (the first list of a session showed no [branch]).
+
 ## 0.36.0 - 2026-11-21
 
 - State bar redesigned: a grey section of its own (no more colored background). The connection shows as an icon + OFFLINE / ONLINE / BUSY / NO DIVERSION; hovering shows what a click does (CONNECT / DISCONNECT / RETRY) with the icon of the result. Then the branch the workspace is on, with its color chip.

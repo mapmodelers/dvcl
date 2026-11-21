@@ -11,7 +11,7 @@ function Show-List($pending) {
     foreach ($name in (@('default') + @($script:CLs | ForEach-Object { $_.name }))) {
         $items = Get-CLItems $pending $name
         $d = ''; $stale = @(); $num = ''
-        if ($name -ne 'default') { $c = Find-CL $name; $num = 'CL' + $c.id + ' '; if ($c.desc) { $d = '  "' + $c.desc + '"' }; if ($c.branch -and $script:Branch -and $c.branch -ine $script:Branch) { $d += '  [branch ' + $c.branch + ']' }; $stale = Stale-Of $pending $c $set }
+        if ($name -ne 'default') { $c = Find-CL $name; $cb = $(if ($c.branch) { [string]$c.branch } else { [string]$script:Branch }); $num = 'CL' + $c.id + ' ' + $(if ($cb) { '[' + $cb + '] ' } else { '' }); if ($c.desc) { $d = '  "' + $c.desc + '"' }; $stale = Stale-Of $pending $c $set }
         $s = ''; if ($stale.Count -gt 0) { $s = '  +' + $stale.Count + ' not pending' }
         Say ("== " + $num + $name + $d + "  (" + $items.Count + ")" + $s) 'Cyan'
         foreach ($p in $items) { Say ("   #{0,-4} {1}  {2}" -f $p.Index, (Kind-Letter $p.Kind), $p.Path) }
