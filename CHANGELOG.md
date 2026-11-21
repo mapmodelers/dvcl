@@ -2,6 +2,12 @@
 
 Versions follow [semver](https://semver.org). Tags: `vX.Y.Z`.
 
+## 0.31.0 - 2026-11-21
+
+- Branch always in sight: the window title (and so the taskbar) starts with it: `dvcl [main] - <workspace>`. On a job branch the changelist list takes a soft color of its own (one per branch name, none on main), and the Branch menu, the amber BRANCH tag and the changelists of other branches say it too.
+- Branches panel (bottom, next to Log and History): one row per branch with its head commit (number, date, description) and the dvcl changelists made on it; current one bold, rows in their branch color. Refresh lists them (Diversion, a few seconds per branch); double-click a row to switch to it (same checks as Branch > Switch to...).
+- Dev: `dev-watch.cmd` starts a watcher that runs only listed actions (test, full, link, restart, release) on request and writes a short result digest (`_run\`, never published).
+
 ## 0.30.1 - 2026-11-21
 
 - Window: a Branch menu in the toolbar shows the current branch (Branch: main) with Switch to..., New branch... and Merge a branch into this one...; the title always shows the branch. Same rules as the command line (no switch with pending files or with Unreal open).

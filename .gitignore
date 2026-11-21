@@ -9,3 +9,5 @@ tests/gui-selfcheck.txt
 tests/last-run.txt
 tests/gui-selfcheck-demo.txt
 ue/_ref/
+# dev watcher: requests, results, local settings (never published)
+_run/

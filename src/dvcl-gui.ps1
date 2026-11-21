@@ -330,6 +330,39 @@ Register-Pad 'pending' 'Changelists' $padPending 'right'
 Register-Pad 'submitted' 'Submitted' $vSub.Root 'right'
 Register-Pad 'log' 'Log' $padLog 'bottom'
 Register-Pad 'history' 'History' $vHist.Root 'bottom'
+# Branches: one row per branch (head commit, the dvcl changelists made on it); double-click to switch
+$padBranches = New-Object System.Windows.Forms.Panel
+$lvBr = New-Object System.Windows.Forms.ListView
+$lvBr.View = 'Details'; $lvBr.FullRowSelect = $true; $lvBr.HideSelection = $false; $lvBr.Dock = 'Fill'; $lvBr.Font = $fontUi
+foreach ($col in @(@('Branch', 140), @('Head', 110), @('Date', 120), @('Last commit', 300), @('dvcl changelists', 260))) { [void]$lvBr.Columns.Add($col[0], $col[1]) }
+$brBar = New-Object System.Windows.Forms.FlowLayoutPanel; $brBar.Dock = 'Top'; $brBar.Height = 30; $brBar.WrapContents = $false
+$btnBrLoad = New-Object System.Windows.Forms.Button; $btnBrLoad.Text = 'Refresh'; $btnBrLoad.AutoSize = $true; $btnBrLoad.Font = $fontUi
+$lblBr = New-Object System.Windows.Forms.Label; $lblBr.AutoSize = $true; $lblBr.Font = $fontUi; $lblBr.Margin = New-Object System.Windows.Forms.Padding(8, 8, 4, 0)
+$lblBr.Text = 'Branches of the repository (Diversion). Double-click one to switch to it.'
+$brBar.Controls.Add($btnBrLoad); $brBar.Controls.Add($lblBr)
+$padBranches.Controls.Add($lvBr); $padBranches.Controls.Add($brBar)
+function Show-BranchRows {
+    $lvBr.BeginUpdate(); $lvBr.Items.Clear()
+    foreach ($b in @($script:BrRows)) {
+        $it = New-Object System.Windows.Forms.ListViewItem($(if ($b.Name -ieq $script:Branch) { '* ' + $b.Name } else { $b.Name }))
+        foreach ($v in @($b.Head, $b.Date, $b.Desc, $b.Cls)) { [void]$it.SubItems.Add([string]$v) }
+        $it.Tag = $b.Name
+        $it.BackColor = Branch-Tint $b.Name $script:Pal.Input $script:Dark
+        if ($b.Name -ieq $script:Branch) { $it.Font = $fontBold }
+        [void]$lvBr.Items.Add($it)
+    }
+    $lvBr.EndUpdate()
+}
+function Do-LoadBranches {
+    if (Op-Busy) { return }
+    $script:BrRows = @()
+    Run-Busy { $script:BrRows = @(Branch-Rows) } 'Listing branches'
+    $script:BrRowsShown = $true
+    Show-BranchRows
+}
+$btnBrLoad.Add_Click({ Do-LoadBranches })
+$lvBr.Add_DoubleClick({ if ($lvBr.SelectedItems.Count) { Do-BranchSwitch ([string]$lvBr.SelectedItems[0].Tag) } })
+Register-Pad 'branches' 'Branches' $padBranches 'bottom'
 foreach ($id in @($script:Pads.Keys)) { Dock-Pad $id $script:Pads[$id].Home -1 $false }
 
 $status = New-Object System.Windows.Forms.StatusStrip
@@ -938,6 +971,10 @@ function Set-BranchInfo {
     elseif ($script:Head -and $script:WsCommit) { if ($script:Head -eq $script:WsCommit) { $h = 'up to date' } else { $h = 'NEW COMMITS' } }
     $branchLbl.Text = $script:Branch + ' @ ' + $script:WsCommit + $(if ($h) { '  -  ' + $h } else { '' })
     if ($ddBranch) { $ddBranch.Text = 'Branch: ' + $script:Branch }
+    # the changelist list takes a soft color of its own on a job branch (none on main)
+    $tint = Branch-Tint $script:Branch $script:Pal.Input $script:Dark
+    if ($tv.BackColor.ToArgb() -ne $tint.ToArgb()) { $tv.BackColor = $tint; $tv.Invalidate() }
+    if ($script:BrRowsShown) { Show-BranchRows }
     $branchLbl.ForeColor = $(if ($h -like '*NEW COMMITS*') { $script:Pal.Link } else { $script:Pal.Muted })
     # a job branch (not main) stands out: amber, bold
     if ($script:Branch -notin @('main', 'master')) { $branchLbl.Text = 'BRANCH ' + $branchLbl.Text; $branchLbl.ForeColor = $script:Pal.offline; $branchLbl.Font = New-Object System.Drawing.Font($branchLbl.Font, [System.Drawing.FontStyle]::Bold) }
@@ -1141,7 +1178,7 @@ function Show-Pending($st, [bool]$unreachable) {
     if ($st.Syncing) { $sync = 'sync on - Diversion still syncing, list updates by itself' }
     if ($script:Offline) { $sync = 'OFFLINE' }
     $statusLbl.Text = $script:Root + '    ' + $st.Files.Count + ' pending    dvcl ' + (Get-LocalVersion)
-    $form.Text = 'dvcl - ' + (Split-Path -Leaf $script:Root) + $(if ($script:Branch) { '  [' + $script:Branch + ']' } else { '' }) + '   (experimental)'
+    $form.Text = 'dvcl ' + $(if ($script:Branch) { '[' + $script:Branch + '] ' } else { '' }) + '- ' + (Split-Path -Leaf $script:Root) + '   (experimental)'
     if (-not $script:FirstShown) { $script:FirstShown = $true; Write-Timing 'script-start-to-pending-list' $script:Clock.Elapsed.TotalMilliseconds }
     if ($st.Syncing -and -not $script:Paused -and -not $script:SyncMode -and $script:OpDepth -eq 0) { $pollTimer.Start() }
     if ($st.Branch -and -not $script:Offline) { if ($script:OpDepth -gt 0) { $script:OpLater['head'] = $st.Branch } else { Start-DvAsync @('show', $st.Branch) 'Apply-Head' $true $true } }
@@ -1517,10 +1554,15 @@ function Ask-Branch([string]$title, [string]$prompt, [string]$default) {
     Add-Type -AssemblyName Microsoft.VisualBasic
     return ([Microsoft.VisualBasic.Interaction]::InputBox($prompt, $title, $default)).Trim()
 }
-function Do-BranchSwitch {
+function Do-BranchSwitch([string]$name = '') {
     if (Op-Busy) { return }
-    $list = @(); Run-Busy { $script:BrList = @(Get-Branches) } 'Listing branches'; $list = @($script:BrList)
-    $name = Ask-Branch 'Switch branch' ("Branches: " + ($list -join ', ') + "`r`n`r`nSwitch the workspace to (now on " + $script:Branch + "):") ''
+    if ($name) {
+        if ($name -ieq $script:Branch) { return }
+        if (-not (Ask-YesNo ("Switch the workspace from '" + $script:Branch + "' to '" + $name + "'?") 'Switch branch')) { return }
+    } else {
+        $list = @(); Run-Busy { $script:BrList = @(Get-Branches) } 'Listing branches'; $list = @($script:BrList)
+        $name = Ask-Branch 'Switch branch' ("Branches: " + ($list -join ', ') + "`r`n`r`nSwitch the workspace to (now on " + $script:Branch + "):") ''
+    }
     if (-not $name) { return }
     try { Assert-CanSwitch $name $false } catch { [void][System.Windows.Forms.MessageBox]::Show($form, $_.Exception.Message, 'Switch branch', 'OK', 'Warning'); return }
     $script:BrName = $name
@@ -2593,7 +2635,10 @@ function Run-GuiSelfCheck {
         C 'version file' ((Get-LocalVersion) -ne '0.0.0') (Get-LocalVersion)
         C 'layout: default zones: Local | Depot | Changelists, Log below' ($trees.Panel1.Contains($tvLocal) -and $trees.Panel2.Contains($tvDepot) -and $main.Panel2.Contains($tv) -and $split.Panel2.Contains($logBox) -and $trees.Panel1.Width -gt 80 -and $trees.Panel2.Width -gt 80 -and $main.Panel2.Width -gt 100) ("" + $trees.Panel1.Width + ' / ' + $trees.Panel2.Width + ' / ' + $main.Panel2.Width)
         $n = 0; foreach ($z in @($script:Zones.Values)) { $n += $z.Pads.Count }
-        C 'dock: 6 panels, each in exactly one zone' ($script:Pads.Count -eq 6 -and $n -eq 6 -and @($script:Pads.Values | Where-Object { -not $_.Zone }).Count -eq 0) ([string]$n)
+        C 'dock: 7 panels (Branches too), each in exactly one zone' ($script:Pads.Count -eq 7 -and $n -eq 7 -and @($script:Pads.Values | Where-Object { -not $_.Zone }).Count -eq 0) ([string]$n)
+        $tb = [System.Drawing.Color]::White
+        C 'branch: no tint on main, a soft one per job branch (same name, same color)' ((Branch-Tint 'main' $tb $false).ToArgb() -eq $tb.ToArgb() -and (Branch-Tint 'rural' $tb $false).ToArgb() -ne $tb.ToArgb() -and (Branch-Tint 'rural' $tb $false).ToArgb() -eq (Branch-Tint 'Rural' $tb $false).ToArgb() -and (Branch-Tint 'rural' $tb $false).R -gt 200)
+        C 'branch: shown in the title (taskbar) and the Branch menu' (($script:Branch -eq '' -or ($form.Text -like ('dvcl `[' + $script:Branch + '`]*') -and $ddBranch.Text -eq ('Branch: ' + $script:Branch)))) ($form.Text + ' | ' + $ddBranch.Text)
         Dock-Pad 'pending' 'bottom'; Dock-Pad 'submitted' 'bottom'; [System.Windows.Forms.Application]::DoEvents()
         $f1 = $split.Panel2.Contains($tv) -and $main.Panel2Collapsed
         Apply-Layout $null

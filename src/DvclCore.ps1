@@ -512,6 +512,26 @@ function Parse-Branches([string[]]$lines) {
     foreach ($l in @($lines)) { if ([string]$l -match '^\W*branch\s+(\S+)') { if (-not $names.Contains($Matches[1])) { $names.Add($Matches[1]) } } }
     return ,$names.ToArray()
 }
+# One row per branch for the Branches panel: head commit (dv show), and the dvcl changelists made on it
+function Branch-Rows {
+    $rows = New-Object System.Collections.ArrayList
+    foreach ($b in @(Get-Branches)) {
+        $r = Invoke-Dv @('show', [string]$b) $true
+        $c = @(Parse-Log $r.Lines | Select-Object -First 1)
+        $cls = @($script:CLs | Where-Object { ([string]$_.branch) -ieq $b } | ForEach-Object { '#' + $_.id + ' ' + $_.name })
+        [void]$rows.Add([pscustomobject]@{ Name = [string]$b; Head = $(if ($c.Count) { [string]$c[0].Id } else { '' }); Date = $(if ($c.Count) { Format-CommitDate ([string]$c[0].Date) } else { '' }); Desc = $(if ($c.Count) { (([string]$c[0].Desc) -split "`n")[0] } else { '' }); Cls = ($cls -join ', ') })
+    }
+    return ,$rows.ToArray()
+}
+# A soft background per branch for the changelist list: none on main / master, else a hue from the name
+function Branch-Tint([string]$branch, $base, [bool]$dark) {
+    if (-not $branch -or $branch -in @('main', 'master')) { return $base }
+    $h = 0; foreach ($ch in $branch.ToLowerInvariant().ToCharArray()) { $h = ($h * 31 + [int]$ch) % 360 }
+    $s = 0.65; $f = ($h / 60.0) - [Math]::Floor($h / 60.0); $p = 1 - $s; $q = 1 - $s * $f; $t = 1 - $s * (1 - $f)
+    switch ([int][Math]::Floor($h / 60.0) % 6) { 0 { $rgb = 1, $t, $p } 1 { $rgb = $q, 1, $p } 2 { $rgb = $p, 1, $t } 3 { $rgb = $p, $q, 1 } 4 { $rgb = $t, $p, 1 } default { $rgb = 1, $p, $q } }
+    $k = $(if ($dark) { 0.16 } else { 0.12 })
+    return [System.Drawing.Color]::FromArgb([int]($base.R * (1 - $k) + 255 * $rgb[0] * $k), [int]($base.G * (1 - $k) + 255 * $rgb[1] * $k), [int]($base.B * (1 - $k) + 255 * $rgb[2] * $k))
+}
 function Get-OfflinePendingOrOnline {
     if (Test-OfflineFlag) { return (Get-OfflinePending) }
     $st = Get-Pending $false
