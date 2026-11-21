@@ -2,6 +2,11 @@
 
 Versions follow [semver](https://semver.org). Tags: `vX.Y.Z`.
 
+## 0.30.1 - 2026-11-21
+
+- Window: a Branch menu in the toolbar shows the current branch (Branch: main) with Switch to..., New branch... and Merge a branch into this one...; the title always shows the branch. Same rules as the command line (no switch with pending files or with Unreal open).
+- `dvcl branches` lists the branches from `dv branch` (0.30.0 used `dv checkout`, which needs a branch name).
+
 ## 0.30.0 - 2026-11-21
 
 - Branches (job branches merged into main later): `dvcl branches` lists them (current first), `dvcl branch new <name>` creates one from the current branch's head (the workspace stays put), `dvcl branch switch <name>` switches the workspace: refused while files are pending (says how many per changelist; submit or shelve them, or `--take` to carry them over on purpose) and while Unreal is open. `dvcl merge <branch> [--into <branch>]` merges (conflicts are resolved in the Diversion app), `dvcl merge-preview <branch>` opens Diversion's preview in the browser. Online only for that action, as always.

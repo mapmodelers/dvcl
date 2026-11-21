@@ -148,6 +148,8 @@ function Run-SelfTest {
         T "dv output: sync progress detected and filtered" ($fr.SyncBusy -and $fr.Lines.Count -eq $sample.Count)
         $fu = Finish-Dv @('status') @('  Compressing Game/Content/T_Big_Normal.uasset', 'On branch main') 0 $true $false 5
         $fi = Finish-Dv @('status') @('Recently synced 3 files', 'On branch main') 0 $true $false 5
+        $pb = Parse-Branches @('branch main (dv.branch.1)', 'commit dv.commit.173', '* branch rural (dv.branch.9)', 'branch main (dv.branch.1)')
+        T "branches: dv branch output parsed (names once, current mark ignored)" ($pb.Count -eq 2 -and $pb[0] -eq 'main' -and $pb[1] -eq 'rural') ((@($pb) -join ','))
         T "dv output: upload still running detected (compressing / uploading), idle lines not" ($fu.Upload -like '*Compressing*' -and -not $fi.Upload)
         $st = Read-Status $fr
         T "status: branch, commit, 8 files, not paused" ($st.Branch -eq 'main' -and $st.Commit -eq 'dv.commit.43' -and $st.Files.Count -eq 8 -and -not $st.Paused -and $st.Syncing)
@@ -605,9 +607,7 @@ try {
         'branches' {
             $st = Get-Pending $false; $script:Branch = $st.Branch
             Say ("Current branch: " + $st.Branch) 'Cyan'
-            # dv checkout without a branch lists them all
-            $r = Invoke-Dv @('checkout') $true
-            foreach ($l in $r.Lines) { if ([string]$l -match '\S') { Say ('  ' + $l) } }
+            foreach ($b in (Get-Branches)) { Say ($(if ($b -ieq $st.Branch) { '* ' } else { '  ' }) + $b) }
             $mine = @($script:CLs | Where-Object { $_.branch -and $_.branch -ine $st.Branch })
             if ($mine.Count) { Say ('Changelists of other branches: ' + ((@($mine | ForEach-Object { '#' + $_.id + ' ' + $_.name + ' (' + $_.branch + ')' })) -join ', ')) 'DarkYellow' }
         }

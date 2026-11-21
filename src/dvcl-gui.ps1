@@ -937,6 +937,7 @@ function Set-BranchInfo {
     if ($script:Offline) { $h = '' }
     elseif ($script:Head -and $script:WsCommit) { if ($script:Head -eq $script:WsCommit) { $h = 'up to date' } else { $h = 'NEW COMMITS' } }
     $branchLbl.Text = $script:Branch + ' @ ' + $script:WsCommit + $(if ($h) { '  -  ' + $h } else { '' })
+    if ($ddBranch) { $ddBranch.Text = 'Branch: ' + $script:Branch }
     $branchLbl.ForeColor = $(if ($h -like '*NEW COMMITS*') { $script:Pal.Link } else { $script:Pal.Muted })
     # a job branch (not main) stands out: amber, bold
     if ($script:Branch -notin @('main', 'master')) { $branchLbl.Text = 'BRANCH ' + $branchLbl.Text; $branchLbl.ForeColor = $script:Pal.offline; $branchLbl.Font = New-Object System.Drawing.Font($branchLbl.Font, [System.Drawing.FontStyle]::Bold) }
@@ -1140,7 +1141,7 @@ function Show-Pending($st, [bool]$unreachable) {
     if ($st.Syncing) { $sync = 'sync on - Diversion still syncing, list updates by itself' }
     if ($script:Offline) { $sync = 'OFFLINE' }
     $statusLbl.Text = $script:Root + '    ' + $st.Files.Count + ' pending    dvcl ' + (Get-LocalVersion)
-    $form.Text = 'dvcl - ' + (Split-Path -Leaf $script:Root) + $(if ($script:Branch -and $script:Branch -notin @('main', 'master')) { '  [branch ' + $script:Branch + ']' } else { '' }) + '   (experimental)'
+    $form.Text = 'dvcl - ' + (Split-Path -Leaf $script:Root) + $(if ($script:Branch) { '  [' + $script:Branch + ']' } else { '' }) + '   (experimental)'
     if (-not $script:FirstShown) { $script:FirstShown = $true; Write-Timing 'script-start-to-pending-list' $script:Clock.Elapsed.TotalMilliseconds }
     if ($st.Syncing -and -not $script:Paused -and -not $script:SyncMode -and $script:OpDepth -eq 0) { $pollTimer.Start() }
     if ($st.Branch -and -not $script:Offline) { if ($script:OpDepth -gt 0) { $script:OpLater['head'] = $st.Branch } else { Start-DvAsync @('show', $st.Branch) 'Apply-Head' $true $true } }
@@ -1508,6 +1509,53 @@ function Do-GetLatest {
         } finally { Ue-Finish $script:Incoming }
     } finally { Back-Offline }
     Refresh-All
+    } finally { End-Op }
+}
+
+# ---- branches (window): switch / new / merge, online only for that action, as the command line
+function Ask-Branch([string]$title, [string]$prompt, [string]$default) {
+    Add-Type -AssemblyName Microsoft.VisualBasic
+    return ([Microsoft.VisualBasic.Interaction]::InputBox($prompt, $title, $default)).Trim()
+}
+function Do-BranchSwitch {
+    if (Op-Busy) { return }
+    $list = @(); Run-Busy { $script:BrList = @(Get-Branches) } 'Listing branches'; $list = @($script:BrList)
+    $name = Ask-Branch 'Switch branch' ("Branches: " + ($list -join ', ') + "`r`n`r`nSwitch the workspace to (now on " + $script:Branch + "):") ''
+    if (-not $name) { return }
+    try { Assert-CanSwitch $name $false } catch { [void][System.Windows.Forms.MessageBox]::Show($form, $_.Exception.Message, 'Switch branch', 'OK', 'Warning'); return }
+    $script:BrName = $name
+    Begin-Op ('Switching to branch ' + $name)
+    try {
+        if (-not (Ensure-Online 'Switch branch')) { Back-Offline; return }
+        try { Run-Busy { Switch-Branch $script:BrName $false } 'Switching branch' } finally { Back-Offline }
+        Refresh-All
+    } finally { End-Op }
+}
+function Do-BranchNew {
+    if (Op-Busy) { return }
+    $name = Ask-Branch 'New branch' ("Name of the new branch, made from the head of " + $script:Branch + " (letters, digits, _ - .).`r`nThe workspace stays on " + $script:Branch + ".") ''
+    if (-not $name) { return }
+    if ($name -notmatch '^[A-Za-z0-9_\-\.]{1,60}$') { [void][System.Windows.Forms.MessageBox]::Show($form, 'Use letters, digits, _ - . (max 60).', 'New branch', 'OK', 'Warning'); return }
+    $script:BrName = $name
+    Begin-Op ('Creating branch ' + $name)
+    try {
+        if (-not (Ensure-Online 'New branch')) { Back-Offline; return }
+        try { Run-Busy { $r = Invoke-Dv @('branch', '-c', $script:BrName, '--no-checkout'); if ($r.Code -ne 0) { Fail ("dv branch failed: " + ($r.Lines -join ' ')) }; Say ("Branch '" + $script:BrName + "' created. Switch to it: Branch > Switch to...") 'Green' } 'Creating branch' } finally { Back-Offline }
+    } finally { End-Op }
+}
+function Do-BranchMerge {
+    if (Op-Busy) { return }
+    $from = Ask-Branch 'Merge a branch' ("Merge which branch into " + $script:Branch + "? Conflicts are resolved in the Diversion app.") ''
+    if (-not $from) { return }
+    if (Find-UeEngine) { [void][System.Windows.Forms.MessageBox]::Show($form, 'Unreal is open: close it first (the merge writes into this workspace).', 'Merge', 'OK', 'Warning'); return }
+    if (@($script:Pending).Count) { [void][System.Windows.Forms.MessageBox]::Show($form, ([string]@($script:Pending).Count + ' pending file(s): submit or shelve them before merging into ' + $script:Branch + '.'), 'Merge', 'OK', 'Warning'); return }
+    if (-not (Ask-YesNo ("Merge '" + $from + "' into '" + $script:Branch + "' now?") 'Merge')) { return }
+    $script:BrName = $from
+    Begin-Op ('Merging ' + $from)
+    try {
+        if (-not (Ensure-Online 'Merge')) { Back-Offline; return }
+        try { Run-Busy { $r = Invoke-Dv @('merge', $script:BrName); if ($r.Code -ne 0) { Fail ("dv merge failed: " + ($r.Lines -join ' ')) }; Say ("Merged '" + $script:BrName + "'. Conflicts, if any: resolve them in the Diversion app.") 'Green' } 'Merging' } finally { Back-Offline }
+        Refresh-All
     } finally { End-Op }
 }
 
@@ -2196,6 +2244,10 @@ $miSafe = Add-DropItem $ddTools 'Stay offline (safety)' 'Sync is on only during 
 }
 $ddTools.Add_DropDownOpening({ if ($script:Root) { $miSafe.Checked = (Safety-On) } })
 [void](Add-DropItem $ddTools 'Unreal link...' 'Revert / unshelve / get latest with Unreal open: status, install or update the dvcl link plugin' { Do-UeLink })
+$ddBranch = Add-DropBtn 'Branch' 'The branch the workspace is on. Switch (refused with pending files), new branch, merge a branch into this one'
+[void](Add-DropItem $ddBranch 'Switch to...' 'Switch the workspace to another branch (no pending files, Unreal closed)' { Do-BranchSwitch })
+[void](Add-DropItem $ddBranch 'New branch...' 'Create a branch from the head of the current one (the workspace stays put)' { Do-BranchNew })
+[void](Add-DropItem $ddBranch 'Merge a branch into this one...' 'dv merge: conflicts are resolved in the Diversion app' { Do-BranchMerge })
 [void]$tool.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
 $ddView = Add-DropBtn 'View' 'Panels: drag a tab to move it, out of the window for its own window; right-click a tab for more'
 foreach ($pid0 in @($script:Pads.Keys)) {

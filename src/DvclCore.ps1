@@ -505,6 +505,13 @@ function Switch-Branch([string]$name, [bool]$take) {
     $script:Branch = $name
     Say ("Workspace now on branch '" + $name + "'.") 'Green'
 }
+# Branch names of the repository (dv branch lists them), current one marked by Diversion
+function Get-Branches { return (Parse-Branches (Invoke-Dv @('branch') $true).Lines) }
+function Parse-Branches([string[]]$lines) {
+    $names = New-Object System.Collections.Generic.List[string]
+    foreach ($l in @($lines)) { if ([string]$l -match '^\W*branch\s+(\S+)') { if (-not $names.Contains($Matches[1])) { $names.Add($Matches[1]) } } }
+    return ,$names.ToArray()
+}
 function Get-OfflinePendingOrOnline {
     if (Test-OfflineFlag) { return (Get-OfflinePending) }
     $st = Get-Pending $false
