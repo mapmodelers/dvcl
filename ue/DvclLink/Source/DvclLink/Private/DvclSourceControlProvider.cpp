@@ -1,14 +1,18 @@
 #include "DvclSourceControlProvider.h"
 
+#include "DvclSourceControlChangelist.h"
 #include "DvclSourceControlState.h"
+#include "Dom/JsonObject.h"
 #include "HAL/FileManager.h"
 #include "HAL/PlatformProcess.h"
 #include "HAL/PlatformTime.h"
-#include "Misc/ScopedSlowTask.h"
 #include "ISourceControlModule.h"
 #include "Logging/MessageLog.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
+#include "Misc/ScopedSlowTask.h"
+#include "Serialization/JsonReader.h"
+#include "Serialization/JsonSerializer.h"
 #include "SourceControlHelpers.h"
 #include "SourceControlOperations.h"
 #if SOURCE_CONTROL_WITH_SLATE
@@ -48,17 +52,32 @@ FString FDvclSourceControlProvider::Key(const FString& File)
 	return Full.ToLower();
 }
 
+int32 FDvclSourceControlProvider::ClId(const FSourceControlChangelistPtr& InChangelist)
+{
+	if (!InChangelist.IsValid() || InChangelist->IsDefault())
+	{
+		return 0;
+	}
+	const FString Id = InChangelist->GetIdentifier();
+	return Id.IsNumeric() ? FCString::Atoi(*Id) : 0;
+}
+
 void FDvclSourceControlProvider::Init(bool bForceConnection)
 {
 	Root = FindDvclRoot();
 	PendingFile = Root.IsEmpty() ? FString() : (Root / TEXT(".dvcl/pending.tsv"));
+	ClFile = Root.IsEmpty() ? FString() : (Root / TEXT(".dvcl/changelists.json"));
 	PendingStamp = FDateTime::MinValue();
+	ClStamp = FDateTime::MinValue();
 	Reload(true);
 }
 
 void FDvclSourceControlProvider::Close()
 {
 	Pending.Reset();
+	ClStates.Reset();
+	ClOrder.Reset();
+	Owner.Reset();
 	Done.Reset();
 }
 
@@ -74,8 +93,8 @@ FText FDvclSourceControlProvider::GetStatusText() const
 	{
 		return LOCTEXT("NoRoot", "No dvcl workspace above this project (open the workspace in dvcl once).");
 	}
-	return FText::Format(LOCTEXT("Status", "dvcl workspace {0}: {1} pending file(s). States follow the dvcl window (keep it open); check in / revert in dvcl."),
-		FText::FromString(Root), FText::AsNumber(Pending.Num()));
+	return FText::Format(LOCTEXT("Status", "dvcl workspace {0}: {1} pending file(s) in {2} changelist(s). States follow the dvcl window (keep it open). Revert, submit and changelists run dvcl."),
+		FText::FromString(Root), FText::AsNumber(Pending.Num()), FText::AsNumber(ClOrder.Num()));
 }
 
 TMap<ISourceControlProvider::EStatus, FString> FDvclSourceControlProvider::GetStatus() const
@@ -87,6 +106,63 @@ TMap<ISourceControlProvider::EStatus, FString> FDvclSourceControlProvider::GetSt
 	return Result;
 }
 
+void FDvclSourceControlProvider::ReadChangelists()
+{
+	ClStates.Reset();
+	ClOrder.Reset();
+	Owner.Reset();
+	ClStates.Add(0, MakeShared<FDvclChangelistState, ESPMode::ThreadSafe>(0, FString(TEXT("default")), FString()));
+	ClOrder.Add(0);
+	FString Text;
+	if (ClFile.IsEmpty() || !FFileHelper::LoadFileToString(Text, *ClFile))
+	{
+		return;
+	}
+	TSharedPtr<FJsonObject> Json;
+	const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Text);
+	if (!FJsonSerializer::Deserialize(Reader, Json) || !Json.IsValid())
+	{
+		return;
+	}
+	const TArray<TSharedPtr<FJsonValue>>* List = nullptr;
+	if (!Json->TryGetArrayField(TEXT("changelists"), List) || List == nullptr)
+	{
+		return;
+	}
+	for (const TSharedPtr<FJsonValue>& Value : *List)
+	{
+		const TSharedPtr<FJsonObject> Cl = Value.IsValid() ? Value->AsObject() : nullptr;
+		if (!Cl.IsValid())
+		{
+			continue;
+		}
+		int32 Id = 0;
+		Cl->TryGetNumberField(TEXT("id"), Id);
+		if (Id <= 0 || ClStates.Contains(Id))
+		{
+			continue;
+		}
+		FString Name;
+		FString Description;
+		Cl->TryGetStringField(TEXT("name"), Name);
+		Cl->TryGetStringField(TEXT("desc"), Description);
+		ClStates.Add(Id, MakeShared<FDvclChangelistState, ESPMode::ThreadSafe>(Id, Name, Description));
+		ClOrder.Add(Id);
+		const TArray<TSharedPtr<FJsonValue>>* Files = nullptr;
+		if (Cl->TryGetArrayField(TEXT("files"), Files) && Files != nullptr)
+		{
+			for (const TSharedPtr<FJsonValue>& FileValue : *Files)
+			{
+				FString File;
+				if (FileValue.IsValid() && FileValue->TryGetString(File) && !File.IsEmpty())
+				{
+					Owner.Add(Key(Root / File), Id);
+				}
+			}
+		}
+	}
+}
+
 bool FDvclSourceControlProvider::Reload(bool bForce)
 {
 	if (PendingFile.IsEmpty())
@@ -94,11 +170,15 @@ bool FDvclSourceControlProvider::Reload(bool bForce)
 		return false;
 	}
 	const FDateTime Stamp = IFileManager::Get().GetTimeStamp(*PendingFile);
-	if (!bForce && Stamp == PendingStamp)
+	const FDateTime CStamp = IFileManager::Get().GetTimeStamp(*ClFile);
+	if (!bForce && Stamp == PendingStamp && CStamp == ClStamp)
 	{
 		return false;
 	}
 	PendingStamp = Stamp;
+	ClStamp = CStamp;
+	// the changelists file says which changelist owns a file; the pending list says what changed
+	ReadChangelists();
 	Pending.Reset();
 	TArray<FString> Lines;
 	if (FFileHelper::LoadFileToStringArray(Lines, *PendingFile))
@@ -117,11 +197,32 @@ bool FDvclSourceControlProvider::Reload(bool bForce)
 			}
 			FString Full = Root / Parts[1];
 			FPaths::NormalizeFilename(Full);
-			const FString Cl = Parts.Num() > 2 ? Parts[2] : FString(TEXT("default"));
-			Pending.Add(Key(Full), MakeShared<FDvclSourceControlState, ESPMode::ThreadSafe>(Full, FChar::ToUpper(Parts[0][0]), Cl));
+			const FString FileKey = Key(Full);
+			int32 Id = Owner.FindRef(FileKey);
+			if (!ClStates.Contains(Id))
+			{
+				Id = 0;
+			}
+			const TSharedRef<FDvclChangelistState, ESPMode::ThreadSafe>& Cl = ClStates.FindChecked(Id);
+			const TSharedRef<FDvclSourceControlState, ESPMode::ThreadSafe> State = MakeShared<FDvclSourceControlState, ESPMode::ThreadSafe>(Full, FChar::ToUpper(Parts[0][0]), Cl->GetDisplayText().ToString());
+			Pending.Add(FileKey, State);
+			Cl->Files.Add(State);
 		}
 	}
 	return true;
+}
+
+TArray<FString> FDvclSourceControlProvider::FilesOf(int32 Id) const
+{
+	TArray<FString> Result;
+	if (const TSharedRef<FDvclChangelistState, ESPMode::ThreadSafe>* Cl = ClStates.Find(Id))
+	{
+		for (const FSourceControlStateRef& State : (*Cl)->Files)
+		{
+			Result.Add(State->GetFilename());
+		}
+	}
+	return Result;
 }
 
 ECommandResult::Type FDvclSourceControlProvider::GetState(const TArray<FString>& InFiles, TArray<FSourceControlStateRef>& OutState, EStateCacheUsage::Type InStateCacheUsage)
@@ -144,6 +245,36 @@ ECommandResult::Type FDvclSourceControlProvider::GetState(const TArray<FString>&
 		}
 	}
 	return ECommandResult::Succeeded;
+}
+
+ECommandResult::Type FDvclSourceControlProvider::GetState(const TArray<FSourceControlChangelistRef>& InChangelists, TArray<FSourceControlChangelistStateRef>& OutState, EStateCacheUsage::Type InStateCacheUsage)
+{
+	if (InStateCacheUsage == EStateCacheUsage::ForceUpdate)
+	{
+		Reload(true);
+	}
+	for (const FSourceControlChangelistRef& Changelist : InChangelists)
+	{
+		if (const TSharedRef<FDvclChangelistState, ESPMode::ThreadSafe>* Found = ClStates.Find(ClId(Changelist)))
+		{
+			OutState.Add(*Found);
+		}
+	}
+	return ECommandResult::Succeeded;
+}
+
+TArray<FSourceControlChangelistRef> FDvclSourceControlProvider::GetChangelists(EStateCacheUsage::Type InStateCacheUsage)
+{
+	if (InStateCacheUsage == EStateCacheUsage::ForceUpdate)
+	{
+		Reload(true);
+	}
+	TArray<FSourceControlChangelistRef> Result;
+	for (const int32 Id : ClOrder)
+	{
+		Result.Add(MakeShared<FDvclChangelist, ESPMode::ThreadSafe>(Id));
+	}
+	return Result;
 }
 
 TArray<FSourceControlStateRef> FDvclSourceControlProvider::GetCachedStateByPredicate(TFunctionRef<bool(const FSourceControlStateRef&)> Predicate) const
@@ -173,7 +304,8 @@ void FDvclSourceControlProvider::UnregisterSourceControlStateChanged_Handle(FDel
 bool FDvclSourceControlProvider::CanExecuteOperation(const FSourceControlOperationRef& InOperation) const
 {
 	const FName Op = InOperation->GetName();
-	return Op == "Connect" || Op == "UpdateStatus" || Op == "CheckOut" || Op == "MarkForAdd" || Op == "Delete" || Op == "Revert" || Op == "CheckIn";
+	return Op == "Connect" || Op == "UpdateStatus" || Op == "CheckOut" || Op == "MarkForAdd" || Op == "Delete" || Op == "Revert" || Op == "CheckIn"
+		|| Op == "RevertUnchanged" || Op == "UpdateChangelistsStatus" || Op == "NewChangelist" || Op == "DeleteChangelist" || Op == "EditChangelist" || Op == "MoveToChangelist";
 }
 
 ECommandResult::Type FDvclSourceControlProvider::Execute(const FSourceControlOperationRef& InOperation, FSourceControlChangelistPtr InChangelist, const TArray<FString>& InFiles, EConcurrency::Type InConcurrency, const FSourceControlOperationComplete& InOperationCompleteDelegate)
@@ -192,35 +324,154 @@ ECommandResult::Type FDvclSourceControlProvider::Execute(const FSourceControlOpe
 			Result = ECommandResult::Failed;
 		}
 	}
-	else if (Op == "UpdateStatus")
+	else if (Op == "UpdateStatus" || Op == "UpdateChangelistsStatus")
 	{
 		Reload(true);
 		OnStateChanged.Broadcast();
 	}
-	else if (Op == "CheckOut" || Op == "MarkForAdd")
+	else if (Op == "CheckOut" || Op == "MarkForAdd" || Op == "RevertUnchanged")
 	{
-		// Diversion sees every change by itself: nothing to do
+		// Diversion sees every change by itself, and a file without change is not pending: nothing to do
 	}
 	else if (Op == "Revert")
 	{
-		Result = RunFilesCommand(TEXT("revert-files"), InFiles, FString(), LOCTEXT("Reverting", "dvcl: reverting (online for this only, then back offline)..."), InOperation);
+		// only files with a change to undo (Unreal also reverts before deleting an asset: unchanged and
+		// new files have nothing to revert, so that delete stays instant)
+		Reload(false);
+		TArray<FString> ToRevert;
+		for (const FString& File : SourceControlHelpers::AbsoluteFilenames(InFiles))
+		{
+			const TSharedRef<FDvclSourceControlState, ESPMode::ThreadSafe>* Found = Pending.Find(Key(File));
+			if (Found != nullptr && (*Found)->CanRevert())
+			{
+				ToRevert.Add(File);
+			}
+		}
+		if (ToRevert.Num() > 0)
+		{
+			Result = RunFilesCommand(TEXT("revert-files"), ToRevert, FString(), LOCTEXT("Reverting", "dvcl: reverting (online for this only, then back offline)..."), InOperation);
+		}
 	}
 	else if (Op == "CheckIn")
 	{
 		TSharedRef<FCheckIn, ESPMode::ThreadSafe> CheckIn = StaticCastSharedRef<FCheckIn>(InOperation);
 		const FString Description = CheckIn->GetDescription().ToString().TrimStartAndEnd();
+		Reload(false);
 		if (Description.IsEmpty())
 		{
 			InOperation->AddErrorMessge(LOCTEXT("NoDescription", "dvcl: a description is required to submit."));
 			Result = ECommandResult::Failed;
 		}
+		else if (InFiles.Num() == 0 && InChangelist.IsValid())
+		{
+			// a whole changelist (Changelists window): dvcl submits that changelist with this description
+			const int32 Id = ClId(InChangelist);
+			const FString Message = WriteMessage(Description);
+			const FText What = LOCTEXT("SubmittingCl", "dvcl: submitting the changelist (waits for Diversion's upload, then back offline)...");
+			if (Id == 0)
+			{
+				Result = RunCommand(FString::Printf(TEXT("submit default \"@%s\" -y"), *Message), What, InOperation);
+			}
+			else
+			{
+				Result = RunCommand(FString::Printf(TEXT("desc %d \"@%s\""), Id, *Message), LOCTEXT("Describing", "dvcl: description..."), InOperation);
+				if (Result == ECommandResult::Succeeded)
+				{
+					Result = RunCommand(FString::Printf(TEXT("submit %d -y"), Id), What, InOperation);
+				}
+			}
+		}
 		else
 		{
-			Result = RunFilesCommand(TEXT("submit-files"), InFiles, Description, LOCTEXT("Submitting", "dvcl: submitting (waits for Diversion's upload, then back offline)..."), InOperation);
-			if (Result == ECommandResult::Succeeded)
+			// files (Submit Content): only files of one changelist, so a submit never mixes changelists
+			TSet<int32> Ids;
+			for (const FString& File : SourceControlHelpers::AbsoluteFilenames(InFiles))
 			{
-				CheckIn->SetSuccessMessage(LOCTEXT("Submitted", "Submitted with dvcl."));
+				Ids.Add(Owner.FindRef(Key(File)));
 			}
+			if (Ids.Num() > 1)
+			{
+				InOperation->AddErrorMessge(FText::Format(LOCTEXT("MixedCls", "dvcl: these files belong to {0} changelists. Submit one changelist at a time (Window > Revision Control > Changelists, or the dvcl window)."), FText::AsNumber(Ids.Num())));
+				Result = ECommandResult::Failed;
+			}
+			else
+			{
+				Result = RunFilesCommand(TEXT("submit-files"), InFiles, Description, LOCTEXT("Submitting", "dvcl: submitting (waits for Diversion's upload, then back offline)..."), InOperation);
+			}
+		}
+		if (Result == ECommandResult::Succeeded)
+		{
+			CheckIn->SetSuccessMessage(LOCTEXT("Submitted", "Submitted with dvcl."));
+		}
+	}
+	else if (Op == "NewChangelist")
+	{
+		TSharedRef<FNewChangelist, ESPMode::ThreadSafe> NewCl = StaticCastSharedRef<FNewChangelist>(InOperation);
+		FString Description = NewCl->GetDescription().ToString().TrimStartAndEnd();
+		if (Description.IsEmpty())
+		{
+			Description = TEXT("new changelist");
+		}
+		int32 Before = 0;
+		for (const int32 Id : ClOrder)
+		{
+			Before = FMath::Max(Before, Id);
+		}
+		Result = RunCommand(FString::Printf(TEXT("new \"@%s\""), *WriteMessage(Description)), LOCTEXT("Creating", "dvcl: new changelist..."), InOperation);
+		int32 After = 0;
+		for (const int32 Id : ClOrder)
+		{
+			After = FMath::Max(After, Id);
+		}
+		if (Result == ECommandResult::Succeeded && After > Before)
+		{
+			NewCl->SetNewChangelist(MakeShared<FDvclChangelist, ESPMode::ThreadSafe>(After));
+			if (InFiles.Num() > 0)
+			{
+				const FString ListFile = Root / TEXT(".dvcl/ue-files.txt");
+				FFileHelper::SaveStringArrayToFile(SourceControlHelpers::AbsoluteFilenames(InFiles), *ListFile, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
+				Result = RunCommand(FString::Printf(TEXT("add %d \"@%s\""), After, *ListFile), LOCTEXT("Moving", "dvcl: moving files..."), InOperation);
+			}
+		}
+	}
+	else if (Op == "DeleteChangelist")
+	{
+		const int32 Id = ClId(InChangelist);
+		if (Id == 0)
+		{
+			InOperation->AddErrorMessge(LOCTEXT("NoDeleteDefault", "dvcl: the default changelist cannot be deleted."));
+			Result = ECommandResult::Failed;
+		}
+		else
+		{
+			Result = RunCommand(FString::Printf(TEXT("delete %d"), Id), LOCTEXT("Deleting", "dvcl: deleting the changelist (its files go to default)..."), InOperation);
+		}
+	}
+	else if (Op == "EditChangelist")
+	{
+		const int32 Id = ClId(InChangelist);
+		TSharedRef<FEditChangelist, ESPMode::ThreadSafe> Edit = StaticCastSharedRef<FEditChangelist>(InOperation);
+		const FString Description = Edit->GetDescription().ToString().TrimStartAndEnd();
+		if (Id == 0)
+		{
+			InOperation->AddErrorMessge(LOCTEXT("NoEditDefault", "dvcl: the default changelist has no description (make a new changelist)."));
+			Result = ECommandResult::Failed;
+		}
+		else
+		{
+			Result = RunCommand(FString::Printf(TEXT("desc %d \"@%s\""), Id, *WriteMessage(Description)), LOCTEXT("Describing", "dvcl: description..."), InOperation);
+		}
+	}
+	else if (Op == "MoveToChangelist")
+	{
+		const int32 Id = ClId(InChangelist);
+		TArray<FString> Files = SourceControlHelpers::AbsoluteFilenames(InFiles);
+		if (Files.Num() > 0)
+		{
+			const FString ListFile = Root / TEXT(".dvcl/ue-files.txt");
+			FFileHelper::SaveStringArrayToFile(Files, *ListFile, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
+			const FString Args = Id == 0 ? FString::Printf(TEXT("remove \"@%s\""), *ListFile) : FString::Printf(TEXT("add %d \"@%s\""), Id, *ListFile);
+			Result = RunCommand(Args, LOCTEXT("Moving", "dvcl: moving files..."), InOperation);
 		}
 	}
 	else if (Op == "Delete")
@@ -247,6 +498,13 @@ ECommandResult::Type FDvclSourceControlProvider::Execute(const FSourceControlOpe
 	return Result;
 }
 
+FString FDvclSourceControlProvider::WriteMessage(const FString& Text) const
+{
+	const FString MessageFile = Root / TEXT(".dvcl/ue-message.txt");
+	FFileHelper::SaveStringToFile(Text, *MessageFile, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
+	return MessageFile;
+}
+
 ECommandResult::Type FDvclSourceControlProvider::RunFilesCommand(const FString& Command, const TArray<FString>& InFiles, const FString& Message, const FText& What, const FSourceControlOperationRef& InOperation)
 {
 	if (Root.IsEmpty())
@@ -257,7 +515,7 @@ ECommandResult::Type FDvclSourceControlProvider::RunFilesCommand(const FString& 
 	TArray<FString> Files = SourceControlHelpers::AbsoluteFilenames(InFiles);
 	if (Files.Num() == 0)
 	{
-		InOperation->AddErrorMessge(LOCTEXT("NoFiles", "dvcl: no file given (changelists from Unreal come later: use the dvcl window)."));
+		InOperation->AddErrorMessge(LOCTEXT("NoFiles", "dvcl: no file given."));
 		return ECommandResult::Failed;
 	}
 	const FString ListFile = Root / TEXT(".dvcl/ue-files.txt");
@@ -265,14 +523,22 @@ ECommandResult::Type FDvclSourceControlProvider::RunFilesCommand(const FString& 
 	FString Args = Command + TEXT(" \"@") + ListFile + TEXT("\"");
 	if (!Message.IsEmpty())
 	{
-		const FString MessageFile = Root / TEXT(".dvcl/ue-message.txt");
-		FFileHelper::SaveStringToFile(Message, *MessageFile, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
-		Args += TEXT(" \"@") + MessageFile + TEXT("\"");
+		Args += TEXT(" \"@") + WriteMessage(Message) + TEXT("\"");
 	}
 	Args += TEXT(" -y");
+	return RunCommand(Args, What, InOperation);
+}
+
+ECommandResult::Type FDvclSourceControlProvider::RunCommand(const FString& Args, const FText& What, const FSourceControlOperationRef& InOperation)
+{
+	if (Root.IsEmpty())
+	{
+		InOperation->AddErrorMessge(GetStatusText());
+		return ECommandResult::Failed;
+	}
 	FString Log;
 	const bool bOk = RunDvcl(Args, What, Log);
-	// the files changed: states from dvcl's new list (written by the command)
+	// files or changelists changed: states from dvcl's files (written by the command)
 	Reload(true);
 	OnStateChanged.Broadcast();
 	if (!bOk)
@@ -286,6 +552,7 @@ ECommandResult::Type FDvclSourceControlProvider::RunFilesCommand(const FString& 
 		{
 			Tail += Lines[i].TrimEnd() + TEXT("\n");
 		}
+		const FString Command = Args.Left(Args.Find(TEXT(" ")) > 0 ? Args.Find(TEXT(" ")) : Args.Len());
 		InOperation->AddErrorMessge(FText::Format(LOCTEXT("DvclFailed", "dvcl {0} failed:\n{1}"), FText::FromString(Command), FText::FromString(Tail)));
 		return ECommandResult::Failed;
 	}
@@ -363,7 +630,7 @@ void FDvclSourceControlProvider::Tick()
 		return;
 	}
 	NextCheck = Now + 2.0;
-	// dvcl rewrote its list (save, revert, unshelve, move to another changelist...): states follow
+	// dvcl rewrote its list or its changelists (save, revert, unshelve, move...): states follow
 	if (Reload(false))
 	{
 		OnStateChanged.Broadcast();

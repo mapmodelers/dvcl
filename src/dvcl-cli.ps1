@@ -317,6 +317,11 @@ function Run-SelfTest {
             $lf = Full-Path 'ue-list.txt'; [System.IO.File]::WriteAllLines($lf, [string[]]@((Full-Path 'Game/Content/A.uasset'), '', ((Full-Path 'Game/Content/New/D.uasset') -replace '\\', '/')))
             $ra = Read-PathArgs @(('@' + $lf), 'Game\Content\C.uasset'); Remove-Item -LiteralPath $lf
             T "file list for Unreal: @listfile + paths, made relative" ($ra.Count -eq 3 -and $ra[0] -eq 'Game/Content/A.uasset' -and $ra[1] -eq 'Game/Content/New/D.uasset' -and $ra[2] -eq 'Game/Content/C.uasset') ((@($ra) -join ','))
+            $mf = Full-Path 'ue-msg.txt'; [System.IO.File]::WriteAllText($mf, "  roof pass`r`nsecond line  ")
+            $lf2 = Full-Path 'ue-list2.txt'; [System.IO.File]::WriteAllLines($lf2, [string[]]@((Full-Path 'Game/Content/A.uasset')))
+            $ta = Read-TextArg ('@' + $mf); $tb = Read-TextArg '@nofile here'; $es = Expand-Specs @(('@' + $lf2), '#3', 'Content/*')
+            Remove-Item -LiteralPath $mf, $lf2
+            T "text and specs from Unreal: @file read, other text and specs kept" ($ta -eq "roof pass`r`nsecond line" -and $tb -eq '@nofile here' -and $es.Count -eq 3 -and $es[0] -eq 'Game/Content/A.uasset' -and $es[1] -eq '#3' -and $es[2] -eq 'Content/*') ((@($es) -join ','))
             # the user folder's .diversion (Diversion's own settings) is not a workspace
             $svProf = $env:USERPROFILE
             try {
@@ -381,6 +386,17 @@ function Read-PathArgs($items) {
     }
     return ,$out.ToArray()
 }
+# "@file" = the text of that file (descriptions from Unreal), else the text itself
+function Read-TextArg([string]$a) {
+    if ($a.StartsWith('@') -and [System.IO.File]::Exists($a.Substring(1))) { return ([System.IO.File]::ReadAllText($a.Substring(1), [System.Text.Encoding]::UTF8)).Trim() }
+    return $a
+}
+# file specs: "@listfile" expands to its paths, anything else stays as given (#numbers, folders, wildcards)
+function Expand-Specs($specs) {
+    $out = New-Object System.Collections.Generic.List[string]
+    foreach ($s in @($specs)) { $s = [string]$s; if ($s.StartsWith('@') -and [System.IO.File]::Exists($s.Substring(1))) { foreach ($p in (Read-PathArgs @($s))) { $out.Add($p) } } elseif ($s) { $out.Add($s) } }
+    return ,$out.ToArray()
+}
 function Path-Set($paths) {
     $s = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
     foreach ($p in @($paths)) { [void]$s.Add([string]$p) }
@@ -392,7 +408,7 @@ function Submit-Cli([string]$name, $argv, [bool]$yes) {
     # paused while dv was waiting for the upload (stay offline, another dvcl): the list is not complete
     if ($st.Paused) { Fail "sync was paused before Diversion finished uploading: nothing submitted. Run the submit again (big uploads can take a while)." }
             if ($name -ieq 'default') {
-                $desc = (@($argv | Select-Object -Skip 1) -join ' ').Trim()
+                $desc = (Read-TextArg ((@($argv | Select-Object -Skip 1) -join ' ').Trim())).Trim()
                 if (-not $desc) { Fail "default needs a message: dvcl submit default ""your message""" }
             } else {
                 $c = Find-CL $name; if (-not $c) { Fail ("no changelist '" + $name + "'") }
@@ -467,16 +483,20 @@ try {
             Show-List $st.Files
         }
 
-        'new'  { [void](New-CL $argv[0] ((@($argv | Select-Object -Skip 1)) -join ' ')) }
+        'new'  {
+            # dvcl new @descfile (Unreal): the name is made from the description
+            if ([string]$argv[0] -like '@*') { [void](New-CL '' (Read-TextArg ([string]$argv[0]))) }
+            else { [void](New-CL $argv[0] ((@($argv | Select-Object -Skip 1)) -join ' ')) }
+        }
 
         'desc' {
-            Set-CLDesc $argv[0] ((@($argv | Select-Object -Skip 1)) -join ' ')
+            Set-CLDesc $argv[0] (Read-TextArg ((@($argv | Select-Object -Skip 1)) -join ' '))
             Say ("Description of '" + $argv[0] + "' updated.") 'Green'
         }
 
         { $_ -in 'add', 'move', 'mv' } {
             $name = $argv[0]; Check-Name $name
-            $specs = @($argv | Select-Object -Skip 1); if ($specs.Count -eq 0) { Fail "nothing to add: give #numbers, files, folders or wildcards" }
+            $specs = Expand-Specs @($argv | Select-Object -Skip 1); if ($specs.Count -eq 0) { Fail "nothing to add: give #numbers, files, folders or wildcards" }
             $st = Current-Pending
             $sel = Select-Pending $st.Files $specs
             foreach ($p in $sel) { Say ("   -> " + $name + " : " + $p.Path) }
@@ -486,7 +506,7 @@ try {
         { $_ -in 'remove', 'rm' } {
             if ($argv.Count -eq 0) { Fail "nothing to remove" }
             $st = Current-Pending
-            $sel = Select-Pending $st.Files $argv
+            $sel = Select-Pending $st.Files (Expand-Specs $argv)
             Move-ToCL 'default' $sel
         }
 

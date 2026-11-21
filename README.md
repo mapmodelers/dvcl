@@ -13,7 +13,7 @@ Changelists for [Diversion](https://diversion.dev). [Site](https://mapmodelers.g
 - Local and Depot trees, state icons, path bars. Drop a file on a tree to find it.
 - Submitted and History: commits, their files, what you have not got yet.
 - Unreal: revert, unshelve and get latest without restarting the editor (dvcl link plugin: Tools > Unreal link, install once).
-- Unreal revision control "dvcl": file states in the Content Browser, Revert and Submit from Unreal, offline, no login (pick dvcl in Revision Control > Connect).
+- Unreal revision control "dvcl": file states in the Content Browser, dvcl changelists in Unreal's Changelists window, Revert and Submit from Unreal, offline, no login (pick dvcl in Revision Control > Connect).
 - Panels you arrange: drag tabs together, to an edge, or out into their own window.
 - Command line: `dvcl help`.
 

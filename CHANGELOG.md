@@ -2,6 +2,12 @@
 
 Versions follow [semver](https://semver.org). Tags: `vX.Y.Z`.
 
+## 0.29.0 - 2026-11-21
+
+- Unreal revision control "dvcl" (dvcl link 6): dvcl's changelists in Unreal's Changelists window (Window > Revision Control > Changelists): #number, name, description, their files. New, delete, edit description, move files between changelists, submit a changelist and revert files from there; dvcl and Unreal stay in step (both read .dvcl\changelists.json). Update the link once (Tools > Unreal link > Update, Unreal closed).
+- Unreal: deleting an asset no longer goes online to "revert" it first (Unreal reverts before deleting; unchanged and new files have nothing to revert, so the delete is instant again). Submit Content refuses files from several changelists (submit one changelist at a time).
+- Command line: `dvcl new @file`, `dvcl desc <cl> @file`, `dvcl submit default @file`: text from a file; `dvcl add <cl> @list`, `dvcl remove @list`: files from a list (used by Unreal).
+
 ## 0.28.0 - 2026-11-18
 
 - Unreal revision control "dvcl" (dvcl link 5): Revert and Submit Content work from Unreal (Content Browser right-click, Revision Control menu). They run dvcl's command line (new commands `dvcl revert-files`, `dvcl submit-files @list @message`), online for that action only, with a progress dialog showing dvcl's steps. New files are not revertable (delete them). Update the link once (Tools > Unreal link > Update, Unreal closed).
