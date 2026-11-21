@@ -2,6 +2,11 @@
 
 Versions follow [semver](https://semver.org). Tags: `vX.Y.Z`.
 
+## 0.32.0 - 2026-11-21
+
+- Branches panel: a small history graph under the branch list. The workspace's last 80 commits, newest first, each as a dot on the lane of the branch it was made on (current branch = first lane, grey for main, one color per job branch); a job branch's lane runs from its first to its last commit and joins the main lane at both ends. Columns: commit, branch, date, author, description.
+- Dev watcher: actions are read again at every request; close-unreal (asks the editor to quit, refused while it has unsaved changes, never killed), open-unreal, link (close, build, reopen), probe.
+
 ## 0.31.0 - 2026-11-21
 
 - Branch always in sight: the window title (and so the taskbar) starts with it: `dvcl [main] - <workspace>`. On a job branch the changelist list takes a soft color of its own (one per branch name, none on main), and the Branch menu, the amber BRANCH tag and the changelists of other branches say it too.

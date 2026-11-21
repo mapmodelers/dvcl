@@ -150,6 +150,9 @@ function Run-SelfTest {
         $fi = Finish-Dv @('status') @('Recently synced 3 files', 'On branch main') 0 $true $false 5
         $pb = Parse-Branches @('branch main (dv.branch.1)', 'commit dv.commit.173', '* branch rural (dv.branch.9)', 'branch main (dv.branch.1)')
         T "branches: dv branch output parsed (names once, current mark ignored)" ($pb.Count -eq 2 -and $pb[0] -eq 'main' -and $pb[1] -eq 'rural') ((@($pb) -join ','))
+        $gl = @('commit dv.commit.12 (dv.branch.3)', 'Author: s', 'Date: 2026-11-21T10:00:00Z', '', '    rural work', 'commit dv.commit.11 (dv.branch.1)', 'Author: s', 'Date: 2026-11-21T09:00:00Z', '', '    main fix', 'commit dv.commit.10 (dv.branch.3)', 'Author: s', '', '    rural start', 'commit dv.commit.9 (dv.branch.1)', 'Author: s', '', '    base')
+        $g = Graph-Data $gl (Parse-BranchIds @('branch main (dv.branch.1)', 'branch rural (dv.branch.3)')) 'main'
+        T "graph: each commit on its branch lane (current = lane 0), a side lane spans its first..last commit" ($g.Rows.Count -eq 4 -and $g.Rows[0].Branch -eq 'rural' -and $g.Rows[0].Lane -eq 1 -and $g.Rows[1].Lane -eq 0 -and $g.Lanes.Count -eq 2 -and $g.Lanes[1].Min -eq 0 -and $g.Lanes[1].Max -eq 2 -and $g.Lanes[0].Max -eq 3) ((@($g.Rows | ForEach-Object { [string]$_.Num + ':' + $_.Branch + ':' + $_.Lane }) -join ','))
         T "dv output: upload still running detected (compressing / uploading), idle lines not" ($fu.Upload -like '*Compressing*' -and -not $fi.Upload)
         $st = Read-Status $fr
         T "status: branch, commit, 8 files, not paused" ($st.Branch -eq 'main' -and $st.Commit -eq 'dv.commit.43' -and $st.Files.Count -eq 8 -and -not $st.Paused -and $st.Syncing)

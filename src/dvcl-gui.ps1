@@ -338,9 +338,55 @@ foreach ($col in @(@('Branch', 140), @('Head', 110), @('Date', 120), @('Last com
 $brBar = New-Object System.Windows.Forms.FlowLayoutPanel; $brBar.Dock = 'Top'; $brBar.Height = 30; $brBar.WrapContents = $false
 $btnBrLoad = New-Object System.Windows.Forms.Button; $btnBrLoad.Text = 'Refresh'; $btnBrLoad.AutoSize = $true; $btnBrLoad.Font = $fontUi
 $lblBr = New-Object System.Windows.Forms.Label; $lblBr.AutoSize = $true; $lblBr.Font = $fontUi; $lblBr.Margin = New-Object System.Windows.Forms.Padding(8, 8, 4, 0)
-$lblBr.Text = 'Branches of the repository (Diversion). Double-click one to switch to it.'
+$lblBr.Text = 'Branches (double-click one to switch to it); below, the last 80 commits of this workspace, one colored lane per branch they were made on.'
 $brBar.Controls.Add($btnBrLoad); $brBar.Controls.Add($lblBr)
-$padBranches.Controls.Add($lvBr); $padBranches.Controls.Add($brBar)
+# history graph below the branch list: one row per commit, a colored lane per branch
+$lvGr = New-Object System.Windows.Forms.ListView
+$lvGr.View = 'Details'; $lvGr.FullRowSelect = $true; $lvGr.HideSelection = $false; $lvGr.Dock = 'Fill'; $lvGr.Font = $fontUi; $lvGr.OwnerDraw = $true
+foreach ($col in @(@('Graph', 90), @('Commit', 70), @('Branch', 110), @('Date', 120), @('Author', 110), @('Description', 520))) { [void]$lvGr.Columns.Add($col[0], $col[1]) }
+$lvGr.Add_DrawColumnHeader({ param($s, $e) $e.DrawDefault = $true })
+$lvGr.Add_DrawItem({ param($s, $e) })
+$lvGr.Add_DrawSubItem({
+    param($s, $e)
+    if ($e.ColumnIndex -ne 0) { $e.DrawDefault = $true; return }
+    $sel = $e.Item.Selected
+    $bg = $(if ($sel) { $script:Pal.Sel } else { $s.BackColor })
+    $b = New-Object System.Drawing.SolidBrush($bg); $e.Graphics.FillRectangle($b, $e.Bounds); $b.Dispose()
+    $i = $e.ItemIndex; $r = $e.Bounds; $cy = $r.Y + [int]($r.Height / 2)
+    $e.Graphics.SmoothingMode = 'AntiAlias'
+    foreach ($L in @($script:GraphLanes)) {
+        if ($i -lt $L.Min -or $i -gt $L.Max) { continue }
+        $x = $r.X + 10 + 14 * $L.Index
+        $pen = New-Object System.Drawing.Pen($L.Color, 2)
+        $y1 = $(if ($i -eq $L.Min) { $cy } else { $r.Y }); $y2 = $(if ($i -eq $L.Max) { $cy } else { $r.Bottom })
+        if ($y2 -gt $y1) { $e.Graphics.DrawLine($pen, $x, $y1, $x, $y2) }
+        # a side lane joins the current branch's lane at its ends
+        if ($L.Index -gt 0 -and ($i -eq $L.Min -or $i -eq $L.Max)) { $e.Graphics.DrawLine($pen, ($r.X + 10), $cy, $x, $cy) }
+        $pen.Dispose()
+    }
+    $row = $e.Item.Tag
+    if ($row) {
+        $L = $script:GraphLanes[$row.Lane]; $x = $r.X + 10 + 14 * $row.Lane
+        $db = New-Object System.Drawing.SolidBrush($L.Color); $e.Graphics.FillEllipse($db, ($x - 4), ($cy - 4), 8, 8); $db.Dispose()
+    }
+})
+$brSplit = New-Object System.Windows.Forms.SplitContainer; $brSplit.Dock = 'Fill'; $brSplit.Orientation = 'Horizontal'
+$brSplit.Panel1.Controls.Add($lvBr); $brSplit.Panel2.Controls.Add($lvGr)
+$padBranches.Controls.Add($brSplit); $padBranches.Controls.Add($brBar)
+function Show-Graph {
+    $script:GraphLanes = @()
+    $gd = $script:GraphData; if (-not $gd) { $lvGr.Items.Clear(); return }
+    $k = 0; $script:GraphLanes = @($gd.Lanes | ForEach-Object { [pscustomobject]@{ Index = $k; Name = $_.Name; Min = $_.Min; Max = $_.Max; Color = (Branch-Color $_.Name $script:Dark) }; $k++ })
+    $lvGr.Columns[0].Width = [Math]::Max(40, 20 + 14 * $script:GraphLanes.Count)
+    $lvGr.BeginUpdate(); $lvGr.Items.Clear()
+    foreach ($c in @($gd.Rows)) {
+        $it = New-Object System.Windows.Forms.ListViewItem('')
+        foreach ($v in @([string]$c.Num, $c.Branch, (Format-CommitDate ([string]$c.Date)), $c.Author, ((([string]$c.Desc) -split "`n")[0]))) { [void]$it.SubItems.Add([string]$v) }
+        $it.Tag = $c
+        [void]$lvGr.Items.Add($it)
+    }
+    $lvGr.EndUpdate()
+}
 function Show-BranchRows {
     $lvBr.BeginUpdate(); $lvBr.Items.Clear()
     foreach ($b in @($script:BrRows)) {
@@ -356,9 +402,13 @@ function Show-BranchRows {
 function Do-LoadBranches {
     if (Op-Busy) { return }
     $script:BrRows = @()
-    Run-Busy { $script:BrRows = @(Branch-Rows) } 'Listing branches'
+    Run-Busy {
+        $script:BrRows = @(Branch-Rows)
+        $ids = Parse-BranchIds (Invoke-Dv @('branch') $true).Lines
+        $script:GraphData = Graph-Data (Invoke-Dv @('log', '-n', '80', '--date', 'iso') $true).Lines $ids $script:Branch
+    } 'Listing branches and history'
     $script:BrRowsShown = $true
-    Show-BranchRows
+    Show-BranchRows; Show-Graph
 }
 $btnBrLoad.Add_Click({ Do-LoadBranches })
 $lvBr.Add_DoubleClick({ if ($lvBr.SelectedItems.Count) { Do-BranchSwitch ([string]$lvBr.SelectedItems[0].Tag) } })

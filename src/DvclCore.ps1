@@ -523,6 +523,39 @@ function Branch-Rows {
     }
     return ,$rows.ToArray()
 }
+# Branch id -> name from dv branch ("branch main (dv.branch.1)")
+function Parse-BranchIds([string[]]$lines) {
+    $m = @{}
+    foreach ($l in @($lines)) { if ([string]$l -match '^\W*branch\s+(\S+)\s+\((dv\.branch\.[0-9A-Za-z-]+)\)') { $m[$Matches[2]] = $Matches[1] } }
+    return $m
+}
+# History graph: the workspace's last commits (dv log), each on the lane of the branch it was made on.
+# Lane 0 = the current branch; another branch gets a lane from its first commit seen to its last.
+# Returns @{ Rows = commits newest first (Id, Num, Date, Author, Desc, Branch, Lane); Lanes = @(Name, Min, Max) }
+function Graph-Data([string[]]$logLines, $ids, [string]$current) {
+    $bid = @{}
+    foreach ($l in @($logLines)) { if ([string]$l -match '^\s*commit\s+(dv\.commit\.\d+)\s+\((dv\.branch\.[0-9A-Za-z-]+)\)') { $bid[$Matches[1]] = $Matches[2] } }
+    $rows = @(Parse-Log $logLines)
+    $laneOf = @{}; $lanes = New-Object System.Collections.ArrayList
+    [void]$lanes.Add([pscustomobject]@{ Name = $current; Min = -1; Max = -1 }); $laneOf[$current] = 0
+    for ($i = 0; $i -lt $rows.Count; $i++) {
+        $b = [string]$bid[$rows[$i].Id]; $name = $(if ($b -and $ids.ContainsKey($b)) { [string]$ids[$b] } elseif ($b) { $b } else { $current })
+        if (-not $laneOf.ContainsKey($name)) { $laneOf[$name] = $lanes.Count; [void]$lanes.Add([pscustomobject]@{ Name = $name; Min = $i; Max = $i }) }
+        $ln = $laneOf[$name]; $L = $lanes[$ln]; if ($L.Min -lt 0) { $L.Min = $i }; $L.Max = $i
+        $rows[$i] | Add-Member -NotePropertyName Branch -NotePropertyValue $name -Force
+        $rows[$i] | Add-Member -NotePropertyName Lane -NotePropertyValue $ln -Force
+    }
+    if ($rows.Count) { $lanes[0].Min = 0; $lanes[0].Max = $rows.Count - 1 }
+    return [pscustomobject]@{ Rows = $rows; Lanes = $lanes.ToArray() }
+}
+# A strong color per branch for the graph (grey for main / master)
+function Branch-Color([string]$branch, [bool]$dark) {
+    if (-not $branch -or $branch -in @('main', 'master')) { return $(if ($dark) { [System.Drawing.Color]::FromArgb(170, 170, 170) } else { [System.Drawing.Color]::FromArgb(110, 110, 110) }) }
+    $h = 0; foreach ($ch in $branch.ToLowerInvariant().ToCharArray()) { $h = ($h * 31 + [int]$ch) % 360 }
+    $s = 0.7; $v = 0.85; $f = ($h / 60.0) - [Math]::Floor($h / 60.0); $p = $v * (1 - $s); $q = $v * (1 - $s * $f); $u = $v * (1 - $s * (1 - $f))
+    switch ([int][Math]::Floor($h / 60.0) % 6) { 0 { $rgb = $v, $u, $p } 1 { $rgb = $q, $v, $p } 2 { $rgb = $p, $v, $u } 3 { $rgb = $p, $q, $v } 4 { $rgb = $u, $p, $v } default { $rgb = $v, $p, $q } }
+    return [System.Drawing.Color]::FromArgb([int](255 * $rgb[0]), [int](255 * $rgb[1]), [int](255 * $rgb[2]))
+}
 # A soft background per branch for the changelist list: none on main / master, else a hue from the name
 function Branch-Tint([string]$branch, $base, [bool]$dark) {
     if (-not $branch -or $branch -in @('main', 'master')) { return $base }
