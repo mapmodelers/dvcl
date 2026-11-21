@@ -2,6 +2,11 @@
 
 Versions follow [semver](https://semver.org). Tags: `vX.Y.Z`.
 
+## 0.35.0 - 2026-11-21
+
+- Branches panel refreshes by itself (in the background): when shown, after a branch change, every 5 minutes; the last list shows at once when the window opens.
+- Submitted: the last list read shows at once when the window opens, then it is read again.
+
 ## 0.34.0 - 2026-11-21
 
 - Branch switch: a checklist first (Unreal closed, no pending file, no other dvcl working online, editors that may hold workspace files); Switch is enabled only when nothing blocks, "Check again" after closing things.

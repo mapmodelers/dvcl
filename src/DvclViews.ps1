@@ -96,6 +96,10 @@ function Load-Commits([string]$key, [bool]$force = $false) {
     $want = $script:Root + '|' + $path + '|' + $v.Limit
     if (-not $force -and $want -eq $v.Loaded) { return }
     if ($v.Loading) { $v.Again = $true; return }
+    # Submitted: the last list read shows at once (kept in .dvcl\submitted-cache.txt) while it is read again
+    if ($key -eq 'submitted' -and -not $path -and $v.Commits.Count -eq 0) {
+        try { $cf = Dvcl-File 'submitted-cache.txt'; if (Test-Path -LiteralPath $cf) { $v.Commits = @(Parse-Log ([System.IO.File]::ReadAllLines($cf))); if ($v.Commits.Count) { Fill-Commits $v } } } catch {}
+    }
     $v.Loading = $true; $v.Want = $want
     Set-ViewInfo $v ('Reading commits' + $(if ($path) { ' of ' + $path } else { '' }) + '...') $false
     $a = @('log'); if ($path) { $a += $path }; $a += @('-n', [string]$v.Limit, '--date', 'iso')
@@ -116,6 +120,7 @@ function Apply-Log([string]$key, $r) {
     $v.Loaded = $v.Want
     $v.Commits = @(Parse-Log $r.Lines)
     Fill-Commits $v
+    if ($key -eq 'submitted' -and -not (View-Path $v)) { try { [System.IO.File]::WriteAllLines((Dvcl-File 'submitted-cache.txt'), [string[]]@($r.Lines), $script:Utf8) } catch {} }
 }
 
 function Set-ViewInfo($v, [string]$text, [bool]$getLink) {
@@ -217,7 +222,7 @@ function Show-History([string]$rel) {
 }
 
 # A panel came on screen: load it if needed
-$script:OnPadShown = { param($id) if ($id -eq 'submitted' -or $id -eq 'history') { Load-Commits $id } }
+$script:OnPadShown = { param($id) if ($id -eq 'submitted' -or $id -eq 'history') { Load-Commits $id } elseif ($id -eq 'branches') { Start-BranchesAsync } }
 
 # After each status read: a new workspace commit (get latest, submit) reloads the panels on
 # screen (the others on their next showing); otherwise only first loads and recolor.

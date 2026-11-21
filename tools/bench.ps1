@@ -23,4 +23,6 @@ B 'gone check (baseline keys)' { [void]@($base.Keys | Where-Object { -not $now.C
 $L.Add('         workspace name saved: [' + (Ws-Name) + ']')
 $br = B 'Branch-Rows' { @(Branch-Rows) }
 $L.Add('         branch rows: ' + ((@($br) | ForEach-Object { [string]$_.Name + ' = [' + [string]$_.Workspaces + ']' }) -join ' | '))
+$bj = B 'dvcl-branches.ps1 (window background job)' { & (Join-Path (Split-Path -Parent $PSScriptRoot) 'src\dvcl-branches.ps1') -Workspace $Ws -Branch (Current-Branch) }
+$L.Add('         background job: ' + @($bj.Rows).Count + ' rows, graph rows ' + @($bj.Graph.Rows).Count + ', error [' + [string]$bj.Error + ']')
 [System.IO.File]::WriteAllLines($Out, [string[]]$L)

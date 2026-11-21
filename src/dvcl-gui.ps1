@@ -399,17 +399,56 @@ function Show-BranchRows {
     }
     $lvBr.EndUpdate()
 }
-function Do-LoadBranches {
-    if (Op-Busy) { return }
-    $script:BrRows = @()
-    Run-Busy {
-        $script:BrRows = @(Branch-Rows)
-        $ids = Parse-BranchIds (Invoke-Dv @('branch') $true).Lines
-        $script:GraphData = Graph-Data (Invoke-Dv @('log', '-n', '80', '--date', 'iso') $true).Lines $ids $script:Branch
-    } 'Listing branches and history'
-    $script:BrRowsShown = $true
-    Show-BranchRows; Show-Graph
+# Branches panel: the last list shows at once (kept in .dvcl\branches-cache.xml), then it is read
+# again in the background: when the panel is shown, after a branch change, every 5 minutes, Refresh
+$script:BrLoading = $false; $script:BrAt = $null; $script:BrFor = ''; $script:BrCacheTried = $false
+function Branches-CacheFile { return (Dvcl-File 'branches-cache.xml') }
+function Set-BranchesInfo([string]$extra) {
+    $t = 'Branches (double-click one to switch to it); below, the last 80 commits of this workspace, one colored lane per branch they were made on.'
+    if ($script:BrAt) { $t += '   Updated ' + $script:BrAt.ToString('HH:mm') }
+    if ($extra) { $t += '   ' + $extra }
+    $lblBr.Text = $t
 }
+function Show-BranchesCache {
+    if ($script:BrCacheTried -or -not $script:Root) { return }
+    $script:BrCacheTried = $true
+    try {
+        $f = Branches-CacheFile
+        if (-not (Test-Path -LiteralPath $f)) { return }
+        $c = Import-Clixml -LiteralPath $f
+        $script:BrRows = @($c.Rows); $script:GraphData = $c.Graph; $script:BrAt = [datetime]$c.At; $script:BrFor = [string]$c.For
+        $script:BrRowsShown = $true; Show-BranchRows; Show-Graph; Set-BranchesInfo ''
+    } catch { Write-Log ('branches cache not read: ' + $_.Exception.Message) }
+}
+# $force: Refresh button / branch changed; else at most every 5 minutes, and only while the panel shows
+function Start-BranchesAsync([bool]$force = $false) {
+    if (-not $script:Root -or $script:BrLoading) { return }
+    Show-BranchesCache
+    if (-not $force) {
+        if (-not (Pad-Showing 'branches')) { return }
+        if ($script:BrAt -and $script:BrFor -eq [string]$script:Branch -and ((Get-Date) - $script:BrAt).TotalMinutes -lt 5) { return }
+    }
+    if ($script:SyncMode) {
+        $script:BrLoading = $true
+        try { $res = & (Join-Path $PSScriptRoot 'dvcl-branches.ps1') -Workspace $script:Root -Branch ([string]$script:Branch) } catch { $res = [pscustomobject]@{ Error = $_.Exception.Message } }
+        Apply-Branches $res; return
+    }
+    $script:BrLoading = $true; Set-BranchesInfo 'refreshing...'
+    $ps = [powershell]::Create()
+    [void]$ps.AddCommand((Join-Path $PSScriptRoot 'dvcl-branches.ps1')).AddParameter('Workspace', $script:Root).AddParameter('Branch', [string]$script:Branch)
+    $job = [pscustomobject]@{ PS = $ps; Handle = $ps.BeginInvoke(); Args = @('(branches)'); Done = 'Apply-Branches'; Raw = $true; Quiet = $true; LogLines = $false; Sw = [Diagnostics.Stopwatch]::StartNew(); Busy = $false }
+    [void]$script:Jobs.Add($job)
+    $jobTimer.Start()
+}
+function Apply-Branches($r) {
+    $script:BrLoading = $false
+    if ($r.Error) { Write-Log ('branches: ' + $r.Error); Set-BranchesInfo 'not refreshed (Diversion did not answer)'; return }
+    $script:BrRows = @($r.Rows); $script:GraphData = $r.Graph; $script:BrAt = Get-Date; $script:BrFor = [string]$script:Branch
+    $script:BrRowsShown = $true
+    Show-BranchRows; Show-Graph; Set-BranchesInfo ''
+    try { [pscustomobject]@{ Rows = $script:BrRows; Graph = $script:GraphData; At = $script:BrAt; For = $script:BrFor } | Export-Clixml -LiteralPath (Branches-CacheFile) -Depth 6 } catch { Write-Log ('branches cache not written: ' + $_.Exception.Message) }
+}
+function Do-LoadBranches { Start-BranchesAsync $true }
 $btnBrLoad.Add_Click({ Do-LoadBranches })
 $lvBr.Add_DoubleClick({ if ($lvBr.SelectedItems.Count) { Do-BranchSwitch ([string]$lvBr.SelectedItems[0].Tag) } })
 Register-Pad 'branches' 'Branches' $padBranches 'bottom'
@@ -1009,7 +1048,7 @@ $jobTimer.Add_Tick({
         catch { if ($j.Raw) { $res = [pscustomobject]@{ Files = @(); Fresh = $false; Error = $_.Exception.Message } } else { $res = [pscustomobject]@{ Out = @('background dv failed: ' + $_.Exception.Message); Code = 9009 } } }
         finally { $j.PS.Dispose() }
         if ($j.Raw) {
-            if ($null -eq $res -or $null -eq $res.PSObject.Properties['Files']) { $res = [pscustomobject]@{ Files = @(); Fresh = $false; Error = 'background scan returned nothing' } }
+            if ($null -eq $res -or $null -eq $res.PSObject.Properties['Files']) { $res = [pscustomobject]@{ Files = @(); Fresh = $false; Rows = @(); Graph = $null; Error = 'background job returned nothing' } }
             try { & $j.Done $res } catch { & $script:OnSay ('ERROR: ' + $_.Exception.Message) 'Red' }
             finally { if ($j.Busy) { End-Busy } }
             continue
@@ -1274,6 +1313,7 @@ function Show-Pending($st, [bool]$unreachable) {
     if ($st.Syncing -and -not $script:Paused -and -not $script:SyncMode -and $script:OpDepth -eq 0) { $pollTimer.Start() }
     if ($st.Branch -and -not $script:Offline) { if ($script:OpDepth -gt 0) { $script:OpLater['head'] = $st.Branch } else { Start-DvAsync @('show', $st.Branch) 'Apply-Head' $true $true } }
     Views-Refresh
+    Start-BranchesAsync ($script:BrAt -and $script:BrFor -ne [string]$script:Branch -and (Pad-Showing 'branches'))
     if ($script:RefreshAgain) { $script:RefreshAgain = $false; Refresh-All }
 }
 
@@ -2763,6 +2803,12 @@ function Run-GuiSelfCheck {
         C 'branch: no tint on main, a soft one per job branch (same name, same color)' ((Branch-Tint 'main' $tb $false).ToArgb() -eq $tb.ToArgb() -and (Branch-Tint 'rural' $tb $false).ToArgb() -ne $tb.ToArgb() -and (Branch-Tint 'rural' $tb $false).ToArgb() -eq (Branch-Tint 'Rural' $tb $false).ToArgb() -and (Branch-Tint 'rural' $tb $false).R -gt 200)
         Set-ColShown $lvGr 'graph' 4 $false; $hc = ($lvGr.Columns[4].Width -eq 0 -and @($script:HiddenCols['graph']) -contains 4); Set-ColShown $lvGr 'graph' 4 $true
         C 'columns: a column hidden / shown again from the header menu, remembered in the settings' ($hc -and $lvGr.Columns[4].Width -gt 0 -and @($script:HiddenCols['graph']) -notcontains 4 -and $vSub.List.ContextMenuStrip -and $lvBr.ContextMenuStrip -and (Settings-Json '' $null) -like '*"cols"*')
+        $brKeep = @($script:BrRows); $brAtKeep = $script:BrAt; $brCf = Branches-CacheFile; $brBak = $null; if (Test-Path -LiteralPath $brCf) { $brBak = [System.IO.File]::ReadAllBytes($brCf) }
+        Apply-Branches ([pscustomobject]@{ Rows = @([pscustomobject]@{ Name = 'main'; Head = 'dv.commit.1'; Date = ''; Desc = 'x'; Workspaces = 'Town @ PC1 (this)'; Cls = '' }); Graph = $null; Error = $null })
+        $script:BrCacheTried = $false; $script:BrRows = @(); Show-BranchesCache
+        C 'branches: last list kept and shown again at start (cache), workspaces column filled' (@($script:BrRows).Count -eq 1 -and [string]$script:BrRows[0].Workspaces -eq 'Town @ PC1 (this)' -and $lvBr.Items.Count -eq 1 -and $lblBr.Text -like '*Updated*')
+        $script:BrRows = $brKeep; $script:BrAt = $brAtKeep
+        if ($brBak) { [System.IO.File]::WriteAllBytes($brCf, $brBak) } else { Remove-Item -LiteralPath $brCf -ErrorAction SilentlyContinue }
         C 'branch switch: checklist dialog and checks in place' ((Get-Command Show-SwitchCheck -ErrorAction SilentlyContinue) -and (Get-Command Get-SwitchCheck -ErrorAction SilentlyContinue) -and $lvBr.Columns[4].Text -eq 'Workspaces on it')
         C 'submitted: Workspace column (from the [ws: ...] line dvcl adds)' ($vSub.List.Columns[3].Text -eq 'Workspace' -and $vSub.List.Columns[4].Text -eq 'Description')
         C 'branch: shown in the title (taskbar) and the Branch menu' (($script:Branch -eq '' -or ($form.Text -like ('dvcl `[' + $script:Branch + '`]*') -and $ddBranch.Text -eq ('Branch: ' + $script:Branch)))) ($form.Text + ' | ' + $ddBranch.Text)
